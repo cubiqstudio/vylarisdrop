@@ -325,7 +325,7 @@ Jedes Konto kann ein Speicher-Kontingent haben. Das **wirksame Kontingent** eine
 
 ### Was zählt
 
-**Belegt** ist die Summe der Dateigrößen des Kontos **plus der Papierkorb**. Gelöschte Dateien belegen weiter Platz, bis der Papierkorb geleert wird oder die 30 Tage um sind; Wiederherstellen ändert nichts an der Summe. Nicht mitgezählt werden Storage-Boxen und Buckets des Moduls „Speicher“ (eigene Kontingente), Vorschaubilder und andere Nebendateien. Kopien zählen je Kopie.
+**Belegt** ist die Summe der Dateigrößen des Kontos **plus der Papierkorb**. Gelöschte Dateien belegen weiter Platz, bis der Papierkorb geleert wird oder die 30 Tage um sind; Wiederherstellen ändert nichts an der Summe. Dazu kommt, was das Konto für Storage-Boxen und Buckets des Moduls „Speicher“ **eingeplant** hat (siehe [Boxen und Buckets im Rahmen des Kontingents](#boxen-und-buckets-im-rahmen-des-kontingents)). Nicht mitgezählt werden Vorschaubilder und andere Nebendateien. Kopien zählen je Kopie.
 
 ### Durchsetzung und Warnungen
 
@@ -333,6 +333,22 @@ Jedes Konto kann ein Speicher-Kontingent haben. Das **wirksame Kontingent** eine
 - Das gilt für alle Wege, auf denen Dateien entstehen: Upload im Browser, Upload in Stücken, Datei-Anfragen, Upload-Werkzeuge und API, Import, Inhalt ersetzen, Kopieren im Dateimanager und WebDAV.
 - Ist das Kontingent erreicht, lehnt der Server mit **HTTP 507** und einer Meldung mit Zahlen ab („Dein Speicher ist voll: 4,8 von 5 GB belegt, die Datei braucht 600 MB.“). Eine einzelne Datei über der Grenze „Größte Datei“ bleibt ein 413.
 - **Warnungen** gibt es einmal bei **80 %** und einmal bei **100 %** des Konto-Kontingents, per Discord-Webhook oder E-Mail wie unter **Einstellungen → Benachrichtigungen** („Dein Speicher wird knapp“, dort abschaltbar). Sinkt die Belegung wieder unter 80 %, beginnt es von vorn. Zusätzlich färbt sich der Balken in der Seitenleiste ab 80 % gelb und ab 95 % rot, und ein Hinweis-Banner erscheint. Für Team-Kontingente gibt es keine Benachrichtigung, nur den Balken auf der Teams-Seite.
+
+## Boxen und Buckets im Rahmen des Kontingents
+
+<!-- Abschnitt "Selbstbedienung im Rahmen des Kontingents" (Modul Speicher) -->
+Wenn **Speicher → Einstellungen → „Wer darf Speicher anlegen?“** auf **Alle Konten** steht (und der Speicherdienst läuft), legt jeder Nutzer seine eigenen **Storage-Boxen** (SFTP/SCP/WebDAV) und **S3-Buckets** selbst an. Mehr als sein Kontingent kann er dabei nie einplanen:
+
+- **Budget** = wirksames Kontingent des Kontos (Rangfolge wie oben). **Frei zum Einplanen** = Budget − belegt (Dateien + Papierkorb) − bereits eingeplant (Summe der Kontingente aller seiner Boxen und Buckets). Beim Anlegen und Vergrößern darf das Neue höchstens so groß sein wie das, was frei ist; der Schieber im Dialog endet genau dort, und der Server prüft es noch einmal (HTTP 507 mit Zahlen), auch bei direkten API-Aufrufen.
+- Das **Eingeplante zählt zum belegten Speicher des Kontos** (Seitenleiste: eigene Farbe „Für Boxen & Buckets reserviert“). Cloud-Uploads, Kopieren und WebDAV passen danach nur noch in den Rest. Prüfung und Eintragen laufen unter derselben Sperre je Konto wie jeder Upload; zehn gleichzeitige Anfragen überziehen das Budget deshalb nicht.
+- **Löschen** und **Verkleinern** geben den Platz sofort frei. Verkleinern geht nur bis zur tatsächlichen Belegung der Box/des Buckets (frisch gemessen, nicht der Stundenwert); ist der Dienst nicht erreichbar, wird nicht verkleinert.
+- **Konten ohne Limit** (Rolle „Nutzer“) dürfen nur bis zur Obergrenze **„Obergrenze je Konto für Boxen + Buckets zusammen“** (Einstellung `grenzeGb`) einplanen; steht sie auf 0, dürfen sie nichts anlegen. Für Konten mit Limit gilt die Obergrenze zusätzlich zum Kontingent (0 = keine zusätzliche). **Höchstens Boxen + Buckets je Konto** (`maxAnzahl`) begrenzt die Anzahl. Admin- und Inhaber-Konten ohne eigenes Limit bleiben unbegrenzt; ihr Eingeplantes steht trotzdem in ihrer Anzeige. Handelt ein Admin an der Box eines Nutzers, gilt immer das Kontingent des **Besitzers**.
+- **Überplant:** Senkt ein Admin das Kontingent unter belegt + eingeplant, wird nichts gelöscht. Das Konto lehnt dann neue Boxen, Buckets, Vergrößerungen und Uploads ab (Hinweis in Seitenleiste, Speicher-Seite und Banner), Zahlen werden nie negativ angezeigt. Verkleinern, Löschen und Dateien löschen sind weiter möglich.
+- **Durchgesetzt wird im Dienst:** das Kontingent steht als `quota_size` am virtuellen Ordner der Box in SFTPGo (alle Unterkonten teilen es) und als Bucket-Kontingent in Garage. Bei jeder Messung (stündlich und beim Öffnen der Box/des Buckets) wird ein abweichender Wert im Dienst wieder auf den Wert der Datenbank gesetzt.
+- **Konto löschen** entfernt zuerst alle Boxen, Buckets, Logins und Schlüssel im Dienst. Klappt das nicht (Dienst aus), bleibt das Konto bestehen („nicht gelöscht, Dienst prüfen“). Nur der Inhaber kann mit `DELETE /api/users/<id>?ohneSpeicher=1` bewusst ohne Dienst löschen; Reste im Dienst müssen dann von Hand entfernt werden (SFTPGo-Oberfläche, Garage).
+- Anmeldenamen neuer Boxen sind zufällig (`vd` + 10 Zeichen), Passwörter und Bucket-Secrets werden nur einmal angezeigt. Anlegen ist je Nutzer auf 20, Ändern auf 60 Aktionen je 10 Minuten begrenzt.
+
+Test ohne SFTPGo/Garage: `scripts/test-speicher-budget.sh` mit dem Nachbau `scripts/stub-speicherdienste.mjs` (Kopf der Datei erklärt den Start).
 
 ## Speicher-Erweiterungen (SFTP)
 

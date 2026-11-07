@@ -39,6 +39,13 @@ export function dienstFehlerMelden(e: unknown, was: string): never {
           'The storage service is not responding right now. Is it running (Storage → status)?'
         )
       )
+    throw fehler(
+      502,
+      st(
+        'Der Speicherdienst hat den Auftrag abgelehnt. Einzelheiten stehen im Server-Protokoll.',
+        'The storage service rejected the request. Details are in the server log.'
+      )
+    )
   }
   throw e
 }
@@ -121,6 +128,7 @@ async function lesenJson(n: string): Promise<any> {
 
 export async function speicherErreichbar(): Promise<{ sftpgo: boolean; garage: boolean; fehler: string }> {
   if (!speicherKonfiguriert()) return { sftpgo: false, garage: false, fehler: '' }
+  // Hinweis: keine lokale Variable "fehler" — sie würde den automatischen Import von fehler() in dieser Datei verdecken
   let meldung = ''
   const s = await sftpgo('GET', '/status').then(
     () => true,

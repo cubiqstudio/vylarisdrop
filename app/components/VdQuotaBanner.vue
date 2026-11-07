@@ -1,7 +1,7 @@
 <script setup lang="ts">
 // Hinweis über dem Inhalt, wenn der eigene Speicher knapp wird (ab 80 % gelb, ab 95 % rot, voll mit klarer Meldung)
 const props = defineProps<{
-  quota: { limit: number | null; used: number; free: number | null; prozent: number | null; stufe: string; papierkorb: number } | null | undefined
+  quota: { limit: number | null; used: number; free: number | null; prozent: number | null; stufe: string; papierkorb: number; eingeplant?: number; ueberplant?: boolean } | null | undefined
 }>()
 const weg = ref('')
 onMounted(() => {
@@ -42,6 +42,11 @@ const text = computed(() => {
   const q = props.quota
   if (!q?.limit) return ''
   const von = `${groesse(q.used)} ${t('von', 'of')} ${groesse(q.limit)}`
+  if (q.ueberplant)
+    return t(
+      `Dein Konto ist überplant (${von}, davon ${groesse(q.eingeplant || 0)} für Boxen & Buckets reserviert). Es wurde nichts gelöscht, aber neue Uploads, Boxen und Buckets werden abgelehnt, bis du Platz schaffst oder der Admin das Kontingent erhöht.`,
+      `Your account is over-planned (${von}, of which ${groesse(q.eingeplant || 0)} reserved for boxes & buckets). Nothing was deleted, but new uploads, boxes and buckets are rejected until you free up space or the admin raises the quota.`
+    )
   if (stufe.value === 'voll')
     return t(
       `Dein Speicher ist voll (${von}). Neue Uploads werden abgelehnt, bis du Platz schaffst.`,

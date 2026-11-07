@@ -1,5 +1,6 @@
 import { requireUser } from '../../utils/auth'
 import { getSpeicherEinst, speicherStand } from '../../utils/speicherdienst'
+import { budgetAnsicht } from '../../utils/speicherBudget'
 import { darfAnlegen, speicherAdresse, speicherListen, speicherPlatte, speicherPlatten } from '../../utils/speicherAnsicht'
 
 export default defineEventHandler(async (event) => {
@@ -14,6 +15,8 @@ export default defineEventHandler(async (event) => {
       : { konfiguriert: stand.konfiguriert, sftpgo: stand.sftpgo, garage: stand.garage, port: stand.port },
     einstellungen: await getSpeicherEinst(),
     darfAnlegen: await darfAnlegen(u),
+    // Budget des eigenen Kontos: Kontingent, belegt, für Boxen/Buckets reserviert, frei zum Einplanen
+    budget: await budgetAnsicht(u, stand.konfiguriert),
     adresse: await speicherAdresse(event),
     platte: admin ? await speicherPlatte() : null,
     platten: admin ? await speicherPlatten() : null,

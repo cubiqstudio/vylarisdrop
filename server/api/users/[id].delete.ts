@@ -20,7 +20,10 @@ export default defineEventHandler(async (event) => {
     `SELECT ablage, id::text AS fid FROM files WHERE user_id = $1 UNION SELECT datei->>'ablage', datei->>'id' FROM papierkorb WHERE user_id = $1`,
     [id]
   )
-  await speicherVonKontoLoeschen(id)
+  // Boxen/Buckets zuerst im Speicherdienst aufräumen; schlägt das fehl, bleibt das Konto bestehen (kein Waisen-Speicher).
+  // Nur der Inhaber darf mit ?ohneSpeicher=1 bewusst ohne Dienst löschen (Reste im Dienst bleiben dann zurück).
+  const ohneDienst = ich.role === 'owner' && String(getQuery(event).ohneSpeicher || '') === '1'
+  await speicherVonKontoLoeschen(id, ohneDienst)
   await q('DELETE FROM users WHERE id = $1', [id])
   for (const a of ablagen) {
     await loeschen(a.ablage)

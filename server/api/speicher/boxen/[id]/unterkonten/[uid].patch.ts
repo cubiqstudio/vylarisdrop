@@ -12,8 +12,9 @@ const Body = z.object({
 })
 export default defineEventHandler(async (event) => {
   const u = await requireUser(event)
-  const b = await boxLaden(Number(getRouterParam(event, 'id')), u)
-  const k = await unterkontoLaden(b, Number(getRouterParam(event, 'uid')))
+  const b = await boxLaden(getRouterParam(event, 'id'), u)
+  speicherRate(u.id, 'aendern')
+  const k = await unterkontoLaden(b, getRouterParam(event, 'uid'))
   const p = Body.safeParse(await readBody(event))
   if (!p.success) throw fehler(400, 'Ungültige Angaben.', 'Invalid input.')
   const r = await unterkontoAendern(b, k, {
