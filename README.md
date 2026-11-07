@@ -91,14 +91,16 @@ Das Docker-Image heißt **`ghcr.io/cubiqstudio/vylariscloud`** (Tag `latest` und
 
 ## Pro-Funktionen und Lizenzierung
 
-Pro-Funktionen (Teams, SSO, Multi-Server, S3, White-Label, Sicherung, Monitoring, Traffic) werden über einen Lizenzserver freigeschaltet. Server und Prüfschlüssel kommen aus der Umgebung:
+Pro-Funktionen (Teams, SSO, Multi-Server, S3, White-Label, Sicherung, Monitoring, Traffic) werden über Lizenzschlüssel freigeschaltet. VylarisCloud hat dafür einen **eigenen Lizenzaussteller** eingebaut: Der Inhaber erstellt unter **Verwaltung → Lizenzen** Schlüssel (`VD-XXXX-XXXX-XXXX`) ohne E-Mail oder Namen und legt fest, wie lange sie gelten (ab der ersten Aktivierung, oder unbegrenzt), auf wie vielen Installationen sie laufen und welche Funktionen sie freischalten. Den Schlüssel trägt man unter **Pro** ein. Diese Installation prüft ihre eigenen Schlüssel lokal, ohne Netzwerk und ohne weitere Einstellung.
+
+Andere VylarisCloud-Installationen können Schlüssel von hier nutzen. Dazu trägst du dort zwei Werte in die `.env` ein, die auf der Lizenzen-Seite stehen:
 
 | Variable | Bedeutung |
 |---|---|
-| `VD_LIZENZ_SERVER` | Basis-URL des Lizenzservers |
+| `VD_LIZENZ_SERVER` | Adresse des Ausstellers, `https://<deine-cloud>/lizenz` |
 | `VD_LIZENZ_KEY` | Öffentlicher Ed25519-Schlüssel (PEM, Zeilenumbrüche als `\n`) |
 
-**Ohne diese Variablen findet keine Lizenzprüfung statt, und die Pro-Funktionen bleiben gesperrt.** Das gilt auch für eine Offline-Lizenzdatei: Sie wird mit `VD_LIZENZ_KEY` geprüft. Die mitgelieferten Compose-Dateien reichen diese Variablen nicht automatisch an den Container weiter; wie du sie setzt, steht unter [Umgebungsvariablen](deploy/README.md#umgebungsvariablen).
+Ohne diese Variablen gilt der eigene Aussteller der Installation. Die mitgelieferten Compose-Dateien reichen die Variablen an den Container weiter, siehe [Umgebungsvariablen](deploy/README.md#umgebungsvariablen).
 
 Nicht hinter Pro liegen der Cloud-Dateimanager, der WebDAV-Sync, Konto-Kontingente, das Standard-Kontingent und die SFTP-Speicher-Erweiterungen. Pro brauchen **Team-Ordner**, **Rollen-** und **Team-Kontingente** (Funktion „Teams“) sowie S3.
 

@@ -75,6 +75,7 @@ export async function arbeitsPfad(endung = ''): Promise<string> {
 
 export async function zielOrt(): Promise<Ort> {
   const w = await getSpeicher()
+  if (w.art === 'pool') return poolWahl(w.mitglieder || ['lokal'], w.strategie === 'abwechselnd' ? 'abwechselnd' : 'frei')
   if (w.art === 'sftp' && w.sftpZiel) {
     // nur eine aktive, beschreibbare Erweiterung; sonst bleibt es lokal (die Oberfläche warnt davor)
     const z = await zielLaden(w.sftpZiel)
@@ -362,4 +363,102 @@ export async function platte(): Promise<{ frei: number; gesamt: number } | null>
   } catch {
     return null
   }
+}
+
+// ===== Speicher-Pool: mehrere Speicher (dieser Server + SFTP-Ziele) wie ein Speicher =====
+export interface PoolMitglied {
+  ort: string
+  name: string
+  art: 'lokal' | 'sftp'
+  /** Gesamt/frei/belegt in Byte; null = unbekannt (z. B. SFTP-Server ohne statvfs) */
+  gesamt: number | null
+  frei: number | null
+  belegt: number | null
+  online: boolean | null
+  aktiv: boolean
+  schreibbar: boolean
+  /** nimmt neue Dateien an (aktiv, beschreibbar, nicht offline) */
+  nutzbar: boolean
+}
+export interface PoolPlatz {
+  mitglieder: PoolMitglied[]
+  /** Summe nur über Mitglieder mit bekannter Größe */
+  summe: { gesamt: number; frei: number; belegt: number; bekannt: number }
+  unbekannt: number
+}
+
+const PLATZ_TTL = 30_000
+let lokalPlatz: { bis: number; v: { frei: number; gesamt: number } | null } | null = null
+async function lokalPlatzKurz() {
+  if (lokalPlatz && lokalPlatz.bis > Date.now()) return lokalPlatz.v
+  const v = await platte()
+  lokalPlatz = { bis: Date.now() + PLATZ_TTL, v }
+  return v
+}
+let reihum = 0
+
+/** Mitglieder-Liste mit Platzangaben (kurz zwischengespeichert, kein Live-Abruf pro Upload). */
+export async function poolPlatz(mitglieder?: string[]): Promise<PoolPlatz> {
+  const w = mitglieder ? null : await getSpeicher()
+  const liste = mitglieder || (w?.art === 'pool' ? w.mitglieder || ['lokal'] : ['lokal'])
+  const out: PoolMitglied[] = []
+  for (const m of liste) {
+    if (m === 'lokal') {
+      const p = await lokalPlatzKurz()
+      out.push({
+        ort: 'lokal',
+        name: 'lokal',
+        art: 'lokal',
+        gesamt: p?.gesamt ?? null,
+        frei: p?.frei ?? null,
+        belegt: p ? Math.max(0, p.gesamt - p.frei) : null,
+        online: true,
+        aktiv: true,
+        schreibbar: true,
+        nutzbar: true
+      })
+      continue
+    }
+    const id = sftpId(m)
+    if (id == null) continue
+    const z = await zielLaden(id)
+    if (!z) continue
+    const pl = z.status?.platz
+    const bekannt = !!pl && Number.isFinite(pl.gesamt) && pl.gesamt > 0
+    out.push({
+      ort: m,
+      name: z.name,
+      art: 'sftp',
+      gesamt: bekannt ? pl!.gesamt : null,
+      frei: bekannt ? pl!.frei : null,
+      belegt: bekannt ? Math.max(0, pl!.gesamt - pl!.frei) : null,
+      online: z.status?.online ?? null,
+      aktiv: z.aktiv,
+      schreibbar: z.schreibbar,
+      nutzbar: z.aktiv && z.schreibbar && z.status?.online !== false
+    })
+  }
+  const bek = out.filter((m) => m.gesamt != null)
+  return {
+    mitglieder: out,
+    summe: {
+      gesamt: bek.reduce((a, m) => a + (m.gesamt || 0), 0),
+      frei: bek.reduce((a, m) => a + (m.frei || 0), 0),
+      belegt: bek.reduce((a, m) => a + (m.belegt || 0), 0),
+      bekannt: bek.length
+    },
+    unbekannt: out.length - bek.length
+  }
+}
+
+/** Wählt für einen Upload ein nutzbares Pool-Mitglied; fällt alles aus, bleibt es `lokal`. */
+async function poolWahl(mitglieder: string[], strategie: 'frei' | 'abwechselnd'): Promise<Ort> {
+  const p = await poolPlatz(mitglieder)
+  const ok = p.mitglieder.filter((m) => m.nutzbar)
+  if (!ok.length) return 'lokal'
+  if (strategie === 'frei') {
+    const mitPlatz = ok.filter((m) => m.frei != null)
+    if (mitPlatz.length) return mitPlatz.reduce((a, b) => (b.frei! > a.frei! ? b : a)).ort as Ort
+  }
+  return ok[reihum++ % ok.length]!.ort as Ort
 }

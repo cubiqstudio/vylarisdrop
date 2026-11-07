@@ -232,6 +232,8 @@ async function composeKopieren() {
           {{
             data?.ziel === 's3'
               ? 'S3'
+              : data?.art === 'pool'
+                ? t('Speicher-Pool', 'Storage pool')
               : data?.ziel?.startsWith('sftp')
                 ? t('SFTP-Erweiterung', 'SFTP add-on')
                 : t('dieser Server', 'this server')
@@ -246,6 +248,11 @@ async function composeKopieren() {
           <span class="punkt l"></span><b>{{ t('Lokal', 'Local') }}</b> {{ zahl(lokal.anzahl) }}
           {{ t('Dateien', 'files') }} · {{ groesse(lokal.bytes)
           }}<small v-if="data?.platte">{{ t('frei:', 'free:') }} {{ groesse(data.platte.frei) }}</small>
+        </div>
+        <div v-if="data?.pool?.summe?.bekannt">
+          <span class="punkt l"></span><b>{{ t('Speicher-Pool', 'Storage pool') }}</b>
+          {{ t('frei:', 'free:') }} {{ groesse(data.pool.summe.frei) }} {{ t('von', 'of') }} {{ groesse(data.pool.summe.gesamt) }}
+          <small v-if="data.pool.unbekannt">{{ t(`+ ${data.pool.unbekannt} ohne Angabe`, `+ ${data.pool.unbekannt} unknown`) }}</small>
         </div>
         <div>
           <span class="punkt s"></span><b>S3</b> {{ zahl(s3.anzahl) }} {{ t('Dateien', 'files') }} ·

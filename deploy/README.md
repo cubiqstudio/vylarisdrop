@@ -71,7 +71,7 @@ Pro wird mit einem Lizenzschlüssel freigeschaltet. Alles oben bleibt ohne Lizen
 - **Traffic & Grenzen:** ausgelieferte Datenmenge pro Tag und Datei (bei Teil-Abrufen nur das übertragene Stück), Übersicht für alle Konten, monatliche Grenze pro Konto oder Rolle mit Warnung bei 80 % und 100 %.
 - **Monitoring:** Systemseite mit Verläufen (Anfragen, Fehler, Antwortzeit, CPU, Arbeitsspeicher), Prometheus-Endpunkt `/metrics`, fertiges Grafana-Dashboard und Warnungen bei voller Platte, vielen Fehlern oder ausgefallenem Server.
 
-Die Lizenz wird online geprüft. Ist der Lizenzserver einmal nicht erreichbar, läuft Pro 7 Tage weiter. Für Server ohne Internet gibt es eine Offline-Lizenzdatei. Alle Server einer Installation zählen als **eine** Installation.
+Die Lizenz wird gegen den Lizenzaussteller geprüft (der eigenen Installation oder eines anderen Servers über `VD_LIZENZ_SERVER`). Ist ein externer Lizenzserver einmal nicht erreichbar, läuft Pro 7 Tage weiter. Alle Server einer Installation zählen als **eine** Installation.
 
 ## Voraussetzungen
 
@@ -342,7 +342,7 @@ Die mitgelieferte `docker-compose.yml` (und `compose.node.yml`) reicht diese Var
 | `VD_LIZENZ_KEY` | Öffentlicher Ed25519-Schlüssel des Lizenzservers (PEM, Zeilenumbrüche als `\n` oder echte Zeilen) |
 | `VD_SFTP_SCHLUESSEL` | Optional: zusätzliches Geheimnis für die Verschlüsselung der SFTP-Zugangsdaten, siehe [Speicher-Erweiterungen](#speicher-erweiterungen-sftp) |
 
-**Ohne `VD_LIZENZ_SERVER` und `VD_LIZENZ_KEY` gibt es keine Lizenzprüfung, und alle Pro-Funktionen bleiben gesperrt**, auch eine eingetragene Lizenz oder eine Offline-Lizenzdatei wirkt dann nicht. Beide werden beim Start gelesen (nach dem Ändern `docker compose up -d`). Den Lizenzserver und den Schlüssel bekommst du von VylarisGroupEurope.
+**Ohne `VD_LIZENZ_SERVER` und `VD_LIZENZ_KEY` prüft die Installation ihre Schlüssel selbst** (eigener Aussteller, Seite **Verwaltung → Lizenzen**, nur für den Inhaber). Beide Variablen brauchst du nur, wenn diese Installation Schlüssel von einer *anderen* VylarisCloud nutzen soll; die Werte dafür stehen auf deren Lizenzen-Seite. Sie werden beim Start gelesen (nach dem Ändern `docker compose up -d`).
 
 Beispiel für die `.env`:
 
@@ -353,6 +353,17 @@ VD_SFTP_SCHLUESSEL=ein-langer-zufaelliger-wert
 ```
 
 Danach `docker compose up -d`. Mit `docker compose config | grep VD_` siehst du, was ankommt.
+
+### Speicher-Pool (mehrere Speicher zusammenlegen)
+
+Auf der Seite **Speicher-Erweiterungen** wählst du statt „Nur ein Speicher“ den **Speicher-Pool**: Du hakst an, welche Speicher dazugehören (dieser Server und beliebig viele SFTP-Speicher) und wählst die Verteilung:
+
+- **Größter freier Platz** (Standard): Neue Dateien gehen an das Mitglied mit dem meisten freien Platz. Mitglieder ohne bekannte Platzangabe (manche SFTP-Server liefern keine) kommen nur dran, wenn kein Mitglied eine Angabe hat, dann reihum.
+- **Abwechselnd:** Neue Dateien wechseln reihum zwischen den Mitgliedern.
+
+Ausgefallene, deaktivierte oder schreibgeschützte Mitglieder werden übersprungen; fällt alles aus, bleibt es der lokale Speicher. Vorhandene Dateien bleiben, wo sie sind, und werden von dort geliefert. Die Seite zeigt den **Gesamtplatz** (gesamt, belegt, frei) je Mitglied und als Summe; Mitglieder ohne Platzangabe stehen als „unbekannt“ daneben und sind nicht in der Summe. Der freie Platz der SFTP-Mitglieder wird alle 2 Minuten aktualisiert, der lokale alle 30 Sekunden. Ein SFTP-Speicher, der Pool-Mitglied ist, wird beim Entfernen aus dem Pool genommen; Entfernen geht weiter nur, solange dort keine Dateien liegen.
+
+Nicht Teil des Pools: Monitoring und Alarm auf der System-Seite zeigen weiter den lokalen Plattenplatz, und die Sicherung nutzt im Pool-Modus ein einzelnes Mitglied. Der Pool wurde mit zwei Test-SFTP-Servern geprüft (12 Uploads gleichmäßig verteilt, Download von allen Orten, Ausfall eines Mitglieds); echte Platzangaben per `statvfs` habe ich gegen keinen realen SFTP-Server gesehen.
 
 ## Upload-Werkzeuge
 
@@ -408,7 +419,7 @@ Seite **Import** im Panel. Es gibt drei Wege:
 
 ## Pro einrichten
 
-1. **Lizenz:** Zuerst `VD_LIZENZ_SERVER` und `VD_LIZENZ_KEY` setzen ([Umgebungsvariablen](#umgebungsvariablen)); ohne sie bleibt Pro gesperrt. Dann Panel → **Pro & Lizenz** → Schlüssel eingeben. Ohne Internet: die Offline-Lizenzdatei im Kunden-Portal mit der angezeigten Geräte-ID erstellen und hineinziehen.
+1. **Lizenz:** Panel → **Verwaltung → Lizenzen** → Schlüssel erstellen (Laufzeit, Installationen, Funktionen) → unter **Pro & Lizenz** eintragen. Für eine zweite Installation dort `VD_LIZENZ_SERVER` und `VD_LIZENZ_KEY` setzen ([Umgebungsvariablen](#umgebungsvariablen)).
 2. **S3:** Panel → **Speicher & Server** → S3 wählen, Zugang eintragen, **Verbindung testen**, speichern. Neue Dateien landen dann in S3; vorhandene ziehen per **Umzug** um. Den Speicherort für neue Dateien (Server, S3 oder eine SFTP-Erweiterung) wählst du auch unter **Speicher-Erweiterungen**.
 
    Der S3-Zugang lässt sich auch fest in der `.env` vorgeben (`VD_S3_ENDPOINT`, `VD_S3_REGION`, `VD_S3_BUCKET`, `VD_S3_ACCESS_KEY`, `VD_S3_SECRET_KEY`, `VD_S3_PATH_STYLE`, `VD_S3_PREFIX`). Er ist dann im Panel nur lesbar.
@@ -464,7 +475,7 @@ Stoppt und entfernt die Container und die Webserver-Einträge von VylarisCloud (
 - **WebDAV meldet 401:** Benutzername und **App-Passwort** (`vd_dav_…`) verwenden, nicht das Konto-Passwort; unter Windows HTTPS nutzen ([Sync per WebDAV](#sync-per-webdav)). Nach vielen Fehlversuchen sperrt der Server die Anmeldung kurz (429).
 - **„Dein Speicher ist voll“ (507):** Kontingent erreicht; der Papierkorb zählt mit ([Speicherplatz und Kontingente](#speicherplatz-und-kontingente)).
 - **„Host-Schlüssel hat sich geändert“:** Server einer SFTP-Erweiterung zeigt einen anderen Schlüssel. Nach einer Neuinstallation des Servers normal; sonst nicht bestätigen, bevor du die Ursache kennst ([Speicher-Erweiterungen](#speicher-erweiterungen-sftp)).
-- **Pro bleibt gesperrt:** `VD_LIZENZ_SERVER`/`VD_LIZENZ_KEY` kommen nicht im Container an; Prüfung: `docker compose exec app printenv | grep VD_LIZENZ`.
+- **Pro bleibt gesperrt:** Schlüssel unter **Verwaltung → Lizenzen** erstellt, abgelaufen oder gesperrt? Bei Nutzung eines anderen Servers: kommen `VD_LIZENZ_SERVER`/`VD_LIZENZ_KEY` im Container an? Prüfung: `docker compose exec app printenv | grep VD_LIZENZ`.
 
 ---
 

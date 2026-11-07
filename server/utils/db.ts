@@ -244,6 +244,15 @@ CREATE TABLE IF NOT EXISTS speicher_ziele (
   benutzer text NOT NULL, auth text NOT NULL DEFAULT 'passwort', geheim text NOT NULL DEFAULT '', host_key text NOT NULL DEFAULT '',
   basis_pfad text NOT NULL DEFAULT '/', aktiv boolean NOT NULL DEFAULT true, schreibbar boolean NOT NULL DEFAULT true,
   status jsonb NOT NULL DEFAULT '{}', created_at timestamptz NOT NULL DEFAULT now());
+
+-- [cloud:lizenz] Eigener Lizenzaussteller: Schluessel mit Laufzeit, Geraetelimit und Funktionsauswahl
+CREATE TABLE IF NOT EXISTS lizenz_schluessel (
+  id serial PRIMARY KEY, schluessel text NOT NULL UNIQUE, notiz text NOT NULL DEFAULT '', plan text NOT NULL DEFAULT 'Pro',
+  features text[] NOT NULL DEFAULT '{}', laufzeit_tage int, aktiviert_at timestamptz, max_geraete int NOT NULL DEFAULT 1,
+  gesperrt boolean NOT NULL DEFAULT false, created_by int, created_at timestamptz NOT NULL DEFAULT now());
+CREATE TABLE IF NOT EXISTS lizenz_geraete (
+  key_id int NOT NULL REFERENCES lizenz_schluessel(id) ON DELETE CASCADE, hwid text NOT NULL, name text NOT NULL DEFAULT '',
+  aktiviert_at timestamptz NOT NULL DEFAULT now(), zuletzt_at timestamptz NOT NULL DEFAULT now(), PRIMARY KEY (key_id, hwid));
 `
 
 export const TABELLEN = [
@@ -256,6 +265,8 @@ export const TABELLEN = [
   'upload_tokens',
   'dav_zugaenge',
   'speicher_ziele',
+  'lizenz_schluessel',
+  'lizenz_geraete',
   'folders',
   'anfragen',
   'files',

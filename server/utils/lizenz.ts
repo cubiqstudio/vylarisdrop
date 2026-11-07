@@ -1,9 +1,10 @@
 import { createPublicKey, verify } from 'node:crypto'
 import { hostname } from 'node:os'
 import { getInstance, getNet, getSetting, setSetting, st } from './settings'
+import { antworten as lokalAntworten, oeffentlicherSchluessel } from './lizenzAussteller'
 
-// Lizenzserver und Prüfschlüssel (Ed25519, PEM) kommen aus der Umgebung. Ohne Eintrag gibt es keine Lizenzprüfung,
-// Pro-Funktionen bleiben dann gesperrt.
+// Lizenzserver und Prüfschlüssel (Ed25519, PEM) kommen aus der Umgebung. Ohne Eintrag prüft diese Installation gegen
+// ihren eigenen Lizenzaussteller (Seite „Lizenzen“): Schlüssel, die der Inhaber dort erzeugt, gelten lokal.
 export const LIZENZ_SERVER = (process.env.VD_LIZENZ_SERVER || '').trim().replace(/\/+$/, '')
 export const PRODUKT = 'vylariscloud'
 const OEFFENTLICH = (process.env.VD_LIZENZ_KEY || '').replace(/\\n/g, '\n').trim()
@@ -67,11 +68,11 @@ export async function requirePro(f: ProFunktion): Promise<void> {
     )
 }
 
-function echt(payload: unknown, signature: unknown): boolean {
-  if (!OEFFENTLICH) return false
+function echt(payload: unknown, signature: unknown, pem: string = OEFFENTLICH): boolean {
+  if (!pem) return false
   if (typeof payload !== 'string' || typeof signature !== 'string' || payload.length > 20_000) return false
   try {
-    return verify(null, Buffer.from(payload), createPublicKey(OEFFENTLICH), Buffer.from(signature, 'base64'))
+    return verify(null, Buffer.from(payload), createPublicKey(pem), Buffer.from(signature, 'base64'))
   } catch {
     return false
   }
@@ -96,37 +97,41 @@ interface Antwort {
 class Netzfehler extends Error {}
 
 async function anfrage(aktion: 'activate' | 'heartbeat' | 'deactivate' | 'validate', key: string): Promise<Antwort> {
-  if (!LIZENZ_SERVER)
-    throw new Netzfehler(
-      st('Es ist kein Lizenzserver eingerichtet (VD_LIZENZ_SERVER).', 'No licence server is configured (VD_LIZENZ_SERVER).')
-    )
   const inst = await getInstance()
   const net = await getNet().catch(() => null)
   const name = (net?.domain || hostname() || 'VylarisCloud').slice(0, 80)
-  let r: Response
-  try {
-    r = await fetch(`${LIZENZ_SERVER}/api/v1/${aktion}`, {
-      method: 'POST',
-      headers: { 'content-type': 'application/json', 'user-agent': 'VylarisCloud-Lizenz/1.0' },
-      body: JSON.stringify({ key, product: PRODUKT, hwid: inst.id, name }),
-      signal: AbortSignal.timeout(15_000)
-    })
-  } catch {
-    throw new Netzfehler(st('Der Lizenzserver ist nicht erreichbar.', 'The licence server is unreachable.'))
-  }
-  if (r.status === 429)
-    throw new Netzfehler(
-      st(
-        'Der Lizenzserver bittet um eine Pause — gleich noch einmal versuchen.',
-        'The licence server asks for a pause — try again shortly.'
+  let j: any
+  let pem = OEFFENTLICH
+  if (!LIZENZ_SERVER) {
+    // Kein externer Server: der eigene Lizenzaussteller dieser Installation antwortet (signiert, ohne Netzwerk)
+    j = await lokalAntworten(aktion, key, PRODUKT, inst.id, name)
+    pem = await oeffentlicherSchluessel()
+  } else {
+    let r: Response
+    try {
+      r = await fetch(`${LIZENZ_SERVER}/api/v1/${aktion}`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', 'user-agent': 'VylarisCloud-Lizenz/1.0' },
+        body: JSON.stringify({ key, product: PRODUKT, hwid: inst.id, name }),
+        signal: AbortSignal.timeout(15_000)
+      })
+    } catch {
+      throw new Netzfehler(st('Der Lizenzserver ist nicht erreichbar.', 'The licence server is unreachable.'))
+    }
+    if (r.status === 429)
+      throw new Netzfehler(
+        st(
+          'Der Lizenzserver bittet um eine Pause — gleich noch einmal versuchen.',
+          'The licence server asks for a pause — try again shortly.'
+        )
       )
-    )
-  if (!r.ok)
-    throw new Netzfehler(
-      st(`Der Lizenzserver antwortet mit Fehler ${r.status}.`, `The licence server answered with error ${r.status}.`)
-    )
-  const j: any = await r.json().catch(() => null)
-  if (!j || !echt(j.payload, j.signature))
+    if (!r.ok)
+      throw new Netzfehler(
+        st(`Der Lizenzserver antwortet mit Fehler ${r.status}.`, `The licence server answered with error ${r.status}.`)
+      )
+    j = await r.json().catch(() => null)
+  }
+  if (!j || !echt(j.payload, j.signature, pem))
     throw new Netzfehler(
       st(
         'Die Antwort des Lizenzservers ist nicht korrekt signiert.',
