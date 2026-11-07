@@ -5,8 +5,8 @@ import { hoeren } from './knoten'
 // Live-Aktualisierung: Server-Sent Events je angemeldetem Nutzer. Die Datenbank meldet Aenderungen per NOTIFY
 // (siehe Migration [cloud:live]); hier werden sie gebündelt und an die Verbindungen der betroffenen Nutzer
 // (Besitzer plus Mitglieder gemeinsamer Teams) weitergegeben. Der Browser holt danach die Daten neu.
-export type LiveThema = 'dateien' | 'ordner' | 'papierkorb' | 'anfragen'
-const THEMEN = new Set<string>(['dateien', 'ordner', 'papierkorb', 'anfragen'])
+export type LiveThema = 'dateien' | 'ordner' | 'papierkorb' | 'anfragen' | 'teams'
+const THEMEN = new Set<string>(['dateien', 'ordner', 'papierkorb', 'anfragen', 'teams'])
 
 interface Verbindung {
   id: number
@@ -76,6 +76,23 @@ async function eingang(nutzer: number, thema: string) {
   }
 }
 
+/** Thema 'teams': Mitgliedschaft/Kontingent eines Teams hat sich geändert. Ziel: alle aktuellen Mitglieder plus das betroffene Konto. */
+async function teamEingang(team: number, nutzer: number) {
+  if (!Number.isInteger(team) || team <= 0 || !Number.isInteger(nutzer) || nutzer < 0 || !verbindungen.size) return
+  genossenCache.clear() // gemeinsame Teams haben sich geändert
+  const ziele = new Set<number>()
+  if (nutzer && verbindungen.has(nutzer)) ziele.add(nutzer)
+  try {
+    const r = await q<{ user_id: number }>('SELECT user_id FROM team_mitglieder WHERE team_id = $1', [team])
+    for (const m of r) if (verbindungen.has(Number(m.user_id))) ziele.add(Number(m.user_id))
+  } catch {}
+  for (const z of ziele) offen.set(`${z}|teams`, { nutzer: z, thema: 'teams' })
+  if (offen.size && !timer) {
+    timer = setTimeout(leeren, 150)
+    timer.unref?.()
+  }
+}
+
 let angemeldet = false
 export function liveStarten() {
   if (angemeldet) return
@@ -84,7 +101,9 @@ export function liveStarten() {
   hoeren('vd_live', (n) => {
     // "*": die Hörverbindung zur Datenbank war weg, Meldungen aus der Zwischenzeit fehlen
     if (n === '*') return allenMelden()
-    const [thema, uid] = String(n).split('|')
+    const [thema, uid, uid2] = String(n).split('|')
+    // "teams|<Team-ID>|<Nutzer-ID>": Team-Meldung (nicht an Nutzer-ID gebunden)
+    if (thema === 'teams') return void teamEingang(Number(uid), Number(uid2 || 0))
     void eingang(Number(uid), thema || '')
   })
   setInterval(() => {

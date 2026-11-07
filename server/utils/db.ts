@@ -309,6 +309,27 @@ BEGIN
 END $$ LANGUAGE plpgsql;
 DROP TRIGGER IF EXISTS vd_live_konto ON users;
 CREATE TRIGGER vd_live_konto AFTER UPDATE ON users FOR EACH ROW EXECUTE FUNCTION vd_live_melden_konto();
+-- Teams: Mitgliedschaft, Rolle und Team-Kontingent/-Name melden sich als Thema 'teams' ("teams|<Team-ID>|<Nutzer-ID oder 0>");
+-- utils/live.ts liefert die Meldung an alle aktuellen Mitglieder des Teams und an das betroffene Konto (z. B. den Entfernten).
+CREATE OR REPLACE FUNCTION vd_live_melden_teams() RETURNS trigger AS $$
+DECLARE tid bigint; uid bigint := 0;
+BEGIN
+  IF TG_TABLE_NAME = 'teams' THEN
+    IF TG_OP = 'UPDATE' AND NEW.name IS NOT DISTINCT FROM OLD.name AND NEW.farbe IS NOT DISTINCT FROM OLD.farbe
+       AND NEW.beschreibung IS NOT DISTINCT FROM OLD.beschreibung AND NEW.quota_bytes IS NOT DISTINCT FROM OLD.quota_bytes THEN
+      RETURN NULL;
+    END IF;
+    IF TG_OP = 'DELETE' THEN tid := OLD.id; ELSE tid := NEW.id; END IF;
+  ELSIF TG_OP = 'DELETE' THEN tid := OLD.team_id; uid := OLD.user_id;
+  ELSE tid := NEW.team_id; uid := NEW.user_id;
+  END IF;
+  PERFORM pg_notify('vd_live', 'db|teams|' || tid::text || '|' || uid::text);
+  RETURN NULL;
+END $$ LANGUAGE plpgsql;
+DROP TRIGGER IF EXISTS vd_live_team_mitglieder ON team_mitglieder;
+CREATE TRIGGER vd_live_team_mitglieder AFTER INSERT OR UPDATE OR DELETE ON team_mitglieder FOR EACH ROW EXECUTE FUNCTION vd_live_melden_teams();
+DROP TRIGGER IF EXISTS vd_live_teams ON teams;
+CREATE TRIGGER vd_live_teams AFTER UPDATE OR DELETE ON teams FOR EACH ROW EXECUTE FUNCTION vd_live_melden_teams();
 
 -- [cloud:app] Android-App: ein "App-Geraet" ist ein Token in upload_tokens mit art = 'app' (Format vd_app_<48 Hex>, nur als Hash gespeichert).
 -- Die Sitzung, die /api/app/sitzung daraus anlegt, merkt sich das Geraet (sessions.app_geraet): Widerruf beendet sie sofort.

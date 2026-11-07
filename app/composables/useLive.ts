@@ -3,7 +3,7 @@
 // Browser erlauben bei HTTP/1.1 nur 6 Verbindungen je Host, geteilt über alle Tabs: Pro Browser hält deshalb nur EIN Tab
 // (der Führende, per Web Lock gewählt) die Verbindung und gibt die Meldungen per BroadcastChannel an die anderen weiter.
 // Ohne diese Browser-Funktionen hält jeder Tab seine eigene Verbindung, schließt sie aber, solange er verborgen ist.
-export type LiveThema = 'dateien' | 'ordner' | 'papierkorb' | 'anfragen'
+export type LiveThema = 'dateien' | 'ordner' | 'papierkorb' | 'anfragen' | 'teams'
 
 interface Abo {
   themen: Set<string>
