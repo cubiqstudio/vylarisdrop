@@ -66,6 +66,13 @@ const ordner = computed<any[]>(() => {
   kinder(null, 0)
   return aus
 })
+// Live-Aktualisierung: die Ordnerauswahl bleibt aktuell; ein inzwischen gelöschter Ordner wird abgewählt, der Text bleibt unberührt
+async function liveOrdner() {
+  const r = await api('/api/folders')
+  if (JSON.stringify(r) !== JSON.stringify(ord.value)) ord.value = r
+  if (f.ordner != null && !(r.ordner || []).some((o: any) => o.id === f.ordner)) f.ordner = null
+}
+useLive(['ordner'], liveDrosseln(liveOrdner))
 const laeuft = ref(false)
 const fertig = ref<any>(null)
 async function speichern() {

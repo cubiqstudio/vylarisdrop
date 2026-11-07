@@ -6,6 +6,13 @@ const { data: konto } = await (useFetch as any)('/api/account', { key: 'konto' }
 const { data: beispiel } = await (useFetch as any)('/api/files', { key: 'embed-bsp', query: { art: 'bild', pro: 1 } })
 const datei = computed<any>(() => beispiel.value?.files?.[0] || null)
 
+// Live-Aktualisierung: das Beispielbild der Vorschau (neuestes Bild) folgt Uploads und Löschungen; Eingaben bleiben unberührt
+async function beispielAbgleichen() {
+  const r = await api('/api/files', { query: { art: 'bild', pro: 1 } })
+  if (JSON.stringify(r) !== JSON.stringify(beispiel.value)) beispiel.value = r
+}
+useLive(['dateien'], liveDrosseln(beispielAbgleichen, 3000))
+
 const e = reactive({ titel: '{name}', anbieter: '', text: '{size} · {date}', farbe: theme.value.color, bild: true })
 watch(
   konto,

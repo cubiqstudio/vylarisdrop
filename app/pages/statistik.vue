@@ -9,6 +9,28 @@ const { data: traffic } = await (useFetch as any)(() => `/api/statistik/traffic?
   key: 'statistik-traffic',
   watch: [tage]
 })
+// Live-Aktualisierung: Zahlen und Diagramme still abgleichen (kein Ladezustand, kein Flackern). Aufrufe selbst melden sich nicht per
+// Ereignis (zu viele); darum zusätzlich alle 30 s bei sichtbarem Tab. Dateien, die gelöscht, umbenannt oder neu sind, kommen sofort.
+const gleich = (a: unknown, b: unknown) => JSON.stringify(a) === JSON.stringify(b)
+async function liveAbgleich() {
+  const z = tage.value
+  const [d, tr] = await Promise.all([
+    api(`/api/statistik?tage=${z}`),
+    api(`/api/statistik/traffic?tage=${z}`).catch(() => null)
+  ])
+  if (z !== tage.value) return // Zeitraum inzwischen gewechselt: die Seite lädt selbst
+  if (!gleich(d, data.value)) data.value = d
+  if (tr && !gleich(tr, traffic.value)) traffic.value = tr
+}
+const liveStatistik = liveDrosseln(liveAbgleich, 10_000)
+useLive(['dateien'], liveStatistik)
+let takt: ReturnType<typeof setInterval> | null = null
+onMounted(() => {
+  takt = setInterval(() => {
+    if (document.visibilityState === 'visible') void liveStatistik()
+  }, 30_000)
+})
+onBeforeUnmount(() => takt && clearInterval(takt))
 const theme = useTheme()
 const istAdmin = computed(() => ['owner', 'admin'].includes(theme.value.user?.role || ''))
 function oeffnen(slug: string) {

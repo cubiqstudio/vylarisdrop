@@ -59,6 +59,23 @@ function galerieOeffnen(o: any) {
     sortierung: o.galerie?.sortierung || 'neu'
   }
 }
+// Live-Aktualisierung: Ordner und ihre Dateizahlen (daher auch „dateien“) still neu holen. Der Bearbeiten- und der Galerie-Dialog
+// arbeiten auf Kopien und bleiben unberührt, solange ihr Ordner existiert.
+async function liveAbgleich() {
+  const r = await api('/api/folders')
+  if (JSON.stringify(r) !== JSON.stringify(data.value)) data.value = r
+  const da = new Set<number>((r.ordner || []).map((o: any) => o.id))
+  if (bearbeiten.value && !da.has(bearbeiten.value.id)) {
+    bearbeiten.value = null
+    ok(t('Der Ordner wurde woanders gelöscht.', 'The folder was deleted elsewhere.'))
+  }
+  if (gal.value && !da.has(gal.value.id)) {
+    gal.value = null
+    ok(t('Der Ordner wurde woanders gelöscht.', 'The folder was deleted elsewhere.'))
+  }
+  if (neu.parent != null && !da.has(neu.parent)) neu.parent = null
+}
+useLive(['ordner', 'dateien'], liveDrosseln(liveAbgleich))
 const galLink = computed(() =>
   gal.value?.token && import.meta.client ? `${location.origin}/g/${gal.value.token}` : ''
 )

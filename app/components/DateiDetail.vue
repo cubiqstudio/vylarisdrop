@@ -14,6 +14,24 @@ const form = reactive({
   passwortWeg: false,
   tags: (props.f.tags || []).map((x: any) => x.id) as number[]
 })
+// Live-Aktualisierung: ändert sich die Datei woanders (umbenannt, verschoben, Tags …), übernimmt das Formular den neuen Wert
+// nur dort, wo gerade nichts eingetippt ist. Was jemand schon geändert hat, bleibt unangetastet.
+watch(
+  () => props.f,
+  (neu, alt) => {
+    if (!neu || !alt || neu.id !== alt.id) return
+    const nachziehen = (feld: 'name' | 'slug' | 'ordner' | 'maxAufrufe', vorher: unknown, jetzt: unknown) => {
+      if (vorher !== jetzt && form[feld] === vorher) (form as any)[feld] = jetzt
+    }
+    nachziehen('name', alt.name, neu.name)
+    nachziehen('slug', alt.slug, neu.slug)
+    nachziehen('ordner', alt.folder_id, neu.folder_id)
+    nachziehen('maxAufrufe', alt.max_views ? String(alt.max_views) : '', neu.max_views ? String(neu.max_views) : '')
+    const ids = (f: any): number[] => (f.tags || []).map((x: any) => x.id)
+    const [a, b] = [ids(alt), ids(neu)]
+    if (a.join() !== b.join() && [...form.tags].sort().join() === [...a].sort().join()) form.tags = b
+  }
+)
 const ABLAUF = computed(() => [
   {
     v: '',
