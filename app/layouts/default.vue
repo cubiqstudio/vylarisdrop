@@ -77,7 +77,8 @@ const NAV = computed<Array<{ gruppe: string; punkte: NavPunkt[] }>>(() => [
       ...(istAdmin.value
         ? [
             { zu: '/nutzer', ic: 'users', text: t('Nutzer', 'Users') },
-            { zu: '/speicher/ziele', ic: 'database', text: t('Speicher-Erweiterungen', 'Storage add-ons') }
+            { zu: '/speicher/ziele', ic: 'database', text: t('Speicher-Erweiterungen', 'Storage add-ons') },
+            { zu: '/lizenzen', ic: 'key', text: t('Lizenzen', 'Licences') }
           ]
         : [])
     ]
