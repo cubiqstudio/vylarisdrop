@@ -20,6 +20,9 @@
     <string name="fehler_zu_viele">Zu viele Versuche. Bitte warte einen Moment.</string>
     <string name="fehler_server">Der Server meldet: %1$s</string>
     <string name="token_speichern_fehler">Das Gerät konnte das Token nicht sicher speichern. Du musst dich im Web anmelden.</string>
+    <string name="deeplink_titel">Gerät koppeln?</string>
+    <string name="deeplink_koppeln">Dieses Gerät mit %1$s koppeln? Bestätige nur, wenn du diesen Link selbst in deiner VylarisCloud erzeugt hast.</string>
+    <string name="fehler_umleitung">Der Server leitet auf eine andere Adresse um: %1$s. Gib diese Adresse selbst ein, wenn du ihr vertraust.</string>
     <string name="deeplink_wechseln">Du bist mit %1$s verbunden. Mit %2$s verbinden und die bisherige Verbindung ersetzen?</string>
 
     <!-- Hauptfenster -->

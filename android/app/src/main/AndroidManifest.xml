@@ -43,6 +43,7 @@
         <!-- Einrichtung; auch Ziel des Links vylariscloud://koppeln?s=<Server>&c=<Code> -->
         <activity
             android:name=".EinrichtungActivity"
+            android:configChanges="orientation|screenSize|smallestScreenSize|screenLayout|keyboard|keyboardHidden|uiMode|density|fontScale"
             android:exported="true"
             android:launchMode="singleTask"
             android:windowSoftInputMode="adjustResize">
@@ -56,6 +57,7 @@
 
         <activity
             android:name=".EinstellungenActivity"
+            android:configChanges="orientation|screenSize|smallestScreenSize|screenLayout|keyboard|keyboardHidden|uiMode|density|fontScale"
             android:exported="false" />
 
         <!-- "Teilen mit VylarisCloud": durchsichtig, startet nur den Upload-Dienst -->

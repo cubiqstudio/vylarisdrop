@@ -22,13 +22,21 @@ class VylarisClient(
     val basis: String,
     private val http: HttpTransport = HttpTransport(),
     /** Ab dieser Größe wird in Stücken hochgeladen (Server: 8-MB-Stücke über /api/upload/start) */
-    private val grossAb: Long = 50L * 1024 * 1024
+    private val grossAb: Long = 50L * 1024 * 1024,
+    /**
+     * Wird aufgerufen, wenn für einen Stück-Upload eine neue Sitzung geöffnet wurde (Set-Cookie-Zeilen). Der Server
+     * beendet dabei die übrigen Sitzungen des App-Geräts, also auch die der WebView: die App übernimmt das neue Cookie.
+     */
+    private val sitzungsAblage: ((List<String>) -> Unit)? = null
 ) {
     init {
         require(ServerAdresse.erlaubt(basis)) { "Adresse nicht erlaubt: $basis" }
     }
 
     private val ursprung = basis.trimEnd('/')
+
+    /** Sitzungs-Cookie für die Stück-Routen; gilt für alle großen Dateien dieses Clients (jede neue Sitzung beendet die vorige) */
+    @Volatile private var stueckCookie: String? = null
 
     // ---------------------------------------------------------------- Server prüfen
 
@@ -154,7 +162,12 @@ class VylarisClient(
         val laenge = if (quelle.groesse >= 0) kopfTeil.size + quelle.groesse + fussTeil.size else -1L
         val rumpf = Rumpf(laenge) { aus ->
             aus.write(kopfTeil)
-            quelle.oeffnen().use { kopieren(it, aus, abbruch) }
+            val eingabe = try {
+                quelle.oeffnen()
+            } catch (e: Exception) {
+                throw QuellFehler(e)
+            }
+            eingabe.use { kopieren(it, aus, abbruch) }
             aus.write(fussTeil)
         }
         val kopf = mapOf(
@@ -162,8 +175,12 @@ class VylarisClient(
             "Content-Type" to "multipart/form-data; boundary=$grenze"
         )
         val gesamt = quelle.groesse
-        val a = http.senden("POST", "$ursprung/api/upload", kopf, rumpf, lesenMs = 300_000) { gesendet ->
-            fortschritt(minOf(gesendet, if (gesamt >= 0) gesamt else gesendet), gesamt)
+        val a = try {
+            http.senden("POST", "$ursprung/api/upload", kopf, rumpf, lesenMs = 300_000) { gesendet ->
+                fortschritt(minOf(gesendet, if (gesamt >= 0) gesamt else gesendet), gesamt)
+            }
+        } catch (e: QuellFehler) {
+            throw e.ursache
         }
         pruefen(a)
         val j = json(a)
@@ -188,15 +205,20 @@ class VylarisClient(
         fortschritt: (Long, Long) -> Unit,
         abbruch: () -> Boolean
     ): UploadErgebnis {
-        // Die Stück-Routen verlangen eine Sitzung (Cookie): per App-Token eine Sitzung öffnen
-        val cookie = sitzung(token).cookies.joinToString("; ") { it.substringBefore(';').trim() }
-        if (cookie.isBlank()) throw ProtokollFehler(FehlerArt.NICHT_ANGEMELDET, 401, "Keine Sitzung erhalten")
-        val basisKopf = mapOf("Cookie" to cookie, "Origin" to ursprung)
+        // Die Stück-Routen verlangen eine Sitzung (Cookie): per App-Token eine Sitzung öffnen (und für weitere Dateien behalten)
         val gesamt = quelle.groesse
-        val start = http.senden(
-            "POST", "$ursprung/api/upload/start", basisKopf + jsonKopf(),
+        fun startAnfrage(cookie: String) = http.senden(
+            "POST", "$ursprung/api/upload/start", mapOf("Cookie" to cookie, "Origin" to ursprung) + jsonKopf(),
             jsonRumpf { put("name", quelle.name.take(200)); put("size", gesamt); put("mime", quelle.mime.take(120)); put("optionen", buildJsonObject { }) }
         )
+        var cookie = stueckSitzung(token, erneuern = false)
+        var start = startAnfrage(cookie)
+        if (start.status == 401) {
+            // gemerkte Sitzung abgelaufen oder von anderer Stelle beendet: einmal neu öffnen
+            cookie = stueckSitzung(token, erneuern = true)
+            start = startAnfrage(cookie)
+        }
+        val basisKopf = mapOf("Cookie" to cookie, "Origin" to ursprung)
         pruefen(start)
         val sj = json(start)
         val id = sj.text("id")
@@ -260,11 +282,25 @@ class VylarisClient(
 
     // ---------------------------------------------------------------- Hilfen
 
+    private fun stueckSitzung(token: String, erneuern: Boolean): String {
+        if (!erneuern) stueckCookie?.let { return it }
+        val s = sitzung(token)
+        val cookie = s.cookies.joinToString("; ") { it.substringBefore(';').trim() }
+        if (cookie.isBlank()) throw ProtokollFehler(FehlerArt.NICHT_ANGEMELDET, 401, "Keine Sitzung erhalten")
+        stueckCookie = cookie
+        sitzungsAblage?.invoke(s.cookies)
+        return cookie
+    }
+
     private fun kopieren(ein: InputStream, aus: OutputStream, abbruch: () -> Boolean) {
         val b = ByteArray(64 * 1024)
         while (true) {
             if (abbruch()) throw ProtokollFehler(FehlerArt.ABGEBROCHEN)
-            val n = ein.read(b)
+            val n = try {
+                ein.read(b)
+            } catch (e: Exception) {
+                throw QuellFehler(e)
+            }
             if (n < 0) break
             aus.write(b, 0, n)
         }

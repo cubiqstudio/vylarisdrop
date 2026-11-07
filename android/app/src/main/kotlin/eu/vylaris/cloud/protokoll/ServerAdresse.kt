@@ -89,6 +89,24 @@ object ServerAdresse {
         }
     }
 
+    /**
+     * Darf der Server-Eintrag von `von` auf `nach` umgeleitet werden? Nur auf denselben Host und nur auf https
+     * (typisch: http -> https). Jede Weiterleitung auf einen anderen Host könnte Kopplungscode und Token an Dritte
+     * schicken und gilt als nicht erlaubt; der Nutzer gibt die neue Adresse dann selbst ein.
+     */
+    fun umleitungErlaubt(von: String, nach: String): Boolean {
+        if (!erlaubt(nach)) return false
+        return try {
+            val a = URI(von)
+            val b = URI(nach)
+            val hostA = a.host?.lowercase() ?: return false
+            val hostB = b.host?.lowercase() ?: return false
+            hostA == hostB && b.scheme?.lowercase() == "https"
+        } catch (e: Exception) {
+            false
+        }
+    }
+
     /** Lokale Adresse: localhost, Loopback, private/Link-Local-IPs, Namen auf .local, .lan, .home.arpa, .internal, Namen ohne Punkt. */
     fun istLokal(hostRoh: String): Boolean {
         val host = hostRoh.lowercase().trim('[', ']').trimEnd('.')

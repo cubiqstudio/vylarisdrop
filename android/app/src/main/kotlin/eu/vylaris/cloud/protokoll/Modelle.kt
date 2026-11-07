@@ -52,6 +52,12 @@ enum class FehlerArt {
     SERVER
 }
 
+/**
+ * Lesefehler der Upload-Quelle (Datei gelöscht, Freigabe widerrufen, Lesefehler). Wird vom Transport unverändert
+ * durchgereicht, damit er nicht als Netzfehler erscheint; der Client wirft daraus wieder die ursprüngliche Ausnahme.
+ */
+class QuellFehler(val ursache: Exception) : RuntimeException(ursache.message, ursache)
+
 class ProtokollFehler(
     val art: FehlerArt,
     val status: Int = 0,

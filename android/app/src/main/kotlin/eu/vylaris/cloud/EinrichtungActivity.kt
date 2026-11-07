@@ -9,6 +9,7 @@ import android.widget.Button
 import android.widget.EditText
 import android.widget.ProgressBar
 import android.widget.TextView
+import android.widget.Toast
 import androidx.appcompat.app.AlertDialog
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.view.isVisible
@@ -20,7 +21,9 @@ import eu.vylaris.cloud.protokoll.ProtokollFehler
 import eu.vylaris.cloud.protokoll.ServerAdresse
 import eu.vylaris.cloud.protokoll.ServerInfo
 import eu.vylaris.cloud.protokoll.VylarisClient
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
@@ -58,27 +61,45 @@ class EinrichtungActivity : AppCompatActivity() {
         tiefenLink(intent)
     }
 
-    /** vylariscloud://koppeln?s=<Server-URL, kodiert>&c=<Code>: Felder füllen und direkt koppeln */
+    /**
+     * vylariscloud://koppeln?s=<Server-URL, kodiert>&c=<Code>: Felder füllen und nach ausdrücklicher Bestätigung
+     * koppeln. Den Link kann jede Webseite öffnen: ohne Rückfrage (mit Adresse) würde die App sich mit einem fremden
+     * Server oder dem Konto eines Fremden koppeln.
+     */
     private fun tiefenLink(i: Intent?) {
         val d: Uri = i?.data ?: return
         if (d.scheme != "vylariscloud" || d.host != "koppeln") return
         val s = d.getQueryParameter("s").orEmpty()
         val c = d.getQueryParameter("c").orEmpty()
-        if (s.isNotBlank()) adresse.setText(s)
-        if (c.isNotBlank()) code.setText(c)
-        if (s.isBlank()) return
-        val ziel = ServerAdresse.normalisieren(s).url
-        val vorhanden = einst.server
-        if (ziel != null && vorhanden != null && vorhanden.url != ziel) {
-            AlertDialog.Builder(this)
-                .setTitle(R.string.server_wechseln)
-                .setMessage(getString(R.string.deeplink_wechseln, vorhanden.url, ziel))
-                .setPositiveButton(R.string.verbinden) { _, _ -> start() }
-                .setNegativeButton(android.R.string.cancel, null)
-                .show()
-        } else {
-            start()
+        if (laeuft) return
+        if (s.isBlank()) {
+            // ohne Server-Angabe nur den Code übernehmen, nie von selbst koppeln
+            if (c.isNotBlank()) code.setText(c)
+            return
         }
+        val bisher = adresse.text.toString()
+        adresse.setText(s)
+        if (c.isNotBlank()) code.setText(c)
+        val ziel = ServerAdresse.normalisieren(s).url
+        if (ziel == null) {
+            start() // zeigt den Adressfehler
+            return
+        }
+        val vorhanden = einst.server
+        val verwerfen = {
+            code.setText("")
+            adresse.setText(bisher)
+        }
+        AlertDialog.Builder(this)
+            .setTitle(R.string.deeplink_titel)
+            .setMessage(
+                if (vorhanden != null && vorhanden.url != ziel) getString(R.string.deeplink_wechseln, vorhanden.url, ziel)
+                else getString(R.string.deeplink_koppeln, ziel)
+            )
+            .setPositiveButton(R.string.verbinden) { _, _ -> start() }
+            .setNegativeButton(android.R.string.cancel) { _, _ -> verwerfen() }
+            .setOnCancelListener { verwerfen() }
+            .show()
     }
 
     private fun fehler(text: String) {
@@ -123,20 +144,26 @@ class EinrichtungActivity : AppCompatActivity() {
         lifecycleScope.launch {
             try {
                 val info = withContext(Dispatchers.IO) { erreichen(kandidaten) }
-                var token: String? = null
-                var nutzer: String? = null
+                val eintrag = ServerEintrag(info.basis, info.name, info.farbe, info.markeIcon.ifBlank { info.markeLogo })
                 if (codeText.isNotEmpty()) {
-                    val k = withContext(Dispatchers.IO) { VylarisClient(info.basis).koppeln(codeText, Fenster.geraeteName()) }
-                    token = k.token
-                    nutzer = k.nutzer.name
-                }
-                einst.server = ServerEintrag(info.basis, info.name, info.farbe, info.markeIcon.ifBlank { info.markeLogo })
-                if (token != null) {
-                    if (!einst.tokenSpeichern(token)) { fehler(getString(R.string.token_speichern_fehler)) }
-                    einst.nutzerName = nutzer
+                    // Der Code ist nach dem Einlösen verbraucht: Token und Server müssen dann gespeichert werden, auch wenn
+                    // das Fenster inzwischen geschlossen wurde (sonst bliebe nur ein verwaistes Gerät auf dem Server)
+                    val gespeichert = withContext(Dispatchers.IO + NonCancellable) {
+                        val k = VylarisClient(info.basis).koppeln(codeText, Fenster.geraeteName())
+                        einst.server = eintrag
+                        val ok = einst.tokenSpeichern(k.token)
+                        if (ok) einst.nutzerName = k.nutzer.name
+                        ok
+                    }
+                    // Server ist gespeichert: ohne Token geht es mit der Web-Anmeldung weiter, der Hinweis bleibt als Toast stehen
+                    if (!gespeichert) Toast.makeText(applicationContext, R.string.token_speichern_fehler, Toast.LENGTH_LONG).show()
+                } else {
+                    einst.server = eintrag
                 }
                 startActivity(Intent(this@EinrichtungActivity, HauptActivity::class.java).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TASK))
                 finish()
+            } catch (e: CancellationException) {
+                throw e
             } catch (e: ProtokollFehler) {
                 beschaeftigt(false)
                 fehler(text(e))
@@ -147,7 +174,10 @@ class EinrichtungActivity : AppCompatActivity() {
         }
     }
 
-    /** Probiert die Adressen nacheinander; folgt einer Weiterleitung auf eine erlaubte Adresse (z. B. http -> https). */
+    /**
+     * Probiert die Adressen nacheinander; folgt einer Weiterleitung nur auf denselben Host per https (http -> https).
+     * Eine Weiterleitung auf einen anderen Host wird nie verfolgt: dorthin gingen sonst Kopplungscode und Token.
+     */
     private fun erreichen(kandidaten: List<String>): ServerInfo {
         var letzter: ProtokollFehler? = null
         val offen = ArrayDeque(kandidaten)
@@ -159,7 +189,7 @@ class EinrichtungActivity : AppCompatActivity() {
                 return VylarisClient(url).verbinden()
             } catch (e: ProtokollFehler) {
                 letzter = e
-                if (e.art == FehlerArt.UMLEITUNG && e.ziel != null && ServerAdresse.erlaubt(e.ziel)) offen.addFirst(e.ziel)
+                if (e.art == FehlerArt.UMLEITUNG && e.ziel != null && ServerAdresse.umleitungErlaubt(url, e.ziel)) offen.addFirst(e.ziel)
             }
         }
         throw letzter ?: ProtokollFehler(FehlerArt.NETZ)
@@ -167,7 +197,8 @@ class EinrichtungActivity : AppCompatActivity() {
 
     private fun text(e: ProtokollFehler): String = when (e.art) {
         FehlerArt.NETZ -> getString(R.string.fehler_netz_detail, e.message.orEmpty())
-        FehlerArt.KEIN_SERVER, FehlerArt.UMLEITUNG -> getString(R.string.fehler_kein_server)
+        FehlerArt.UMLEITUNG -> getString(R.string.fehler_umleitung, e.ziel.orEmpty())
+        FehlerArt.KEIN_SERVER -> getString(R.string.fehler_kein_server)
         FehlerArt.UNGUELTIGER_CODE -> getString(R.string.fehler_code)
         FehlerArt.ZU_VIELE_VERSUCHE -> getString(R.string.fehler_zu_viele)
         FehlerArt.UNZULAESSIG -> getString(R.string.adresse_http_warnung)

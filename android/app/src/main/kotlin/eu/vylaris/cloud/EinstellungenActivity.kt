@@ -13,6 +13,7 @@ import androidx.core.net.toUri
 import androidx.lifecycle.lifecycleScope
 import eu.vylaris.cloud.protokoll.VylarisClient
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
@@ -73,7 +74,8 @@ class EinstellungenActivity : AppCompatActivity() {
         val server = einst.server
         val token = einst.token()
         val cookies = server?.let { CookieManager.getInstance().getCookie(it.url) }
-        lifecycleScope.launch {
+        // nicht abbrechbar: das Abmelden muss zu Ende laufen, auch wenn das Fenster dabei geschlossen wird
+        lifecycleScope.launch(NonCancellable) {
             if (server != null && token != null && !cookies.isNullOrBlank()) {
                 withContext(Dispatchers.IO) {
                     try {
