@@ -4,7 +4,8 @@ import { boxLaden, boxPasswortNeu } from '../../../../utils/boxen'
 
 export default defineEventHandler(async (event) => {
   const u = await requireUser(event)
-  const b = await boxLaden(Number(getRouterParam(event, 'id')), u)
+  const b = await boxLaden(getRouterParam(event, 'id'), u)
+  speicherRate(u.id, 'aendern')
   const passwort = await boxPasswortNeu(b)
   await ereignis('box_passwort', u.id, { name: b.name, kennung: b.kennung }, clientIp(event))
   return { ok: true, passwort }

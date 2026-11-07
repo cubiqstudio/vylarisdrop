@@ -16,7 +16,10 @@
 //   bis der Papierkorb geleert wird (manuell oder nach 30 Tagen). Beim Löschen in den Papierkorb ändert sich die Summe
 //   daher nicht, beim endgültigen Löschen sinkt sie. Jede Zeile zählt einzeln (Kopien zählen je Kopie), nichts doppelt:
 //   eine Datei steht entweder in `files` oder in `papierkorb`. Wiederherstellen verschiebt nur zwischen beiden → Summe gleich.
-//   Nicht enthalten: Speicher-Boxen und -Buckets (eigene Kontingente), Vorschau-/Nebendateien, angefangene Chunk-Uploads
+//   PLUS "eingeplant": die Summe der Kontingente aller Storage-Boxen und S3-Buckets des Kontos (speicher_boxen/speicher_buckets).
+//   Das Kontingent einer Box/eines Buckets ist fest für sie reserviert, egal wie viel schon darin liegt. So kann ein Konto mit
+//   Dateien + Papierkorb + Boxen + Buckets nie mehr belegen, als der Admin ihm gegeben hat (siehe speicherBudget.ts).
+//   Nicht enthalten: Vorschau-/Nebendateien, angefangene Chunk-Uploads
 //   (die werden beim Start nur als Reservierung für die Frühprüfung mitgerechnet).
 //
 // Team-Kontingent (teams.quota_bytes): begrenzt die Gesamtgröße aller Dateien in Ordnern des Teams (Wurzel-Team-Ordner und
@@ -63,6 +66,10 @@ export interface QuotaStand {
   stufe: QuotaStufe
   /** Davon im Papierkorb */
   papierkorb: number
+  /** Davon für Storage-Boxen und S3-Buckets eingeplant (Summe deren Kontingente) */
+  eingeplant: number
+  /** true, wenn das Konto mehr belegt + eingeplant hat als sein Limit (Admin hat das Kontingent gesenkt) */
+  ueberplant: boolean
 }
 
 export const UNBEGRENZT = -1
@@ -170,17 +177,23 @@ export type Ausf = (sql: string, params?: unknown[]) => Promise<any[]>
 const normal: Ausf = (sql, params = []) => q(sql, params)
 
 /** Belegung eines Kontos: Dateien + Papierkorb (siehe Kopfkommentar) */
-export async function belegtVon(userId: number, x: Ausf = normal): Promise<{ dateien: number; papierkorb: number; gesamt: number }> {
+export async function belegtVon(
+  userId: number,
+  x: Ausf = normal
+): Promise<{ dateien: number; papierkorb: number; eingeplant: number; gesamt: number }> {
   const r = (
     await x(
       `SELECT (SELECT coalesce(sum(size), 0) FROM files WHERE user_id = $1) AS d,
-              (SELECT coalesce(sum((datei->>'size')::bigint), 0) FROM papierkorb WHERE user_id = $1) AS p`,
+              (SELECT coalesce(sum((datei->>'size')::bigint), 0) FROM papierkorb WHERE user_id = $1) AS p,
+              (SELECT coalesce(sum(kontingent), 0) FROM speicher_boxen WHERE user_id = $1)
+              + (SELECT coalesce(sum(kontingent), 0) FROM speicher_buckets WHERE user_id = $1) AS e`,
       [userId]
     )
   )[0]
   const dateien = Number(r?.d || 0),
-    papierkorb = Number(r?.p || 0)
-  return { dateien, papierkorb, gesamt: dateien + papierkorb }
+    papierkorb = Number(r?.p || 0),
+    eingeplant = Number(r?.e || 0)
+  return { dateien, papierkorb, eingeplant, gesamt: dateien + papierkorb + eingeplant }
 }
 
 export function stufeVon(used: number, limit: number | null): QuotaStufe {
@@ -190,7 +203,7 @@ export function stufeVon(used: number, limit: number | null): QuotaStufe {
 }
 function standAus(
   k: { limit: number | null; source: QuotaQuelle; unbegrenzt: boolean },
-  b: { gesamt: number; papierkorb: number }
+  b: { gesamt: number; papierkorb: number; eingeplant?: number }
 ): QuotaStand {
   const used = b.gesamt
   return {
@@ -201,7 +214,9 @@ function standAus(
     unbegrenzt: k.unbegrenzt,
     prozent: k.limit == null ? null : Math.round((used / k.limit) * 1000) / 10,
     stufe: stufeVon(used, k.limit),
-    papierkorb: b.papierkorb
+    papierkorb: b.papierkorb,
+    eingeplant: b.eingeplant || 0,
+    ueberplant: k.limit != null && (b.eingeplant || 0) > 0 && used > k.limit
   }
 }
 export async function quotaStand(u: QuotaNutzer, x: Ausf = normal): Promise<QuotaStand> {
@@ -209,16 +224,29 @@ export async function quotaStand(u: QuotaNutzer, x: Ausf = normal): Promise<Quot
 }
 
 /** Belegung aller Konten (Dateien + Papierkorb) für Übersichten */
-export async function belegungAllerKonten(): Promise<Map<number, { dateien: number; papierkorb: number; anzahl: number; gesamt: number }>> {
-  const r = await q<{ id: number; d: string; p: string; n: string }>(
+export async function belegungAllerKonten(): Promise<
+  Map<number, { dateien: number; papierkorb: number; eingeplant: number; anzahl: number; gesamt: number }>
+> {
+  const r = await q<{ id: number; d: string; p: string; n: string; e: string }>(
     `SELECT u.id,
       coalesce((SELECT sum(size) FROM files f WHERE f.user_id = u.id), 0)::bigint AS d,
       coalesce((SELECT sum((datei->>'size')::bigint) FROM papierkorb p WHERE p.user_id = u.id), 0)::bigint AS p,
+      (coalesce((SELECT sum(kontingent) FROM speicher_boxen b WHERE b.user_id = u.id), 0)
+        + coalesce((SELECT sum(kontingent) FROM speicher_buckets b WHERE b.user_id = u.id), 0))::bigint AS e,
       (SELECT count(*) FROM files f WHERE f.user_id = u.id)::int AS n
     FROM users u`
   )
   return new Map(
-    r.map((x) => [x.id, { dateien: Number(x.d), papierkorb: Number(x.p), anzahl: Number(x.n), gesamt: Number(x.d) + Number(x.p) }])
+    r.map((x) => [
+      x.id,
+      {
+        dateien: Number(x.d),
+        papierkorb: Number(x.p),
+        eingeplant: Number(x.e),
+        anzahl: Number(x.n),
+        gesamt: Number(x.d) + Number(x.p) + Number(x.e)
+      }
+    ])
   )
 }
 
@@ -305,6 +333,7 @@ function quotaFehlerBauen(
     teamName?: string
     papierkorb?: number
     verschieben?: boolean
+    eingeplant?: number
   }
 ) {
   const frei = Math.max(0, d.limit - d.used)
@@ -321,11 +350,16 @@ function quotaFehlerBauen(
             ? `only ${groesseText(frei, en)} ${frei === 1 ? 'is' : 'are'} left`
             : `es sind nur noch ${groesseText(frei, en)} frei`
     const korb =
-      art === 'konto' && d.papierkorb && d.papierkorb > 0
+      (art === 'konto' && d.papierkorb && d.papierkorb > 0
         ? en
           ? ` The trash holds ${groesseText(d.papierkorb, en)} — empty it to free up space.`
           : ` Der Papierkorb belegt ${groesseText(d.papierkorb, en)} — leere ihn, um Platz zu schaffen.`
-        : ''
+        : '') +
+      (art === 'konto' && d.eingeplant && d.eingeplant > 0
+        ? en
+          ? ` ${groesseText(d.eingeplant, en)} are reserved for storage boxes and buckets.`
+          : ` ${groesseText(d.eingeplant, en)} sind für Boxen und Buckets reserviert.`
+        : '')
     if (art === 'team')
       return en
         ? `The quota of the team “${d.teamName}” is full: ${paarText(d.used, d.limit, true)} used, ${bedarf}.`
@@ -372,7 +406,14 @@ export async function kontingentPruefen(nutzer: QuotaNutzer | null, bytes: numbe
       const b = await belegtVon(nutzer.id, x)
       const belegt = b.gesamt + (o.zusatz || 0)
       if (delta > 0 && belegt + delta > k.limit)
-        throw quotaFehlerBauen('konto', { used: belegt, limit: k.limit, bytes: delta, papierkorb: b.papierkorb, verschieben: o.mehrere })
+        throw quotaFehlerBauen('konto', {
+          used: belegt,
+          limit: k.limit,
+          bytes: delta,
+          papierkorb: b.papierkorb,
+          verschieben: o.mehrere,
+          eingeplant: b.eingeplant
+        })
     }
   }
   const team = o.zielTeam !== undefined ? o.zielTeam : await teamVonOrdner(o.ordner, x)
@@ -422,7 +463,14 @@ export async function uploadGrenzen(u: QuotaNutzer, ordner: number | null, datei
 /** Der Fehler passend zur engsten Grenze (nach ZU_GROSS beim Streamen). `bytes` = Dateigröße, falls bekannt. */
 export function grenzFehler(g: Grenzen, bytes?: number, ungefaehr = false) {
   if (g.ursache === 'konto' && g.stand?.limit != null)
-    return quotaFehlerBauen('konto', { used: g.stand.used, limit: g.stand.limit, bytes, ungefaehr, papierkorb: g.stand.papierkorb })
+    return quotaFehlerBauen('konto', {
+      used: g.stand.used,
+      limit: g.stand.limit,
+      bytes,
+      ungefaehr,
+      papierkorb: g.stand.papierkorb,
+      eingeplant: g.stand.eingeplant
+    })
   if (g.ursache === 'team' && g.team?.limit != null)
     return quotaFehlerBauen('team', { used: g.team.used, limit: g.team.limit, bytes, ungefaehr, teamName: g.team.name })
   return g.max > 0

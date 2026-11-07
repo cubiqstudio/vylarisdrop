@@ -6,7 +6,7 @@ import { bucketAnsicht, schluesselAnsicht, speicherAdresse } from '../../../../u
 
 export default defineEventHandler(async (event) => {
   const u = await requireUser(event)
-  let b = await bucketLaden(Number(getRouterParam(event, 'id')), u)
+  let b = await bucketLaden(getRouterParam(event, 'id'), u)
   try {
     await bucketMessen(b)
     b = await bucketLaden(b.id, u)

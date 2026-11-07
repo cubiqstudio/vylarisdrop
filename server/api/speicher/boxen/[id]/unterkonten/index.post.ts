@@ -11,7 +11,8 @@ const Body = z.object({
 })
 export default defineEventHandler(async (event) => {
   const u = await requireUser(event)
-  const b = await boxLaden(Number(getRouterParam(event, 'id')), u)
+  const b = await boxLaden(getRouterParam(event, 'id'), u)
+  speicherRate(u.id, 'aendern')
   const p = Body.safeParse(await readBody(event))
   if (!p.success) throw fehler(400, 'Bitte einen Ordner angeben.', 'Please enter a folder.')
   const { konto, passwort } = await unterkontoAnlegen(b, p.data)

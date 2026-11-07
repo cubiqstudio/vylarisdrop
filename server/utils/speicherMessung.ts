@@ -48,6 +48,8 @@ const VERLAUF = `INSERT INTO speicher_verlauf (art, ref, zeit, bytes, anzahl) VA
 
 export async function speicherMessen(): Promise<void> {
   if (!speicherKonfiguriert()) return
+  // Reservierungen von Buckets, deren Anlegen in Garage nie fertig wurde (Absturz mitten im Anlegen), geben ihr Budget wieder frei
+  await q("DELETE FROM speicher_buckets WHERE garage_id = '' AND created_at < now() - interval '10 minutes'")
   for (const b of await q<Box>('SELECT * FROM speicher_boxen ORDER BY id')) {
     try {
       const m = await boxMessen(b)
@@ -57,7 +59,7 @@ export async function speicherMessen(): Promise<void> {
       console.error(`[vylariscloud] Speicher: Box ${b.id} nicht gemessen:`, e.message)
     }
   }
-  for (const b of await q<Bucket>('SELECT * FROM speicher_buckets ORDER BY id')) {
+  for (const b of await q<Bucket>("SELECT * FROM speicher_buckets WHERE garage_id <> '' ORDER BY id")) {
     try {
       const m = await bucketMessen(b)
       await q(VERLAUF, ['bucket', b.id, m.belegt, m.objekte])
@@ -89,20 +91,48 @@ export async function speicherVerlauf(
   return r.map((z) => ({ zeit: new Date(z.zeit).toISOString(), wert: Number(z.wert) }))
 }
 
-export async function speicherVonKontoLoeschen(userId: number): Promise<number> {
-  if (!speicherKonfiguriert()) return 0
+/**
+ * Räumt Boxen und Buckets eines Kontos im Dienst UND in der Datenbank auf, bevor das Konto gelöscht wird. Klappt das bei einer
+ * Box/einem Bucket nicht (Dienst aus oder gestört), wird abgebrochen und das Konto NICHT gelöscht — sonst blieben Daten, Logins
+ * und Schlüssel im Dienst ohne Besitzer zurück (die Datenbankzeilen würden per CASCADE verschwinden). `ohneDienst` (nur Inhaber)
+ * lässt den Dienst aus: die Zeilen verschwinden, Reste im Dienst bleiben und müssen dort von Hand entfernt werden.
+ */
+export async function speicherVonKontoLoeschen(userId: number, ohneDienst = false): Promise<number> {
+  const boxen = await q<Box>('SELECT * FROM speicher_boxen WHERE user_id = $1', [userId])
+  const buckets = await q<Bucket>('SELECT * FROM speicher_buckets WHERE user_id = $1', [userId])
+  if (!boxen.length && !buckets.length) return 0
+  if (ohneDienst) return boxen.length + buckets.length
+  if (!speicherKonfiguriert())
+    throw fehler(
+      409,
+      'Das Konto hat Boxen oder Buckets, aber der Speicherdienst ist nicht eingeschaltet. Bitte erst einschalten, damit sie sauber entfernt werden.',
+      'The account has boxes or buckets, but the storage service is not switched on. Please switch it on first so they can be removed cleanly.'
+    )
   let n = 0
-  for (const b of await q<Box>('SELECT * FROM speicher_boxen WHERE user_id = $1', [userId])) {
+  const fehlgeschlagen: string[] = []
+  for (const b of boxen) {
     await boxLoeschen(b).then(
       () => n++,
-      (e: any) => console.error('[vylariscloud] Box beim Konto-Löschen:', e.message)
+      (e: any) => {
+        fehlgeschlagen.push(`Box ${b.id}`)
+        console.error('[vylariscloud] Box beim Konto-Löschen:', e.message)
+      }
     )
   }
-  for (const b of await q<Bucket>('SELECT * FROM speicher_buckets WHERE user_id = $1', [userId])) {
+  for (const b of buckets) {
     await bucketLoeschen(b).then(
       () => n++,
-      (e: any) => console.error('[vylariscloud] Bucket beim Konto-Löschen:', e.message)
+      (e: any) => {
+        fehlgeschlagen.push(`Bucket ${b.id}`)
+        console.error('[vylariscloud] Bucket beim Konto-Löschen:', e.message)
+      }
     )
   }
+  if (fehlgeschlagen.length)
+    throw fehler(
+      503,
+      'Die Boxen und Buckets dieses Kontos konnten im Speicherdienst nicht entfernt werden. Das Konto wurde nicht gelöscht. Läuft der Speicherdienst? Danach bitte erneut versuchen.',
+      'The boxes and buckets of this account could not be removed in the storage service. The account was not deleted. Is the storage service running? Please try again afterwards.'
+    )
   return n
 }

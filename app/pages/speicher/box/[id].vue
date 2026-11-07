@@ -33,20 +33,27 @@ const neuName = ref<string | null>(null)
 async function umbenennen() {
   if (await aendern({ name: neuName.value })) neuName.value = null
 }
-const kont = ref<{ wert: number; e: string } | null>(null)
+// Kontingent: Schieber/Feld mit Höchstwert = aktuelles Kontingent + frei im Budget (nie mehr), Mindestwert = aktuelle Belegung
+const { data: sp, refresh: spNeu } = await (useFetch as any)('/api/speicher', { key: `speicher-budget-box-${id.value}` })
+const ich = computed<any>(() => useTheme().value.user)
+const eigene = computed(() => !!box.value && box.value.userId === ich.value?.id)
+const maxKont = computed<number | null>(() => {
+  const f = sp.value?.budget?.frei
+  return eigene.value && f != null && box.value ? Number(box.value.kontingent) + Number(f) : null
+})
+const kont = ref<number | null>(null)
 watch(
   box,
   (b) => {
-    if (b && !kont.value) {
-      const gb = b.kontingent / 1024 ** 3
-      kont.value =
-        gb >= 1024 && gb % 1024 === 0 ? { wert: gb / 1024, e: 'TB' } : { wert: Math.round(gb * 100) / 100, e: 'GB' }
-    }
+    if (b && kont.value == null) kont.value = Number(b.kontingent)
   },
   { immediate: true }
 )
 async function kontSpeichern() {
-  await aendern({ kontingentGb: Number(kont.value!.wert) * (kont.value!.e === 'TB' ? 1024 : 1) })
+  if (kont.value != null && (await aendern({ kontingentBytes: Math.floor(kont.value) }))) {
+    kont.value = null
+    spNeu().catch(() => {})
+  }
 }
 function passwortNeu() {
   bestaetigen(
@@ -296,7 +303,11 @@ const vorher2 = (z: string | null) => (z ? vorher(z) : t('noch nie', 'never'))
 
           <section v-if="kont" class="karte rein">
             <h3><Ico n="gauge" /> {{ t('Kontingent', 'Quota') }}</h3>
-            <form class="einheit" @submit.prevent="kontSpeichern"><input v-model.number="kont.wert" class="eingabe mono" type="number" min="0.1" step="any" :aria-label="t('Kontingent', 'Quota')"><VdAuswahl v-model="kont.e" class="eingabe" :aria-label="t('Einheit', 'Unit')"><option>GB</option><option>TB</option></VdAuswahl><button class="knopf">{{ t('Speichern', 'Save') }}</button></form>
+            <form v-if="kont != null" class="kont-form" @submit.prevent="kontSpeichern">
+              <VdBudgetEingabe v-model="kont" :min="Number(box.belegt) || 0" :max="maxKont" :beschriftung="t('Kontingent der Box', 'Box quota')" hinweis-id="hint-kont" />
+              <button class="knopf" :disabled="kont === Number(box.kontingent)">{{ t('Speichern', 'Save') }}</button>
+            </form>
+            <p id="hint-kont" class="sehrleise klein">{{ maxKont != null ? t('Höchstens das, was in deinem Budget noch frei ist, mindestens die aktuelle Belegung. Verkleinern gibt den Platz sofort frei.', 'At most what is still free in your budget, at least the current usage. Shrinking frees the space immediately.') : t('Mindestens die aktuelle Belegung.', 'At least the current usage.') }}</p>
             <p class="sehrleise klein">{{ t('Ist das Kontingent voll, lehnt die Box neue Dateien ab — Lesen und Löschen gehen weiter. Bei 80 % kommt eine Warnung.', 'When the quota is full, the box rejects new files — reading and deleting keep working. You get a warning at 80%.') }}</p>
           </section>
 
@@ -622,6 +633,14 @@ pre.cmd {
 .prot small {
   color: var(--text3);
   font-size: 12px;
+}
+.kont-form {
+  display: grid;
+  gap: 10px;
+  justify-items: start;
+}
+.kont-form > :first-child {
+  width: 100%;
 }
 .einheit {
   display: flex;

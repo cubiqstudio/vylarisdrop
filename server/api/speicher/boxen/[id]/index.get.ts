@@ -6,7 +6,7 @@ import { boxAnsicht, speicherAdresse, unterAnsicht } from '../../../../utils/spe
 
 export default defineEventHandler(async (event) => {
   const u = await requireUser(event)
-  let b = await boxLaden(Number(getRouterParam(event, 'id')), u)
+  let b = await boxLaden(getRouterParam(event, 'id'), u)
   try {
     await boxMessen(b)
     b = await boxLaden(b.id, u)

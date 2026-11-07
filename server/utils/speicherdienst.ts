@@ -38,6 +38,13 @@ export function dienstFehlerMelden(e: unknown, was: string): never {
           'The storage service is not responding right now. Is it running (Storage → status)?'
         )
       )
+    throw fehler(
+      502,
+      st(
+        'Der Speicherdienst hat den Auftrag abgelehnt. Einzelheiten stehen im Server-Protokoll.',
+        'The storage service rejected the request. Details are in the server log.'
+      )
+    )
   }
   throw e
 }
@@ -120,22 +127,23 @@ async function lesenJson(n: string): Promise<any> {
 
 export async function speicherErreichbar(): Promise<{ sftpgo: boolean; garage: boolean; fehler: string }> {
   if (!speicherKonfiguriert()) return { sftpgo: false, garage: false, fehler: '' }
-  let fehler = ''
+  // Hinweis: keine lokale Variable "fehler" — sie würde den automatischen Import von fehler() in dieser Datei verdecken
+  let meldung = ''
   const s = await sftpgo('GET', '/status').then(
     () => true,
     (e) => {
-      fehler = `SFTPGo: ${String(e?.message || e).slice(0, 120)}`
+      meldung = `SFTPGo: ${String(e?.message || e).slice(0, 120)}`
       return false
     }
   )
   const g = await garage('GET', 'GetClusterHealth').then(
     (r) => r.status === 200 && r.json?.status !== 'unavailable',
     (e) => {
-      fehler ||= `Garage: ${String(e?.message || e).slice(0, 120)}`
+      meldung ||= `Garage: ${String(e?.message || e).slice(0, 120)}`
       return false
     }
   )
-  return { sftpgo: s, garage: g, fehler }
+  return { sftpgo: s, garage: g, fehler: meldung }
 }
 
 export interface SpeicherEinst {

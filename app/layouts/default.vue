@@ -28,7 +28,9 @@ const ARTEN = [
 const quota = computed(() => stats.value?.quota)
 const segmente = computed(() => [
   ...ARTEN.map((a) => ({ bytes: Number(stats.value?.proArt?.[a.k]?.bytes || 0), farbe: a.c })),
-  { bytes: Number(stats.value?.papierkorb || 0), farbe: '', muster: true }
+  { bytes: Number(stats.value?.papierkorb || 0), farbe: '', muster: true },
+  // für Storage-Boxen und S3-Buckets reserviert (Summe deren Kontingente) — eigene Farbe
+  { bytes: Number(quota.value?.eingeplant || 0), farbe: '#8b5cf6' }
 ])
 const speicherText = computed(() => {
   const q = quota.value
@@ -55,7 +57,7 @@ const NAV = computed<Array<{ gruppe: string; punkte: NavPunkt[] }>>(() => [
       { zu: '/', ic: 'cloud', text: t('Meine Dateien', 'My files'), zahl: stats.value?.dateien },
       { zu: '/sync', ic: 'umzug', text: t('Sync & WebDAV', 'Sync & WebDAV') },
       { zu: '/geraete', ic: 'laptop', text: t('Verbundene Geräte', 'Connected devices') },
-      { zu: '/speicher', ic: 'box', text: t('Speicher', 'Storage') },
+      ...(stats.value?.speicherSichtbar === false ? [] : [{ zu: '/speicher', ic: 'box', text: t('Speicher', 'Storage') }]),
       { zu: '/statistik', ic: 'chart', text: t('Statistik', 'Statistics') },
       { zu: '/aufraeumen', ic: 'gauge', text: t('Aufräumen', 'Clean up') },
       { zu: '/papierkorb', ic: 'trash', text: t('Papierkorb', 'Trash') }
@@ -317,6 +319,9 @@ watch(
             lang() === 'en' ? a.en : a.de
           }}</span>
         </div>
+        <NuxtLink v-if="Number(quota?.eingeplant) > 0" to="/speicher" class="q-korb q-reserviert">
+          <i class="q-punkt" aria-hidden="true"></i>{{ t('Für Boxen & Buckets reserviert:', 'Reserved for boxes & buckets:') }} {{ groesse(quota.eingeplant) }}
+        </NuxtLink>
         <NuxtLink v-if="Number(stats?.papierkorb) > 0" to="/papierkorb" class="q-korb">
           {{ t('Papierkorb zählt mit:', 'Trash counts:') }} {{ groesse(stats.papierkorb) }}
         </NuxtLink>
@@ -669,6 +674,14 @@ watch(
 }
 .q-korb:hover {
   color: var(--text);
+}
+.q-reserviert .q-punkt {
+  display: inline-block;
+  width: 8px;
+  height: 8px;
+  border-radius: 3px;
+  background: #8b5cf6;
+  margin-right: 6px;
 }
 .speicher .legende {
   display: flex;

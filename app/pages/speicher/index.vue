@@ -64,18 +64,49 @@ const vergeben = computed(() => alle.value.reduce((s, x) => s + x.kontingent, 0)
 const proz = (x: any) => (x.kontingent ? Math.min(100, (x.belegt / x.kontingent) * 100) : 0)
 const stufe = (x: any) => (proz(x) >= 99.5 ? 'voll' : proz(x) >= 80 ? 'warn' : '')
 
-const einheit = (gb: number) => (gb >= 1024 && gb % 1024 === 0 ? { wert: gb / 1024, e: 'TB' } : { wert: gb, e: 'GB' })
+// Budget des eigenen Kontos (Server rechnet; hier nur Anzeige): Kontingent, belegt, reserviert, frei zum Einplanen
+const bud = computed<any>(() => d.value.budget || null)
+const GB1 = 1024 ** 3
+const gesperrtText = computed(() => {
+  const g = bud.value?.gesperrt
+  if (!g || g === 'dienst') return ''
+  return g === 'keinBudget'
+    ? t('Für dein Konto ist noch kein Speicher für Boxen und Buckets freigegeben. Bitte den Admin, dir ein Kontingent zuzuweisen.', 'No storage for boxes and buckets is enabled for your account yet. Please ask the admin to assign you a quota.')
+    : g === 'admins'
+      ? t('Neue Boxen und Buckets legen hier nur Admins an.', 'Only admins create new boxes and buckets here.')
+      : g === 'anzahl'
+        ? t(`Du hast die höchste erlaubte Anzahl erreicht (${bud.value.maxAnzahl} Boxen und Buckets zusammen). Lösche eine, um eine neue anzulegen.`, `You have reached the maximum number (${bud.value.maxAnzahl} boxes and buckets together). Delete one to create a new one.`)
+        : g === 'ueberplant'
+          ? t('Dein Konto ist überplant. Es wurde nichts gelöscht, aber neue Boxen, Buckets, Vergrößerungen und Uploads werden abgelehnt, bis du Platz schaffst oder der Admin das Kontingent erhöht.', 'Your account is over-planned. Nothing was deleted, but new boxes, buckets, enlargements and uploads are rejected until you free up space or the admin raises the quota.')
+          : t('Du hast kein Budget mehr frei zum Einplanen. Gib Platz frei (Dateien löschen, Papierkorb leeren, Boxen oder Buckets verkleinern oder löschen) oder bitte den Admin um mehr Kontingent.', 'You have no budget left to plan. Free up space (delete files, empty the trash, shrink or delete boxes or buckets) or ask the admin for more quota.')
+})
+const kannAnlegen = computed(() => !bud.value || !bud.value.gesperrt)
+const budgetSegmente = computed(() => [
+  { bytes: Number(bud.value?.belegt || 0), farbe: '#1e73be' },
+  { bytes: Number(bud.value?.eingeplant || 0), farbe: '#8b5cf6' }
+])
+const budgetGesamt = computed(() => (bud.value?.quelle === 'grenze' ? bud.value.grenze : bud.value?.limit))
+const startBytes = (wunsch: number) => {
+  const f = bud.value?.frei
+  return Math.max(1024 ** 2, f == null ? wunsch : Math.min(wunsch, f))
+}
 const neuBox = ref<any>(null)
 const neuBucket = ref<any>(null)
+const maxNeu = computed<number | null>(() => (bud.value?.frei == null ? null : Number(bud.value.frei)))
+function boxOeffnen() {
+  neuBox.value = { name: '', bytes: startBytes(100 * GB1) }
+}
+function bucketOeffnen() {
+  neuBucket.value = { name: '', bytes: startBytes(50 * GB1), schluessel: true }
+}
 const einmal = ref<{ titel: string; zeilen: Array<{ label: string; wert: string }> } | null>(null)
 const schickt = ref(false)
-const gb = (f: any) => Number(f.wert) * (f.e === 'TB' ? 1024 : 1)
 async function boxAnlegen() {
   schickt.value = true
   try {
     const r = await api('/api/speicher/boxen', {
       method: 'POST',
-      body: { name: neuBox.value.name, kontingentGb: gb(neuBox.value) }
+      body: { name: neuBox.value.name, kontingentBytes: Math.floor(neuBox.value.bytes) }
     })
     neuBox.value = null
     await refresh()
@@ -92,6 +123,7 @@ async function boxAnlegen() {
     }
   } catch (e: any) {
     fehler(e.message)
+    refresh().catch(() => {})
   } finally {
     schickt.value = false
   }
@@ -104,7 +136,7 @@ async function bucketAnlegen() {
       method: 'POST',
       body: {
         name: f.name,
-        kontingentGb: gb(f),
+        kontingentBytes: Math.floor(f.bytes),
         ...(f.schluessel ? { schluessel: { name: t('Standard', 'Default'), schreiben: true } } : {})
       }
     })
@@ -128,6 +160,7 @@ async function bucketAnlegen() {
     }
   } catch (e: any) {
     fehler(e.message)
+    refresh().catch(() => {})
   } finally {
     schickt.value = false
   }
@@ -201,14 +234,35 @@ async function einstSpeichern() {
         <div><div class="eyebrow"><Ico n="box" /> {{ t('Speicher', 'Storage') }}</div><h1>{{ t('Boxen & Buckets', 'Boxes & buckets') }}</h1>
           <p>{{ t('Speicher für Apps, Backups und Programme — direkt auf diesem Server.', 'Storage for apps, backups and programs — right on this server.') }}</p></div>
         <div v-if="d.darfAnlegen" class="reihe">
-          <button type="button" class="knopf" @click="neuBucket = { name: '', wert: 50, e: 'GB', schluessel: true }"><Ico n="plus" /> Bucket</button>
-          <button type="button" class="knopf rot" @click="neuBox = { name: '', wert: 100, e: 'GB' }"><Ico n="plus" /> {{ t('Storage-Box', 'Storage box') }}</button>
+          <button type="button" class="knopf" :disabled="!kannAnlegen" :title="gesperrtText" @click="bucketOeffnen"><Ico n="plus" /> Bucket</button>
+          <button type="button" class="knopf rot" :disabled="!kannAnlegen" :title="gesperrtText" @click="boxOeffnen"><Ico n="plus" /> {{ t('Storage-Box', 'Storage box') }}</button>
         </div>
       </div>
       <div v-if="d.admin && (!stand.sftpgo || !stand.garage)" class="meldung meldung-warn rein">
         <b>{{ t('Ein Teil des Speicherdienstes antwortet nicht', 'Part of the storage service is not responding') }}</b> ({{ [!stand.sftpgo && 'SFTPGo', !stand.garage && 'Garage'].filter(Boolean).join(', ') }}).
         {{ t('Auf dem Server: docker compose ps — oder hier unten aus- und wieder einschalten.', 'On the server: docker compose ps — or switch it off and on again below.') }} <span v-if="stand.fehler" class="mono">{{ stand.fehler }}</span>
       </div>
+      <section v-if="bud && bud.gesperrt !== 'dienst'" class="budget block rein" aria-labelledby="bud-titel">
+        <div class="reihe zw">
+          <h2 id="bud-titel">{{ t('Dein Budget', 'Your budget') }}</h2>
+          <span v-if="bud.ueberplant" class="chip rot">{{ t('überplant', 'over-planned') }}</span>
+          <span v-else-if="bud.frei === null" class="chip neutral">{{ t('Unbegrenzt', 'Unlimited') }}</span>
+        </div>
+        <dl class="bud-zahlen">
+          <div><dt>{{ t('Gesamt', 'Total') }}</dt><dd>{{ budgetGesamt ? groesse(budgetGesamt) : t('Unbegrenzt', 'Unlimited') }}</dd></div>
+          <div v-if="bud.quelle === 'kontingent'"><dt>{{ t('Belegt (Dateien + Papierkorb)', 'Used (files + trash)') }}</dt><dd>{{ groesse(bud.belegt) }}</dd></div>
+          <div><dt><i class="bud-punkt" aria-hidden="true"></i>{{ t('Für Boxen & Buckets reserviert', 'Reserved for boxes & buckets') }}</dt><dd>{{ groesse(bud.eingeplant) }}</dd></div>
+          <div><dt>{{ t('Frei zum Einplanen', 'Free to plan') }}</dt><dd :class="{ 'warn-text': bud.frei === 0 }">{{ bud.frei === null ? t('Unbegrenzt', 'Unlimited') : groesse(bud.frei) }}</dd></div>
+        </dl>
+        <VdQuotaBalken v-if="budgetGesamt" :used="bud.belegt + bud.eingeplant" :limit="budgetGesamt" :segmente="budgetSegmente" gross :beschriftung="t('Budget: belegt und reserviert', 'Budget: used and reserved')" />
+        <p v-if="bud.ueberplant" class="meldung meldung-warn" role="alert">{{ gesperrtText }} {{ t('Überplant um', 'Over-planned by') }} {{ groesse(bud.ueberBytes) }}.</p>
+        <p v-else-if="gesperrtText" class="meldung meldung-warn">{{ gesperrtText }}</p>
+        <p class="sehrleise klein">
+          {{ t('Das Kontingent einer Box oder eines Buckets ist fest für sie reserviert und zählt zu deinem Speicher — auch wenn noch nicht alles belegt ist. Mehr als du frei hast, kannst du nicht einplanen. Löschen und Verkleinern geben den Platz sofort wieder frei.', 'The quota of a box or bucket is reserved for it and counts towards your storage — even if it is not full yet. You cannot plan more than you have free. Deleting and shrinking free the space immediately.') }}
+          <template v-if="bud.maxAnzahl > 0"> {{ t(`Höchstens ${bud.maxAnzahl} Boxen und Buckets zusammen (${bud.anzahl} belegt).`, `At most ${bud.maxAnzahl} boxes and buckets together (${bud.anzahl} used).`) }}</template>
+          <template v-if="bud.grenze > 0 && bud.quelle === 'kontingent'"> {{ t(`Zusätzlich gilt eine Obergrenze von ${groesse(bud.grenze)} für Boxen und Buckets zusammen.`, `An additional cap of ${groesse(bud.grenze)} applies to boxes and buckets together.`) }}</template>
+        </p>
+      </section>
       <div class="kennzahlen rein">
         <div class="kz"><small><Ico n="gauge" /> {{ t('Belegt', 'Used') }}</small><b>{{ groesse(belegt) }}</b><span>{{ t('von', 'of') }} {{ groesse(vergeben) }} {{ t('vergeben', 'allocated') }}</span></div>
         <div v-if="d.platte" class="kz"><small><Ico n="server" /> {{ t('Frei auf dem Server', 'Free on the server') }}</small><b>{{ groesse(d.platte.frei) }}</b>
@@ -229,7 +283,7 @@ async function einstSpeichern() {
           </NuxtLink>
         </div>
         <div v-else class="leer block"><b>{{ t('Noch keine Storage-Box', 'No storage box yet') }}</b><span>{{ t('Etwa für Backups eines Servers oder als Team-Laufwerk.', 'For example for server backups or as a team drive.') }}</span>
-          <button v-if="d.darfAnlegen" type="button" class="knopf" @click="neuBox = { name: '', wert: 100, e: 'GB' }"><Ico n="plus" /> {{ t('Storage-Box anlegen', 'Create storage box') }}</button></div>
+          <button v-if="d.darfAnlegen" type="button" class="knopf" :disabled="!kannAnlegen" @click="boxOeffnen"><Ico n="plus" /> {{ t('Storage-Box anlegen', 'Create storage box') }}</button></div>
       </section>
 
       <section class="abschnitt rein">
@@ -243,7 +297,7 @@ async function einstSpeichern() {
           </NuxtLink>
         </div>
         <div v-else class="leer block"><b>{{ t('Noch kein Bucket', 'No bucket yet') }}</b><span>{{ t('Etwa für Uploads einer App oder verschlüsselte Backups mit restic.', 'For example for app uploads or encrypted backups with restic.') }}</span>
-          <button v-if="d.darfAnlegen" type="button" class="knopf" @click="neuBucket = { name: '', wert: 50, e: 'GB', schluessel: true }"><Ico n="plus" /> {{ t('Bucket anlegen', 'Create bucket') }}</button></div>
+          <button v-if="d.darfAnlegen" type="button" class="knopf" :disabled="!kannAnlegen" @click="bucketOeffnen"><Ico n="plus" /> {{ t('Bucket anlegen', 'Create bucket') }}</button></div>
       </section>
 
       <section v-if="d.inhaber && einst" class="abschnitt rein">
@@ -253,10 +307,19 @@ async function einstSpeichern() {
             <h3>{{ t('Wer darf Speicher anlegen?', 'Who may create storage?') }}</h3>
             <div class="seg" style="margin: 10px 0 14px"><button type="button" :class="{ an: einst.wer === 'admins' }" @click="einst.wer = 'admins'">{{ t('Nur Admins', 'Admins only') }}</button><button type="button" :class="{ an: einst.wer === 'alle' }" @click="einst.wer = 'alle'">{{ t('Alle Konten', 'All accounts') }}</button></div>
             <template v-if="einst.wer === 'alle'">
-              <label class="feld"><span>{{ t('Zusammen höchstens (GB je Konto, 0 = unbegrenzt)', 'In total at most (GB per account, 0 = unlimited)') }}</span><input v-model.number="einst.grenzeGb" class="eingabe mono" type="number" min="0"></label>
-              <label class="feld"><span>{{ t('Höchstens Boxen + Buckets je Konto (0 = unbegrenzt)', 'At most boxes + buckets per account (0 = unlimited)') }}</span><input v-model.number="einst.maxAnzahl" class="eingabe mono" type="number" min="0"></label>
+              <label class="feld"><span>{{ t('Obergrenze je Konto für Boxen + Buckets zusammen (GB, 0 = keine zusätzliche)', 'Cap per account for boxes + buckets together (GB, 0 = no additional cap)') }}</span><input v-model.number="einst.grenzeGb" class="eingabe mono" type="number" min="0" step="1"></label>
+              <label class="feld"><span>{{ t('Höchstens Boxen + Buckets je Konto (0 = unbegrenzt)', 'At most boxes + buckets per account (0 = unlimited)') }}</span><input v-model.number="einst.maxAnzahl" class="eingabe mono" type="number" min="0" step="1"></label>
+              <div class="regeln">
+                <b>{{ t('So funktioniert das Budget', 'How the budget works') }}</b>
+                <ul>
+                  <li>{{ t('Jeder Nutzer darf höchstens das einplanen, was ihm als Kontingent zugewiesen ist (Nutzer-Seite, Rolle oder Standard) — abzüglich seiner Dateien, seines Papierkorbs und dessen, was er schon für Boxen und Buckets eingeplant hat.', 'Every user may plan at most the quota assigned to them (users page, role or default) — minus their files, their trash and what they already planned for boxes and buckets.') }}</li>
+                  <li>{{ t('Das Eingeplante zählt zum Speicher des Kontos: Uploads, Kopieren und WebDAV passen nur noch in den Rest.', 'What is planned counts towards the account storage: uploads, copying and WebDAV only fit into the rest.') }}</li>
+                  <li>{{ t('Konten ohne Limit (nur Rolle „Nutzer“) dürfen nur bis zur Obergrenze oben einplanen. Ist sie 0, dürfen sie nichts anlegen. Für begrenzte Konten gilt die Obergrenze zusätzlich zum Kontingent.', 'Accounts without a limit (role “user” only) may only plan up to the cap above. If it is 0, they may not create anything. For limited accounts the cap applies in addition to the quota.') }}</li>
+                  <li>{{ t('Senkst du ein Kontingent unter das Belegte plus Eingeplante, wird nichts gelöscht: Das Konto ist dann „überplant“ und lehnt neue Boxen, Buckets und Uploads ab.', 'If you lower a quota below used plus planned, nothing is deleted: the account is then “over-planned” and rejects new boxes, buckets and uploads.') }}</li>
+                  <li>{{ t('Admins und du seid nicht durch Anzahl und Obergrenze begrenzt; hat ein Konto aber ein eigenes Limit, gilt es auch für dich.', 'Admins and you are not limited by count and cap; but if an account has its own limit, it applies to you too.') }}</li>
+                </ul>
+              </div>
             </template>
-            <p class="sehrleise klein">{{ t('Admins und du sind nie begrenzt.', 'Admins and you are never limited.') }}</p>
             <button type="button" class="knopf" @click="einstSpeichern">{{ t('Speichern', 'Save') }}</button>
           </div>
           <div class="block">
@@ -276,19 +339,22 @@ async function einstSpeichern() {
     <VdModal v-if="neuBox" :titel="t('Neue Storage-Box', 'New storage box')" @zu="neuBox = null">
       <form @submit.prevent="boxAnlegen">
         <label class="feld"><span>{{ t('Name', 'Name') }}</span><input v-model="neuBox.name" class="eingabe" maxlength="60" required :placeholder="t('z. B. Backups Webserver', 'e.g. Web server backups')"></label>
-        <label class="feld"><span>{{ t('Kontingent', 'Quota') }}</span><span class="einheit"><input v-model.number="neuBox.wert" class="eingabe mono" type="number" min="0.1" step="any" required><VdAuswahl v-model="neuBox.e" class="eingabe"><option>GB</option><option>TB</option></VdAuswahl></span>
-          <small v-if="d.platte">{{ t('Frei auf dem Server:', 'Free on the server:') }} {{ groesse(d.platte.frei) }}</small></label>
+        <div class="feld"><span>{{ t('Kontingent', 'Quota') }}</span>
+          <VdBudgetEingabe v-model="neuBox.bytes" :min="bud?.min || 1048576" :max="maxNeu" :beschriftung="t('Kontingent der Box', 'Box quota')" hinweis-id="hint-box" />
+          <small id="hint-box">{{ maxNeu != null ? t('Mehr als dein freies Budget kannst du nicht einplanen.', 'You cannot plan more than your free budget.') : t('Du hast kein Limit.', 'You have no limit.') }}<template v-if="d.platte"> {{ t('Frei auf dem Server:', 'Free on the server:') }} {{ groesse(d.platte.frei) }}</template></small></div>
         <p class="sehrleise klein">{{ t('Benutzername und Passwort bekommst du gleich danach — das Passwort nur einmal.', 'You get the user name and password right afterwards — the password only once.') }}</p>
-        <div class="modal-fuss"><button type="button" class="knopf" @click="neuBox = null">{{ t('Abbrechen', 'Cancel') }}</button><button class="knopf rot" :disabled="schickt || !neuBox.name"><Ico :n="schickt ? 'loader' : 'box'" :class="{ spin: schickt }" /> {{ t('Anlegen', 'Create') }}</button></div>
+        <div class="modal-fuss"><button type="button" class="knopf" @click="neuBox = null">{{ t('Abbrechen', 'Cancel') }}</button><button class="knopf rot" :disabled="schickt || !neuBox.name || (maxNeu != null && maxNeu < (bud?.min || 1048576))"><Ico :n="schickt ? 'loader' : 'box'" :class="{ spin: schickt }" /> {{ t('Anlegen', 'Create') }}</button></div>
       </form>
     </VdModal>
     <VdModal v-if="neuBucket" :titel="t('Neuer Bucket', 'New bucket')" @zu="neuBucket = null">
       <form @submit.prevent="bucketAnlegen">
         <label class="feld"><span>{{ t('Name', 'Name') }}</span><input v-model="neuBucket.name" class="eingabe mono" maxlength="63" required placeholder="mein-bucket" autocapitalize="off" spellcheck="false" @input="neuBucket.name = neuBucket.name.toLowerCase()">
           <small :class="{ 'warn-text': bucketName && !bucketNameOk }">{{ t('3–63 Zeichen: Kleinbuchstaben, Ziffern und Bindestriche. Der Name gilt für die ganze Installation.', '3–63 characters: lowercase letters, digits and hyphens. The name is unique across the installation.') }}</small></label>
-        <label class="feld"><span>{{ t('Kontingent', 'Quota') }}</span><span class="einheit"><input v-model.number="neuBucket.wert" class="eingabe mono" type="number" min="0.1" step="any" required><VdAuswahl v-model="neuBucket.e" class="eingabe"><option>GB</option><option>TB</option></VdAuswahl></span></label>
+        <div class="feld"><span>{{ t('Kontingent', 'Quota') }}</span>
+          <VdBudgetEingabe v-model="neuBucket.bytes" :min="bud?.min || 1048576" :max="maxNeu" :beschriftung="t('Kontingent des Buckets', 'Bucket quota')" hinweis-id="hint-bucket" />
+          <small id="hint-bucket">{{ maxNeu != null ? t('Mehr als dein freies Budget kannst du nicht einplanen.', 'You cannot plan more than your free budget.') : t('Du hast kein Limit.', 'You have no limit.') }}</small></div>
         <label class="schalter-zeile"><button type="button" :class="['schalter', { an: neuBucket.schluessel }]" :aria-pressed="neuBucket.schluessel" @click="neuBucket.schluessel = !neuBucket.schluessel"></button> {{ t('Gleich einen Zugangsschlüssel anlegen (Lesen + Schreiben)', 'Create an access key right away (read + write)') }}</label>
-        <div class="modal-fuss"><button type="button" class="knopf" @click="neuBucket = null">{{ t('Abbrechen', 'Cancel') }}</button><button class="knopf rot" :disabled="schickt || !bucketNameOk"><Ico :n="schickt ? 'loader' : 'database'" :class="{ spin: schickt }" /> {{ t('Anlegen', 'Create') }}</button></div>
+        <div class="modal-fuss"><button type="button" class="knopf" @click="neuBucket = null">{{ t('Abbrechen', 'Cancel') }}</button><button class="knopf rot" :disabled="schickt || !bucketNameOk || (maxNeu != null && maxNeu < (bud?.min || 1048576))"><Ico :n="schickt ? 'loader' : 'database'" :class="{ spin: schickt }" /> {{ t('Anlegen', 'Create') }}</button></div>
       </form>
     </VdModal>
     <VdEinmal v-if="einmal" :titel="einmal.titel" :zeilen="einmal.zeilen" @zu="einmal = null" />
@@ -604,6 +670,56 @@ async function einstSpeichern() {
   font-size: 13px;
   margin: 2px 0 6px;
   cursor: pointer;
+}
+.budget {
+  display: grid;
+  gap: 12px;
+  margin-bottom: 18px;
+}
+.budget h2 {
+  font-family: var(--f-display);
+  font-size: 18px;
+  letter-spacing: -0.02em;
+  margin: 0;
+}
+.bud-zahlen {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(170px, 1fr));
+  gap: 10px 18px;
+  margin: 0;
+}
+.bud-zahlen dt {
+  color: var(--text3);
+  font-size: 12px;
+}
+.bud-zahlen dd {
+  margin: 2px 0 0;
+  font-family: var(--f-display);
+  font-size: 20px;
+  letter-spacing: -0.02em;
+  font-variant-numeric: tabular-nums;
+}
+.bud-punkt {
+  display: inline-block;
+  width: 8px;
+  height: 8px;
+  border-radius: 3px;
+  background: #8b5cf6;
+  margin-right: 6px;
+}
+.regeln {
+  background: var(--flaeche2);
+  border-radius: 12px;
+  padding: 10px 14px;
+  margin: 4px 0 14px;
+  font-size: 12.5px;
+  color: var(--text2);
+}
+.regeln ul {
+  margin: 6px 0 0;
+  padding-left: 18px;
+  display: grid;
+  gap: 4px;
 }
 @media (max-width: 980px) {
   .kennzahlen {
