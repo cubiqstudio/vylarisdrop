@@ -24,6 +24,35 @@ const AUS_NACH = 20
 export const neuesGeheimnis = () => 'whsec_' + randomBytes(24).toString('base64url')
 export const webhookEinst = async () => ({ intern: false, ...(await getSetting<{ intern?: boolean }>('webhooks', {})) })
 
+// IPv6-Adresse (auch mit eingebettetem IPv4-Teil, "::" und Zonenkennung) in 16 Bytes; null, wenn sie sich nicht lesen lässt
+function ipv6Bytes(ip: string): number[] | null {
+  let s = ip.toLowerCase().split('%')[0]!
+  const m4 = /^(.*:)(\d+\.\d+\.\d+\.\d+)$/.exec(s)
+  if (m4) {
+    if (isIP(m4[2]!) !== 4) return null
+    const o = m4[2]!.split('.').map(Number) as [number, number, number, number]
+    s = `${m4[1]}${((o[0] << 8) | o[1]).toString(16)}:${((o[2] << 8) | o[3]).toString(16)}`
+  }
+  const teile = s.split('::')
+  if (teile.length > 2) return null
+  const kopf = teile[0] ? teile[0].split(':') : []
+  const rest = teile.length === 2 && teile[1] ? teile[1].split(':') : []
+  let gruppen = kopf
+  if (teile.length === 2) {
+    const fehlt = 8 - kopf.length - rest.length
+    if (fehlt < 0) return null
+    gruppen = [...kopf, ...Array(fehlt).fill('0'), ...rest]
+  }
+  if (gruppen.length !== 8) return null
+  const aus: number[] = []
+  for (const g of gruppen) {
+    if (!/^[0-9a-f]{1,4}$/.test(g)) return null
+    const n = parseInt(g, 16)
+    aus.push(n >> 8, n & 255)
+  }
+  return aus
+}
+
 function privat(ip: string): boolean {
   if (isIP(ip) === 4) {
     const [a, b] = ip.split('.').map(Number) as [number, number]
@@ -38,19 +67,18 @@ function privat(ip: string): boolean {
       a >= 224
     )
   }
-  const v = ip.toLowerCase()
-  if (v.startsWith('::ffff:')) return privat(v.slice(7))
-  return (
-    v === '::1' ||
-    v === '::' ||
-    v.startsWith('fc') ||
-    v.startsWith('fd') ||
-    v.startsWith('fe8') ||
-    v.startsWith('fe9') ||
-    v.startsWith('fea') ||
-    v.startsWith('feb') ||
-    v.startsWith('ff')
-  )
+  const v = ipv6Bytes(ip)
+  if (!v) return true
+  const v4 = (o: number) => privat(`${v[o]}.${v[o + 1]}.${v[o + 2]}.${v[o + 3]}`)
+  const nullen = (von: number, bis: number) => v.slice(von, bis).every((x) => x === 0)
+  // ::ffff:a.b.c.d (IPv4-gemappt, auch in der Hex-Schreibweise ::ffff:7f00:1), ::a.b.c.d (IPv4-kompatibel, umfasst :: und ::1)
+  if (nullen(0, 10) && v[10] === 0xff && v[11] === 0xff) return v4(12)
+  if (nullen(0, 12)) return v4(12)
+  // 64:ff9b::/96 (NAT64) und 2002::/16 (6to4) tragen eine IPv4-Adresse in sich
+  if (v[0] === 0 && v[1] === 0x64 && v[2] === 0xff && v[3] === 0x9b && nullen(4, 12)) return v4(12)
+  if (v[0] === 0x20 && v[1] === 0x02) return v4(2)
+  // fc00::/7 (privat), fe80::/10 (Link-Lokal), fec0::/10 (veraltet, standortlokal), ff00::/8 (Multicast)
+  return (v[0]! & 0xfe) === 0xfc || (v[0] === 0xfe && ((v[1]! & 0xc0) === 0x80 || (v[1]! & 0xc0) === 0xc0)) || v[0] === 0xff
 }
 
 export function urlPruefen(roh: string): string {

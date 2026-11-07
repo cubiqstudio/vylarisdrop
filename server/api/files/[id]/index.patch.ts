@@ -2,7 +2,7 @@ import { q, q1 } from '../../../utils/db'
 import { hashPw, requireUser } from '../../../utils/auth'
 import { ablaufAus, basisUrl, fuerPanel, type DateiZeile } from '../../../utils/dateien'
 import { istSlug } from '../../../utils/namen'
-import { dateiRecht, ordnerRecht } from '../../../utils/teams'
+import { ablaufBegrenzen, dateiRecht, ordnerRecht } from '../../../utils/teams'
 import { eindeutigerName, mitNamenssperre, sperrSchluessel } from '../../../utils/dateiNamen'
 import { teamVonOrdner, verschiebenPruefen } from '../../../utils/quota'
 
@@ -48,7 +48,7 @@ export default defineEventHandler(async (event) => {
     // Team-Kontingent: die Datei zählt im Ziel-Team (außer sie liegt dort schon)
     if (o !== f.folder_id) verschieben = { ordner: o, von: await teamVonOrdner(f.folder_id) }
   }
-  if ('ablauf' in (b || {})) neu('expires_at', b.ablauf ? ablaufAus(b.ablauf) : null)
+  if ('ablauf' in (b || {})) neu('expires_at', await ablaufBegrenzen(f.user_id, b.ablauf ? ablaufAus(b.ablauf) : null))
   if ('max_aufrufe' in (b || {})) {
     const m = b.max_aufrufe == null || b.max_aufrufe === '' ? null : Math.floor(Number(b.max_aufrufe))
     if (m != null && !(m > 0 && m <= 1_000_000))

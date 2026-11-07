@@ -3,6 +3,7 @@ import { join } from 'node:path'
 import { Transform } from 'node:stream'
 import { pipeline } from 'node:stream/promises'
 import { requireUser } from '../../../utils/auth'
+import { requireRecht } from '../../../utils/teams'
 import { q1 } from '../../../utils/db'
 import { importAblage, meinImport } from '../../../utils/importKern'
 import { meinOrdner } from '../../../utils/knoten'
@@ -11,6 +12,7 @@ const TEIL = 8 * 1024 * 1024
 
 export default defineEventHandler(async (event) => {
   const u = await requireUser(event)
+  await requireRecht(u, 'import')
   const imp = await meinImport(event, u)
   if (imp.status !== 'entwurf')
     throw fehler(

@@ -2,7 +2,7 @@ import { q, q1, ereignis } from '../../../utils/db'
 import { clientIp, requireUser } from '../../../utils/auth'
 import { loeschen, schreiben } from '../../../utils/speicher'
 import { artVon, basisUrl, fuerPanel, typErkennen, type DateiZeile } from '../../../utils/dateien'
-import { freierPlatz } from '../../../utils/hochladen'
+import { dateiGroesseMax, freierPlatz } from '../../../utils/hochladen'
 import { quotaWarnen } from '../../../utils/benachrichtigen'
 import { hatGrenze, kontingentPruefen, mitKontingentSperre } from '../../../utils/quota'
 import { verarbeiten } from '../../../utils/medien'
@@ -18,12 +18,14 @@ export default defineEventHandler(async (event) => {
   if (f.art !== 'bild')
     throw fehler(400, 'Nur Bilder lassen sich so ersetzen.', 'Only images can be replaced this way.')
   const frei = (await freierPlatz(u, f.folder_id)) + Number(f.size)
+  // feste Grenze für Bilder, Instanz- und Rollengrenze für die Dateigröße (wie beim Hochladen) und freier Platz
+  const grenze0 = Math.min(MAX, await dateiGroesseMax(u))
   let g: Awaited<ReturnType<typeof schreiben>>
   try {
-    g = await schreiben(event.node.req, Math.min(MAX, frei))
+    g = await schreiben(event.node.req, Math.min(grenze0, frei))
   } catch (e: any) {
     if (e?.code === 'ZU_GROSS') {
-      if (frei < MAX) {
+      if (frei < grenze0) {
         // das Kontingent war die engere Grenze: freundliche Meldung mit Zahlen
         const laenge = Number(getRequestHeader(event, 'content-length')) || frei + 1
         await kontingentPruefen(u, laenge, { ordner: f.folder_id, ersetzt: Number(f.size) })

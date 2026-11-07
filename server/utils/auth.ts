@@ -1,4 +1,5 @@
 import { createHash, randomBytes } from 'node:crypto'
+import { isIP } from 'node:net'
 import bcrypt from 'bcryptjs'
 import type { H3Event } from 'h3'
 import { q, q1 } from './db'
@@ -18,8 +19,29 @@ export async function checkPw(pw: string, hash: string): Promise<boolean> {
 export const fremderHash = (hash: string) => hash.startsWith('$argon2') || hash.startsWith('$2y$')
 export const sha = (s: string) => createHash('sha256').update(s).digest('hex')
 
+/** Kommt die Verbindung aus einem lokalen/privaten Netz (Reverse-Proxy auf demselben Rechner oder im Docker-Netz)? */
+function adresseIntern(roh: string): boolean {
+  const a = roh.toLowerCase().replace(/^::ffff:/, '')
+  if (isIP(a) === 4) {
+    const [x, y] = a.split('.').map(Number) as [number, number]
+    return x === 127 || x === 10 || (x === 172 && y >= 16 && y <= 31) || (x === 192 && y === 168) || (x === 169 && y === 254)
+  }
+  return a === '::1' || /^f[cd]/.test(a) || /^fe[89ab]/.test(a)
+}
+/**
+ * Absender der Anfrage (für Fehlversuch-Sperren, Protokoll, Sitzungen). Der erste X-Forwarded-For-Wert stammt vom Client und ist frei
+ * wählbar (auch hinter nginx, das nur anhängt). Darum: ohne vorgeschalteten Proxy (Verbindung kommt von einer öffentlichen Adresse)
+ * zählt die Verbindungsadresse, mit lokalem/privatem Proxy der LETZTE Eintrag, den der Proxy selbst gesetzt hat.
+ */
 export function clientIp(event: H3Event): string {
-  return getRequestIP(event, { xForwardedFor: true }) || ''
+  const direkt = String(event.node.req.socket?.remoteAddress || '')
+  if (!direkt) return getRequestIP(event) || ''
+  if (!adresseIntern(direkt)) return direkt
+  const letzte = String(getRequestHeader(event, 'x-forwarded-for') || '')
+    .split(',')
+    .pop()!
+    .trim()
+  return isIP(letzte) ? letzte : direkt
 }
 export function istHttps(event: H3Event): boolean {
   return (

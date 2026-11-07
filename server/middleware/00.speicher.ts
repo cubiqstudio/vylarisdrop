@@ -26,12 +26,16 @@ function pfadAus(roh: string): string | null {
 }
 async function unterkontoErlaubt(req: http.IncomingMessage): Promise<boolean> {
   const auth = String(req.headers.authorization || '')
-  if (!auth.startsWith('Basic ')) return true
+  if (!auth) return true
+  // Das Schema ist nach RFC 7235 nicht von der Schreibweise abhängig (SFTPGo/Go erkennt auch „basic“ und „BASIC“). Alles, was
+  // nicht als Basic erkannt wird, kann ein Unterkonto nicht legitim senden und wird abgewiesen, statt ungeprüft durchzugehen.
+  const m = /^basic[ \t]+(\S+)\s*$/i.exec(auth)
+  if (!m) return false
   let login = ''
   try {
-    login = Buffer.from(auth.slice(6), 'base64').toString('utf8').split(':')[0]!
+    login = Buffer.from(m[1]!, 'base64').toString('utf8').split(':')[0]!.toLowerCase()
   } catch {
-    return true
+    return false
   }
   if (!/^vd[a-z0-9]{6,20}-sub\d+$/.test(login)) return true
   const ordner = await unterOrdner(login)

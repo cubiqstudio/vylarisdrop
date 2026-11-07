@@ -323,8 +323,16 @@ export async function ssoRueckkehr(
     : Array.isArray(claims.roles)
       ? claims.roles.map(String)
       : []
+  // Microsoft liefert kein email_verified, und der email-Claim ist dort nicht vertrauenswürdig (nOAuth: in fremden Mandanten frei setzbar).
+  // Er zählt nur, wenn Microsoft die Domain als geprüft kennzeichnet (xms_edov) oder das Token aus dem fest eingestellten eigenen
+  // Mandanten kommt (der Aussteller enthält dann keinen {tenantid}-Platzhalter; mit common/organizations/consumers nie).
+  const festerMandant = !!e.issuer && !String(e.issuer).includes('{tenantid}')
   const emailOk =
-    claims.email_verified === true || claims.email_verified === 'true' || (a.art === 'microsoft' && !!claims.email)
+    claims.email_verified === true ||
+    claims.email_verified === 'true' ||
+    (a.art === 'microsoft' &&
+      !!claims.email &&
+      (festerMandant || claims.xms_edov === true || claims.xms_edov === '1' || claims.xms_edov === 'true'))
   return {
     id: {
       sub: String(c.sub),

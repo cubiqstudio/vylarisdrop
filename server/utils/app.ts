@@ -1,5 +1,4 @@
 import { randomBytes, randomInt } from 'node:crypto'
-import { isIP } from 'node:net'
 import { promises as fs } from 'node:fs'
 import { join } from 'node:path'
 import type { H3Event } from 'h3'
@@ -104,29 +103,8 @@ export async function appGeraetAntwort(
   return { ok: true, token: g.klar, nutzer: appNutzerInfo(u), server: await appServerInfo() }
 }
 
-/** Kommt die Verbindung aus einem lokalen/privaten Netz (Reverse-Proxy auf demselben Rechner oder im Docker-Netz)? */
-function adresseIntern(roh: string): boolean {
-  const a = roh.toLowerCase().replace(/^::ffff:/, '')
-  if (isIP(a) === 4) {
-    const [x, y] = a.split('.').map(Number) as [number, number]
-    return x === 127 || x === 10 || (x === 172 && y >= 16 && y <= 31) || (x === 192 && y === 168) || (x === 169 && y === 254)
-  }
-  return a === '::1' || /^f[cd]/.test(a) || /^fe[89ab]/.test(a)
-}
-/**
- * Absender fuer die Zaehler der App-Routen. Der erste X-Forwarded-For-Wert stammt vom Client und ist frei waehlbar (auch hinter
- * nginx, das nur anhaengt). Darum: ohne vorgeschalteten Proxy (Verbindung kommt von einer oeffentlichen Adresse) zaehlt die
- * Verbindungsadresse, mit lokalem Proxy der LETZTE Eintrag, den der Proxy selbst gesetzt hat.
- */
-export function appIp(event: H3Event): string {
-  const direkt = String(event.node.req.socket?.remoteAddress || '')
-  if (!direkt || !adresseIntern(direkt)) return direkt || clientIp(event)
-  const letzte = String(getRequestHeader(event, 'x-forwarded-for') || '')
-    .split(',')
-    .pop()!
-    .trim()
-  return isIP(letzte) ? letzte : direkt
-}
+/** Absender fuer die Zaehler der App-Routen: dieselbe Regel wie clientIp() (siehe dort). */
+export const appIp = clientIp
 
 /** App-Geraete eines Nutzers widerrufen (Passwortaenderung, Admin-Reset, „Alle Sitzungen beenden“). Das Geraet, aus dem die aktuelle
  *  Sitzung stammt (sitzungHash), bleibt erhalten. Die Sitzungen widerrufener Geraete enden durch ON DELETE CASCADE. */

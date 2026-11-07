@@ -1,4 +1,4 @@
-import { q, ereignis } from '../../utils/db'
+import { q, q1, ereignis } from '../../utils/db'
 import { clientIp, neuesToken, requireUser } from '../../utils/auth'
 import { basisUrl } from '../../utils/dateien'
 import { getDesign } from '../../utils/settings'
@@ -10,6 +10,9 @@ export default defineEventHandler(async (event) => {
   const b = await readBody(event).catch(() => ({}))
   const basis = await basisUrl(event)
   const name = (await getDesign()).name || 'VylarisCloud'
+  // dieselbe Obergrenze wie bei POST /api/tokens: jedes Werkzeug-Profil legt ein neues Token an
+  const n = await q1<{ n: string }>("SELECT count(*) AS n FROM upload_tokens WHERE user_id = $1 AND art = 'api'", [u.id])
+  if (Number(n?.n || 0) >= 25) throw fehler(400, 'Höchstens 25 Token pro Konto.', 'At most 25 tokens per account.')
   const t = neuesToken()
   const label = { sharex: 'ShareX', flameshot: 'Flameshot', curl: 'curl / Skript' }[tool]!
   await q('INSERT INTO upload_tokens (user_id, name, prefix, key_hash) VALUES ($1, $2, $3, $4)', [
