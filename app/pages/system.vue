@@ -9,11 +9,14 @@ const { data, refresh, pending } = await (useFetch as any)(() => `/api/system/mo
   key: 'monitoring',
   watch: [stunden]
 })
-let uhr: any = null
-onMounted(() => {
-  uhr = setInterval(() => refresh(), 30_000)
+// Live: nur die Speicherzahlen (Dateien/Belegung) reagieren auf Datei-Meldungen, höchstens alle 10 s; sonst wie bisher alle
+// 30 s (nur bei sichtbarem Tab). Fehler bleiben still, die Kacheln behalten ihre Werte und werden nicht abgedunkelt.
+useLiveDaten({
+  daten: [{ schluessel: 'monitoring', url: () => `/api/system/monitoring?stunden=${stunden.value}` }],
+  themen: ['dateien', 'papierkorb'],
+  mind: 10_000,
+  intervall: 30_000
 })
-onBeforeUnmount(() => clearInterval(uhr))
 const z = computed<any>(() => data.value?.zustand)
 const v = computed<any[]>(() => data.value?.verlauf || [])
 const reihe = (k: string) => v.value.map((p) => ({ zeit: p.zeit, wert: p[k] }))

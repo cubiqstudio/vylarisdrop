@@ -5,7 +5,7 @@ const { ok, fehler } = useToast()
 const bestaetigen = useBestaetigen()
 const istInhaber = computed(() => theme.value.user?.role === 'owner')
 const { data: pro } = await (useFetch as any)('/api/pro', { key: 'pro' })
-const { data, refresh } = await (useFetch as any)('/api/pro/speicher', { key: 'speicher' })
+const { data, refresh } = await (useFetch as any)('/api/pro/speicher', { key: 'speicher-server' })
 const s3An = computed(() => !!pro.value?.funktionen?.s3)
 const multiAn = computed(() => !!pro.value?.funktionen?.['multi-server'])
 
@@ -157,20 +157,14 @@ async function umzugSteuern(was: string) {
   }
 }
 
-let uhr: any = null
-onMounted(() => {
-  const tick = () => {
-    uhr = setTimeout(
-      async () => {
-        await refresh().catch(() => {})
-        tick()
-      },
-      umzug.value?.status === 'laeuft' ? 2000 : 5000
-    )
-  }
-  tick()
+// Live: Gesamtplatz des Pools und Belegung je Knoten. Bei Datei-Meldungen (höchstens alle 5 s) und im Hintergrund-Abgleich
+// (alle 2 s während eines Umzugs, sonst alle 5 s), nur bei sichtbarem Tab; Fehler bleiben still.
+useLiveDaten({
+  daten: [{ schluessel: 'speicher-server', url: '/api/pro/speicher' }],
+  themen: ['dateien'],
+  mind: () => (umzug.value?.status === 'laeuft' ? 2000 : 5000),
+  intervall: 2000
 })
-onBeforeUnmount(() => clearTimeout(uhr))
 const knoten = computed<any[]>(() => [...(data.value?.knoten || [])].sort((a, b) => Number(b.lebt) - Number(a.lebt)))
 const lebend = computed(() => knoten.value.filter((k) => k.lebt))
 const laufzeit = (d: string) => {

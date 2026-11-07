@@ -1,6 +1,11 @@
 <script setup lang="ts">
 useHead({ title: () => t('Sync & WebDAV', 'Sync & WebDAV') })
 const { data: info } = await (useFetch as any)('/api/sync/info', { key: 'sync-info' })
+useLiveDaten({
+  daten: [{ schluessel: 'sync-info', url: '/api/sync/info' }],
+  themen: ['dateien', 'papierkorb'],
+  mind: 3000
+})
 const klar = ref('')
 const adresse = computed<string>(() => info.value?.adresse || '')
 const benutzer = computed<string>(() => info.value?.benutzer || '')

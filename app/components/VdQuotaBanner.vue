@@ -10,6 +10,27 @@ onMounted(() => {
   } catch {}
 })
 const stufe = computed(() => (props.quota?.limit ? props.quota.stufe : 'ok'))
+// Fällt die Belegung (live) wieder unter 80 %, gilt ein früheres Ausblenden nicht mehr: steigt sie erneut, erscheint der Hinweis wieder
+watch(
+  () => props.quota?.limit && props.quota.stufe === 'ok',
+  (ok) => {
+    if (!ok || !weg.value) return
+    weg.value = ''
+    try {
+      sessionStorage.removeItem('vd_quota_banner')
+    } catch {}
+  }
+)
+// Vorgelesen wird nur ein Wechsel der Stufe, nicht jede Prozentänderung beim Live-Aktualisieren
+const ansage = computed(() =>
+  stufe.value === 'voll'
+    ? t('Speicher voll', 'Storage full')
+    : stufe.value === 'kritisch'
+      ? t('Speicher fast voll', 'Storage almost full')
+      : stufe.value === 'warn'
+        ? t('Speicher zu über 80 Prozent belegt', 'Storage over 80 percent used')
+        : ''
+)
 const sichtbar = computed(() => stufe.value !== 'ok' && (stufe.value === 'voll' || weg.value !== stufe.value))
 function schliessen() {
   weg.value = stufe.value
@@ -39,35 +60,38 @@ const text = computed(() => {
 </script>
 
 <template>
-  <Transition name="qbanner">
-    <div v-if="sichtbar" class="qbn" :class="stufe" role="status">
-      <Ico n="alert" />
-      <div class="txt">
-        <b>{{ text }}</b>
-        <span v-if="props.quota && props.quota.papierkorb > 0" class="klein">
-          {{
-            t(
-              `Der Papierkorb belegt ${groesse(props.quota.papierkorb)} und zählt mit — leere ihn, um Platz zu schaffen.`,
-              `The trash holds ${groesse(props.quota.papierkorb)} and counts towards your storage — empty it to free up space.`
-            )
-          }}
-        </span>
-        <span v-else class="klein">{{ t('Lösche Dateien, die du nicht mehr brauchst, oder bitte einen Admin um mehr Platz.', 'Delete files you no longer need or ask an admin for more space.') }}</span>
+  <div>
+    <span class="versteckt" role="status">{{ sichtbar ? ansage : '' }}</span>
+    <Transition name="qbanner">
+      <div v-if="sichtbar" class="qbn" :class="stufe">
+        <Ico n="alert" />
+        <div class="txt">
+          <b>{{ text }}</b>
+          <span v-if="props.quota && props.quota.papierkorb > 0" class="klein">
+            {{
+              t(
+                `Der Papierkorb belegt ${groesse(props.quota.papierkorb)} und zählt mit — leere ihn, um Platz zu schaffen.`,
+                `The trash holds ${groesse(props.quota.papierkorb)} and counts towards your storage — empty it to free up space.`
+              )
+            }}
+          </span>
+          <span v-else class="klein">{{ t('Lösche Dateien, die du nicht mehr brauchst, oder bitte einen Admin um mehr Platz.', 'Delete files you no longer need or ask an admin for more space.') }}</span>
+        </div>
+        <NuxtLink v-if="props.quota && props.quota.papierkorb > 0" to="/papierkorb" class="knopf klein">
+          <Ico n="trash" /> {{ t('Papierkorb', 'Trash') }}
+        </NuxtLink>
+        <button
+          v-if="stufe !== 'voll'"
+          type="button"
+          class="knopf nur-icon klein"
+          :aria-label="t('Hinweis ausblenden', 'Dismiss notice')"
+          @click="schliessen"
+        >
+          <Ico n="x" />
+        </button>
       </div>
-      <NuxtLink v-if="props.quota && props.quota.papierkorb > 0" to="/papierkorb" class="knopf klein">
-        <Ico n="trash" /> {{ t('Papierkorb', 'Trash') }}
-      </NuxtLink>
-      <button
-        v-if="stufe !== 'voll'"
-        type="button"
-        class="knopf nur-icon klein"
-        :aria-label="t('Hinweis ausblenden', 'Dismiss notice')"
-        @click="schliessen"
-      >
-        <Ico n="x" />
-      </button>
-    </div>
-  </Transition>
+    </Transition>
+  </div>
 </template>
 
 <style scoped>

@@ -11,6 +11,18 @@ const { data: ueb, refresh: uebNeu } = await (useFetch as any)('/api/quota', {
   key: 'quota-uebersicht',
   immediate: istAdmin.value
 })
+// Live: eigene Änderungen und die gemeinsamer Teams kommen als Meldung; Dateien anderer Konten melden sich nicht beim
+// Admin, deshalb zusätzlich ein ruhiger Abgleich alle 10 s (nur bei sichtbarem Tab). Der Bearbeiten-Dialog hält eine Kopie.
+useLiveDaten({
+  daten: [
+    { schluessel: 'nutzer', url: '/api/users' },
+    { schluessel: 'quota-uebersicht', url: '/api/quota' }
+  ],
+  themen: ['dateien', 'papierkorb'],
+  mind: 3000,
+  intervall: 10_000,
+  aktiv: () => istAdmin.value
+})
 const alleNutzer = computed<any[]>(() => data.value?.users || [])
 const neu = reactive({
   offen: false,
