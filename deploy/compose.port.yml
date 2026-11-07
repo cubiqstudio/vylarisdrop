@@ -1,0 +1,8 @@
+services:
+  app:
+    ports:
+      - "${VD_BIND:-127.0.0.1}:${VD_PORT:?Bitte VD_PORT in .env setzen}:3000"
+    environment:
+      VD_PORT: ${VD_PORT}
+      VD_BIND: ${VD_BIND:-127.0.0.1}
+      VD_PROXY_DOMAIN: ${VD_PROXY_DOMAIN:-}
