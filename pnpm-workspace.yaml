@@ -19,3 +19,4 @@ overrides:
   '@vue/compiler-sfc': 3.5.42
   '@vue/compiler-ssr': 3.5.42
   tslib: 2.8.1
+  '@types/node': 26.6.5

@@ -430,7 +430,7 @@ const openA = (l: Lease, p: string, flags: string, mode?: number) =>
   aufruf<Buffer>(l, (cb) => l.sftp.open(p, flags as any, mode != null ? { mode } : {}, cb))
 const closeA = (l: Lease, h: Buffer) => aufruf<void>(l, (cb) => l.sftp.close(h, cb), 10_000)
 
-export async function ordnerAnlegen(l: Lease, abs: string): Promise<void> {
+export async function sftpOrdnerAnlegen(l: Lease, abs: string): Promise<void> {
   if (l.ordner.has(abs)) return
   const teile = abs.split('/').filter(Boolean)
   let p = ''
@@ -531,7 +531,7 @@ export async function schreibenAuf(l: Lease, pfad: string, quelle: Readable): Pr
   }
   const weg = l.beiAbbruch(abbruch)
   try {
-    await ordnerAnlegen(l, posix.dirname(pfad))
+    await sftpOrdnerAnlegen(l, posix.dirname(pfad))
     h = await openA(l, pfad, 'w', 0o640)
     schreiber = new SftpSchreiber(l.sftp, h, l.ziel.name, abbruch)
     await pipeline(quelle, schreiber)
@@ -915,7 +915,7 @@ export async function sftpTesten(p: TestEingabe): Promise<TestErgebnis> {
     }
     try {
       schritte.push({ name: 'hostkey', ok: true }, { name: 'anmeldung', ok: true })
-      if (p.schreibbar) await T('ordner', () => ordnerAnlegen(l, p.basis))
+      if (p.schreibbar) await T('ordner', () => sftpOrdnerAnlegen(l, p.basis))
       else
         await T('ordner', async () => {
           await statA(l, p.basis)
