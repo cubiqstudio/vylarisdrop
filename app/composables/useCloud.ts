@@ -410,7 +410,7 @@ export function useCloud() {
     await neuLaden()
   }
 
-  // Löschen → Papierkorb, mit "Rückgängig" für Dateien
+  // Löschen → Papierkorb, mit "Rückgängig" für Dateien (nicht, wenn Ordner mitgelöscht wurden)
   const rueckgaengig = ref<{ text: string; papierkorb: Array<{ id: string; name: string }>; ordner: number } | null>(null)
   let rueckTimer: any = null
   async function loeschen(l: CloudEintrag[]): Promise<boolean> {
@@ -424,7 +424,8 @@ export function useCloud() {
       : r.dateien
         ? t(`${dat} im Papierkorb`, `${dat} in the trash`)
         : t('Gelöscht', 'Deleted')
-    rueckgaengig.value = { text, papierkorb: r.papierkorb, ordner: r.ordner }
+    // Gelöschte Ordner kommen nicht zurück (nur ihre Dateien liegen im Papierkorb): dann kein "Rückgängig", das nur Dateien flach in die Wurzel legen würde
+    rueckgaengig.value = { text, papierkorb: r.ordner ? [] : r.papierkorb, ordner: r.ordner }
     clearTimeout(rueckTimer)
     rueckTimer = setTimeout(() => (rueckgaengig.value = null), 9000)
     await neuLaden()

@@ -9,7 +9,7 @@ export const MAX_ZEILEN = 100_000
 
 export const ListenFrage = z.object({
   ansicht: z.enum(['alle', 'zuletzt', 'favoriten', 'team']).default('alle'),
-  ordner: z.coerce.number().int().positive().optional(),
+  ordner: z.coerce.number().int().positive().max(2_147_483_647).optional(),
   sort: z.enum(['name', 'groesse', 'datum']).optional(),
   richtung: z.enum(['auf', 'ab']).optional(),
   suche: z.string().max(100).optional(),

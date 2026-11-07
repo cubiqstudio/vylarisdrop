@@ -1,25 +1,30 @@
 import { z } from 'zod'
 import type { H3Event } from 'h3'
-import { q, q1, ereignis } from './db'
+import { db, q, q1, ereignis } from './db'
 import { clientIp, type Nutzer } from './auth'
-import { aenderbareDateien, dateiRecht, meineTeams, ordnerRecht, type OrdnerRecht } from './teams'
+import { aenderbareDateien, dateiRecht, meineTeams, ordnerRecht, requireRecht, type OrdnerRecht } from './teams'
 import { eindeutigerName, mitNamenssperre, namenSaeubern, sperrSchluessel } from './dateiNamen'
 import { inPapierkorb } from './papierkorb'
 import { webhookAusloesen } from './webhooks'
 import { dateiAnlegen, type DateiZeile } from './dateien'
-import { freierPlatz } from './hochladen'
+import { dateiGroesseMax } from './hochladen'
+import { groesseText, istQuotaFehler, kontingentPruefen, ordnerBaumBytes, teamVonOrdner, verschiebenPruefen, type Ausf } from './quota'
 import { lesen, loeschen, schreiben } from './speicher'
 
 const MAX_ORDNER_JE_NUTZER = 10_000
 const MAX_LOESCHEN = 20_000
 const MAX_KOPIEREN = 5_000
 
+/** Größte ID einer int4-Spalte: größere Werte würden in Postgres einen Fehler (HTTP 500) auslösen */
+const ID_MAX = 2_147_483_647
+const OrdnerId = z.number().int().positive().max(ID_MAX)
+
 export const DateiIds = z
   .array(z.string().regex(/^\d{1,18}$/))
   .max(20_000)
   .default([])
-export const OrdnerIds = z.array(z.number().int().positive()).max(20_000).default([])
-const Ziel = z.number().int().positive().nullable().default(null)
+export const OrdnerIds = z.array(OrdnerId).max(20_000).default([])
+const Ziel = OrdnerId.nullable().default(null)
 
 export const AuswahlBody = z.object({ dateien: DateiIds, ordner: OrdnerIds })
 export const ZielBody = AuswahlBody.extend({ ziel: Ziel })
@@ -46,8 +51,8 @@ async function zielRecht(u: Nutzer, ziel: number | null): Promise<OrdnerRecht | 
   return r
 }
 
-async function teamSetzen(id: number, team: number | null) {
-  await q(
+async function teamSetzen(id: number, team: number | null, x: Ausf = q) {
+  await x(
     `WITH RECURSIVE unter(id) AS (SELECT $1::int UNION SELECT f.id FROM folders f JOIN unter ON f.parent_id = unter.id)
     UPDATE folders SET team_id = $2 WHERE id IN (SELECT id FROM unter)`,
     [id, team]
@@ -56,9 +61,39 @@ async function teamSetzen(id: number, team: number | null) {
 
 // ---------- Verschieben ----------
 
+// Ordner-Verschiebungen laufen nacheinander: je Prozess über eine Namenssperre und über alle Server-Knoten per Advisory-Lock.
+// Sonst bestehen zwei gegenläufige Verschiebungen (A nach B, B nach A) beide die Zyklus-Prüfung und hängen danach aneinander.
+const NS_ORDNERBAUM = 7110
+async function mitOrdnerbaumSperre<T>(fn: () => Promise<T>): Promise<T> {
+  return mitNamenssperre('ordnerbaum', async () => {
+    const c = await db().connect()
+    let defekt: any = null
+    try {
+      await c.query('SELECT pg_advisory_lock($1, 0)', [NS_ORDNERBAUM])
+      return await fn()
+    } finally {
+      try {
+        await c.query('SELECT pg_advisory_unlock_all()')
+      } catch (e) {
+        defekt = e
+      }
+      c.release(defekt || undefined)
+    }
+  })
+}
+
+/** Enthält der Ordner (samt Unterordnern) Ordner oder Dateien anderer Konten als `userId`? */
+async function hatFremdeInhalte(ordnerId: number, userId: number): Promise<boolean> {
+  const baum = await unterbaum([ordnerId])
+  if (baum.some((o) => o.user_id !== userId)) return true
+  const f = await q1('SELECT 1 FROM files WHERE folder_id = ANY($1::int[]) AND user_id <> $2 LIMIT 1', [baum.map((o) => o.id), userId])
+  return !!f
+}
+
 export async function verschieben(u: Nutzer, b: z.infer<typeof ZielBody>, event: H3Event) {
   const ziel = b.ziel
   const zr = await zielRecht(u, ziel)
+  const neuesTeam = zr ? zr.team_id : null
   const dIds = [...new Set(b.dateien)]
   const oIds = [...new Set(b.ordner)]
   if (!dIds.length && !oIds.length) throw fehler(400, 'Nichts ausgewählt.', 'Nothing selected.')
@@ -66,8 +101,8 @@ export async function verschieben(u: Nutzer, b: z.infer<typeof ZielBody>, event:
   const erlaubt = new Set((await aenderbareDateien(u.id, dIds)).map((x) => x.id))
   if (dIds.some((id) => !erlaubt.has(id))) throw dateiNichtGefunden()
   const dateien = dIds.length
-    ? await q<{ id: string; name: string; user_id: number; folder_id: number | null }>(
-        'SELECT id, name, user_id, folder_id FROM files WHERE id = ANY($1::bigint[])',
+    ? await q<{ id: string; name: string; user_id: number; folder_id: number | null; size: string }>(
+        'SELECT id, name, user_id, folder_id, size FROM files WHERE id = ANY($1::bigint[])',
         [dIds]
       )
     : []
@@ -82,49 +117,74 @@ export async function verschieben(u: Nutzer, b: z.infer<typeof ZielBody>, event:
     const o = (await q1<{ name: string; parent_id: number | null }>('SELECT name, parent_id FROM folders WHERE id = $1', [id]))!
     if (!r.eigen && !zr?.team_id)
       throw fehler(400, 'Ein Team-Ordner bleibt im Team.', 'A team folder stays in the team.')
-    if (ziel != null) {
-      const kreis = await q1(
-        `WITH RECURSIVE unter(id, tiefe) AS (SELECT $1::int, 0 UNION SELECT f.id, unter.tiefe + 1 FROM folders f JOIN unter ON f.parent_id = unter.id WHERE unter.tiefe < 100)
-        SELECT 1 FROM unter WHERE id = $2`,
-        [id, ziel]
+    // Wer einen Ordner aus seinem Team herausnimmt, nimmt auch dessen Inhalt mit: Inhalte anderer Mitglieder bleiben im Team
+    if (r.team_id && neuesTeam !== r.team_id && (await hatFremdeInhalte(id, u.id)))
+      throw fehler(
+        400,
+        'Der Ordner enthält Inhalte anderer Mitglieder und bleibt deshalb im Team.',
+        'The folder contains content of other members and therefore stays in the team.'
       )
-      if (kreis)
-        throw fehler(
-          400,
-          'Ein Ordner kann nicht in sich selbst oder in einen seiner Unterordner verschoben werden.',
-          'A folder cannot be moved into itself or one of its subfolders.'
-        )
-    }
     ordner.push({ id, name: o.name, parent_id: o.parent_id, team_id: r.team_id, eigen: r.eigen })
+  }
+
+  // Team-Kontingent: was noch nicht im Ziel-Team liegt, zählt dort neu (Frühprüfung für den ganzen Auftrag; verbindlich
+  // ist die Prüfung je Element unter der Team-Sperre weiter unten)
+  if (neuesTeam) {
+    let zuwachs = 0
+    for (const o of ordner) if (o.team_id !== neuesTeam) zuwachs += await ordnerBaumBytes(o.id)
+    for (const f of dateien) if (f.folder_id !== ziel && (await teamVonOrdner(f.folder_id)) !== neuesTeam) zuwachs += Number(f.size)
+    if (zuwachs > 0) await kontingentPruefen(null, zuwachs, { zielTeam: neuesTeam, mehrere: true })
   }
 
   const umbenannt: Array<{ typ: 'datei' | 'ordner'; id: string | number; name: string }> = []
   let verschoben = 0
   let unveraendert = 0
-  await mitNamenssperre(sperrSchluessel(u.id, ziel), async () => {
-    for (const o of ordner) {
-      if (o.parent_id === ziel && (ziel != null || !o.team_id)) {
-        unveraendert++
-        continue
+  const arbeit = () =>
+    mitNamenssperre(sperrSchluessel(u.id, ziel), async () => {
+      // Zyklus-Prüfung unter der Ordnerbaum-Sperre, unmittelbar vor dem Schreiben
+      if (ziel != null)
+        for (const o of ordner) {
+          const kreis = await q1(
+            `WITH RECURSIVE unter(id, tiefe) AS (SELECT $1::int, 0 UNION SELECT f.id, unter.tiefe + 1 FROM folders f JOIN unter ON f.parent_id = unter.id WHERE unter.tiefe < 100)
+            SELECT 1 FROM unter WHERE id = $2`,
+            [o.id, ziel]
+          )
+          if (kreis)
+            throw fehler(
+              400,
+              'Ein Ordner kann nicht in sich selbst oder in einen seiner Unterordner verschoben werden.',
+              'A folder cannot be moved into itself or one of its subfolders.'
+            )
+        }
+      for (const o of ordner) {
+        if (o.parent_id === ziel && (ziel != null || !o.team_id)) {
+          unveraendert++
+          continue
+        }
+        const name = await eindeutigerName({ ordnerId: ziel, userId: u.id, teamId: zr?.team_id, name: o.name, art: 'ordner', ausser: o.id })
+        const zuwachs = neuesTeam && neuesTeam !== o.team_id ? await ordnerBaumBytes(o.id) : 0
+        await verschiebenPruefen({ team: neuesTeam }, zuwachs, o.team_id, async (x) => {
+          await x('UPDATE folders SET parent_id = $1, name = $2, geaendert_at = now() WHERE id = $3', [ziel, name, o.id])
+          if (neuesTeam !== o.team_id) await teamSetzen(o.id, neuesTeam, x)
+        })
+        if (name !== o.name) umbenannt.push({ typ: 'ordner', id: o.id, name })
+        verschoben++
       }
-      const name = await eindeutigerName({ ordnerId: ziel, userId: u.id, teamId: zr?.team_id, name: o.name, art: 'ordner', ausser: o.id })
-      await q('UPDATE folders SET parent_id = $1, name = $2, geaendert_at = now() WHERE id = $3', [ziel, name, o.id])
-      const neuesTeam = zr ? zr.team_id : null
-      if (neuesTeam !== o.team_id) await teamSetzen(o.id, neuesTeam)
-      if (name !== o.name) umbenannt.push({ typ: 'ordner', id: o.id, name })
-      verschoben++
-    }
-    for (const f of dateien) {
-      if (f.folder_id === ziel) {
-        unveraendert++
-        continue
+      for (const f of dateien) {
+        if (f.folder_id === ziel) {
+          unveraendert++
+          continue
+        }
+        const name = await eindeutigerName({ ordnerId: ziel, userId: u.id, name: f.name, art: 'datei', ausser: f.id })
+        const von = await teamVonOrdner(f.folder_id)
+        await verschiebenPruefen({ team: neuesTeam }, neuesTeam && von !== neuesTeam ? Number(f.size) : 0, von, (x) =>
+          x('UPDATE files SET folder_id = $1, name = $2, geaendert_at = now() WHERE id = $3', [ziel, name, f.id])
+        )
+        if (name !== f.name) umbenannt.push({ typ: 'datei', id: f.id, name })
+        verschoben++
       }
-      const name = await eindeutigerName({ ordnerId: ziel, userId: u.id, name: f.name, art: 'datei', ausser: f.id })
-      await q('UPDATE files SET folder_id = $1, name = $2, geaendert_at = now() WHERE id = $3', [ziel, name, f.id])
-      if (name !== f.name) umbenannt.push({ typ: 'datei', id: f.id, name })
-      verschoben++
-    }
-  })
+    })
+  await (ordner.length ? mitOrdnerbaumSperre(arbeit) : arbeit())
   await ereignis('cloud_verschoben', u.id, { anzahl: verschoben, ziel }, clientIp(event))
   return { ok: true, verschoben, unveraendert, umbenannt }
 }
@@ -133,7 +193,7 @@ export async function verschieben(u: Nutzer, b: z.infer<typeof ZielBody>, event:
 
 export const UmbenennenBody = z.object({
   typ: z.enum(['datei', 'ordner']),
-  id: z.union([z.string().regex(/^\d{1,18}$/), z.number().int().positive()]),
+  id: z.union([z.string().regex(/^\d{1,18}$/), OrdnerId]),
   name: z.string().max(400)
 })
 
@@ -168,8 +228,8 @@ export async function umbenennen(u: Nutzer, b: z.infer<typeof UmbenennenBody>, e
 
 export const OrdnerBody = z.object({
   name: z.string().max(400),
-  ordner: z.number().int().positive().nullable().default(null),
-  team: z.number().int().positive().nullable().optional(),
+  ordner: OrdnerId.nullable().default(null),
+  team: OrdnerId.nullable().optional(),
   wiederverwenden: z.boolean().optional()
 })
 
@@ -346,6 +406,8 @@ export async function loeschenAuswahl(u: Nutzer, b: z.infer<typeof AuswahlBody>,
 // ---------- Kopieren ----------
 
 export async function kopieren(u: Nutzer, b: z.infer<typeof ZielBody>, event: H3Event) {
+  // Kopieren legt neue Dateien an: dieselben Rollenrechte wie beim Hochladen
+  await requireRecht(u, 'hochladen')
   const ziel = b.ziel
   const zr = await zielRecht(u, ziel)
   const dIds = [...new Set(b.dateien)]
@@ -374,9 +436,17 @@ export async function kopieren(u: Nutzer, b: z.infer<typeof ZielBody>, event: H3
   const gesamt = einzel.length + inOrdnern.length
   if (gesamt > MAX_KOPIEREN)
     throw fehler(400, `Zu viele Dateien auf einmal (höchstens ${MAX_KOPIEREN}).`, `Too many files at once (at most ${MAX_KOPIEREN}).`)
+  const dateiMax = await dateiGroesseMax(u)
+  const zuGross = [...einzel, ...inOrdnern].find((f) => Number(f.size) > dateiMax)
+  if (zuGross)
+    throw fehler(
+      413,
+      `„${zuGross.name}“ ist größer als erlaubt (höchstens ${groesseText(dateiMax, false)}).`,
+      `“${zuGross.name}” is larger than allowed (at most ${groesseText(dateiMax, true)}).`
+    )
+  // Frühprüfung gegen das Kontingent des Kontos und des Ziel-Teams (507 mit Zahlen), bevor etwas angelegt wird
   const bytes = einzel.reduce((a, f) => a + Number(f.size), 0) + inOrdnern.reduce((a, f) => a + Number(f.size), 0)
-  if (bytes > (await freierPlatz(u)))
-    throw fehler(413, 'Dafür ist nicht genug Speicherplatz frei.', 'There is not enough free storage for this.')
+  await kontingentPruefen(u, bytes, { ordner: ziel, mehrere: true })
   const n = await q1<{ n: string }>('SELECT count(*) AS n FROM folders WHERE user_id = $1', [u.id])
   if (Number(n?.n || 0) + baum.length > MAX_ORDNER_JE_NUTZER)
     throw fehler(400, 'Höchstens 10.000 Ordner.', 'At most 10,000 folders.')
@@ -384,6 +454,8 @@ export async function kopieren(u: Nutzer, b: z.infer<typeof ZielBody>, event: H3
   const sprache = u.prefs?.lang === 'en' ? 'en' : 'de'
   const fehlerListe: string[] = []
   let kopiert = 0
+  let quotaFehler: unknown = null
+  const angelegteOrdner: number[] = []
   const kopierDatei = async (f: DateiZeile, ordnerId: number | null, teamId: number | null) => {
     try {
       await mitNamenssperre(sperrSchluessel(u.id, ordnerId), async () => {
@@ -408,15 +480,20 @@ export async function kopieren(u: Nutzer, b: z.infer<typeof ZielBody>, event: H3
       })
       kopiert++
     } catch (e: any) {
+      if (istQuotaFehler(e)) quotaFehler ??= e
       fehlerListe.push(`${f.name}: ${String(e?.message || e).slice(0, 120)}`)
     }
   }
 
   const neueOrdner: Array<{ id: number; name: string }> = []
   await Promise.resolve()
-  for (const f of einzel) await kopierDatei(f, ziel, zr?.team_id ?? null)
+  for (const f of einzel) {
+    if (quotaFehler) break
+    await kopierDatei(f, ziel, zr?.team_id ?? null)
+  }
   // Ordner: Struktur zuerst, dann die Dateien
   for (const wurzel of oIds) {
+    if (quotaFehler) break
     const teil = baum.filter((o) => o.wurzel === wurzel)
     const neuId = new Map<number, number>()
     const start = teil.find((o) => o.id === wurzel)!
@@ -432,6 +509,7 @@ export async function kopieren(u: Nutzer, b: z.infer<typeof ZielBody>, event: H3
       }
     )
     neuId.set(wurzel, wo.id)
+    angelegteOrdner.push(wo.id)
     neueOrdner.push(wo)
     // nach Tiefe: Eltern vor Kindern
     let offen = teil.filter((o) => o.id !== wurzel)
@@ -444,14 +522,21 @@ export async function kopieren(u: Nutzer, b: z.infer<typeof ZielBody>, event: H3
           [u.id, neuId.get(o.parent_id!)!, o.name, zr?.team_id ?? null]
         )
         neuId.set(o.id, neu!.id)
+        angelegteOrdner.push(neu!.id)
       }
       offen = offen.filter((o) => !neuId.has(o.id))
     }
-    for (const f of inOrdnern.filter((x) => x.folder_id != null && teil.some((o) => o.id === x.folder_id)))
+    for (const f of inOrdnern.filter((x) => x.folder_id != null && teil.some((o) => o.id === x.folder_id))) {
+      if (quotaFehler) break
       await kopierDatei(f, neuId.get(f.folder_id!) ?? null, zr?.team_id ?? null)
+    }
   }
   await ereignis('cloud_kopiert', u.id, { anzahl: kopiert, ziel }, clientIp(event))
-  if (!kopiert && fehlerListe.length)
+  if (!kopiert && fehlerListe.length) {
+    // Nichts wurde kopiert: die schon angelegten (leeren) Ordner wieder entfernen
+    if (angelegteOrdner.length) await q('DELETE FROM folders WHERE id = ANY($1::int[])', [angelegteOrdner])
+    if (quotaFehler) throw quotaFehler
     throw fehler(500, `Kopieren fehlgeschlagen: ${fehlerListe[0]}`, `Copy failed: ${fehlerListe[0]}`)
+  }
   return { ok: true, kopiert, ordner: neueOrdner.length, fehler: fehlerListe.length ? fehlerListe.slice(0, 10) : undefined }
 }

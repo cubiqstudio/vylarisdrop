@@ -81,7 +81,8 @@ export interface OrdnerRecht {
 }
 
 export async function ordnerRecht(userId: number, ordnerId: number): Promise<OrdnerRecht | null> {
-  if (!Number.isSafeInteger(ordnerId) || ordnerId <= 0) return null
+  // über dem int4-Bereich gibt es keine Ordner (und Postgres würde die Abfrage mit einem Fehler abweisen)
+  if (!Number.isSafeInteger(ordnerId) || ordnerId <= 0 || ordnerId > 2_147_483_647) return null
   const o = await q1<{ id: number; user_id: number; team_id: number | null }>(
     'SELECT id, user_id, team_id FROM folders WHERE id = $1',
     [ordnerId]
