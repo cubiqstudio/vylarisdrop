@@ -11,11 +11,13 @@ const THEMEN = new Set<string>(['dateien', 'ordner', 'papierkorb', 'anfragen'])
 interface Verbindung {
   id: number
   nutzer: number
+  sitzung: string // Hash des Sitzungs-Cookies, mit dem die Verbindung geöffnet wurde
   schreiben: (text: string) => void
   schliessen: () => void
 }
 const verbindungen = new Map<number, Set<Verbindung>>()
 let zaehler = 0
+let herunterfahren = false
 const MAX_JE_NUTZER = 12
 const MAX_GESAMT = 1000
 
@@ -55,6 +57,10 @@ function leeren() {
   offen.clear()
   for (const x of stapel) senden(x.nutzer, x.thema)
 }
+/** Meldet allen Verbindungen "alles neu laden" (nach verpassten Meldungen, z. B. Abriss der Datenbank-Hörverbindung). */
+function allenMelden() {
+  for (const v of verbindungen.values()) for (const c of [...v]) c.schreiben('data: {"t":"alle"}\n\n')
+}
 async function eingang(nutzer: number, thema: string) {
   if (!THEMEN.has(thema) || !Number.isInteger(nutzer) || nutzer < 0) return
   if (!verbindungen.size) return
@@ -76,6 +82,8 @@ export function liveStarten() {
   angemeldet = true
   // Nutzlast der Datenbank: "<Thema>|<Nutzer-ID>" (nach dem Knoten-Präfix "db|")
   hoeren('vd_live', (n) => {
+    // "*": die Hörverbindung zur Datenbank war weg, Meldungen aus der Zwischenzeit fehlen
+    if (n === '*') return allenMelden()
     const [thema, uid] = String(n).split('|')
     void eingang(Number(uid), thema || '')
   })
@@ -83,22 +91,52 @@ export function liveStarten() {
     const jetzt = Date.now()
     for (const [k, v] of genossenCache) if (v.bis < jetzt) genossenCache.delete(k)
   }, 300_000).unref?.()
+  setInterval(() => void sitzungenPruefen(), 10_000).unref?.()
+}
+
+// ===== Sitzungen prüfen: abgemeldete, abgelaufene und widerrufene Sitzungen (und gelöschte Konten) verlieren den Stream =====
+let pruefung = false
+async function sitzungenPruefen() {
+  if (pruefung || !verbindungen.size) return
+  pruefung = true
+  try {
+    const geprueft = new Set<string>()
+    for (const v of verbindungen.values()) for (const c of v) geprueft.add(c.sitzung)
+    const r = await q<{ token_hash: string }>(
+      `SELECT s.token_hash FROM sessions s JOIN users u ON u.id = s.user_id
+        WHERE s.token_hash = ANY($1) AND s.expires_at > now()`,
+      [[...geprueft]]
+    )
+    const gueltig = new Set(r.map((x) => x.token_hash))
+    // Nur Verbindungen schließen, deren Sitzung in dieser Abfrage enthalten war (neue sind ggf. später dazugekommen)
+    for (const v of [...verbindungen.values()])
+      for (const c of [...v]) if (geprueft.has(c.sitzung) && !gueltig.has(c.sitzung)) c.schliessen()
+  } catch {
+    // Datenbank kurz nicht erreichbar: Verbindungen bleiben, nächste Prüfung folgt
+  } finally {
+    pruefung = false
+  }
+}
+
+/** Schließt alle Event-Verbindungen (Herunterfahren): sonst wartet der Server bis zum Zeitlimit auf die offenen Streams. */
+export function liveSchliessen() {
+  herunterfahren = true
+  for (const v of [...verbindungen.values()]) for (const c of [...v]) c.schliessen()
 }
 
 /** Öffnet die Event-Verbindung eines Nutzers. Gibt ein Promise zurück, das endet, wenn die Verbindung schließt. */
-export function verbinden(event: H3Event, nutzer: number): Promise<void> {
+export function verbinden(event: H3Event, nutzer: number, sitzung: string): Promise<void> {
   liveStarten()
+  if (herunterfahren) throw fehler(503, 'Der Server fährt herunter.', 'The server is shutting down.')
   const res = event.node.res
   const req = event.node.req
   const eigene = verbindungen.get(nutzer)
   let gesamt = 0
   for (const s of verbindungen.values()) gesamt += s.size
-  if ((eigene?.size || 0) >= MAX_JE_NUTZER || gesamt >= MAX_GESAMT) {
-    // Älteste Verbindung des Nutzers schließen, sonst ablehnen
-    const aelteste = eigene && [...eigene][0]
-    if (aelteste && (eigene?.size || 0) >= MAX_JE_NUTZER) aelteste.schliessen()
-    else throw fehler(429, 'Zu viele Live-Verbindungen.', 'Too many live connections.')
-  }
+  // Neue Verbindung ablehnen (der Browser stoppt dann und versucht es mit Pause neu): Verdrängte Verbindungen würden
+  // sich nach retry sofort wieder anmelden und reihum endlos gegenseitig verdrängen
+  if ((eigene?.size || 0) >= MAX_JE_NUTZER || gesamt >= MAX_GESAMT)
+    throw fehler(429, 'Zu viele Live-Verbindungen.', 'Too many live connections.')
   res.statusCode = 200
   res.setHeader('content-type', 'text/event-stream; charset=utf-8')
   res.setHeader('cache-control', 'no-cache, no-transform')
@@ -111,6 +149,7 @@ export function verbinden(event: H3Event, nutzer: number): Promise<void> {
     const c: Verbindung = {
       id: ++zaehler,
       nutzer,
+      sitzung,
       schreiben: (text) => {
         if (zu) return
         try {
