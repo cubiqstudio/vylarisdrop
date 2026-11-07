@@ -4,7 +4,7 @@ import type { H3Event } from 'h3'
 import { q, q1 } from './db'
 import { checkPw, hashPw, istHttps } from './auth'
 import { getInstance, getNet, getUploads, type NamensStil } from './settings'
-import { lesen, loeschen, type Geschrieben } from './speicher'
+import { ablageBereit, lesen, loeschen, type Geschrieben } from './speicher'
 import { neuerName, istSlug } from './namen'
 import { verarbeiten } from './medien'
 import { ablaufBegrenzen, ordnerRecht } from './teams'
@@ -441,6 +441,7 @@ export async function ausliefern(event: H3Event, f: DateiZeile, modus: 'inline' 
     'Content-Disposition': `${modus === 'download' ? 'attachment' : 'inline'}; filename*=UTF-8''${dateiname}`,
     'ETag': `"${f.sha256.slice(0, 32) || f.id}"`
   })
+  if (event.method !== 'HEAD') await ablageBereit(f.ablage)
   const range = String(getRequestHeader(event, 'range') || '')
   const m = /^bytes=(\d*)-(\d*)$/.exec(range)
   if (m && size > 0) {

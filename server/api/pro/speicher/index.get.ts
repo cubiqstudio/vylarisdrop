@@ -9,7 +9,7 @@ export default defineEventHandler(async (event) => {
   await requireAdmin(event)
   const w = await getSpeicher()
   const verteilung = await q<{ ort: string; n: string; s: string }>(
-    `SELECT CASE WHEN ablage LIKE 's3:%' THEN 's3' ELSE 'lokal' END AS ort, count(*) AS n, coalesce(sum(size), 0) AS s FROM files GROUP BY 1`
+    `SELECT CASE WHEN ablage LIKE 's3:%' THEN 's3' WHEN ablage ~ '^sftp[0-9]+:' THEN 'sftp' ELSE 'lokal' END AS ort, count(*) AS n, coalesce(sum(size), 0) AS s FROM files GROUP BY 1`
   )
   const knoten = await alleKnoten()
   return {

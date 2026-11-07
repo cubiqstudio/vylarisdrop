@@ -5,19 +5,40 @@ import { Transform, type Readable } from 'node:stream'
 import { pipeline } from 'node:stream/promises'
 import { getSpeicher, s3Groesse, s3Hochladen, s3Lesen, s3Loeschen, s3LoeschenPraefix } from './s3'
 import { istPro } from './lizenz'
+import { alsHttpFehler, zielLaden } from './sftpZiele'
+import {
+  loeschenVormerken,
+  sftpBereit,
+  sftpGroesse,
+  sftpLesen,
+  sftpLoeschen,
+  sftpSchreiben
+} from './sftpClient'
 
-export type Ort = 'lokal' | 's3'
+/** Speicherort einer Datei: lokal, S3 oder eine SFTP-Speicher-Erweiterung (`sftp<Ziel-ID>`). */
+export type Ort = 'lokal' | 's3' | `sftp${number}`
 export const datenordner = () =>
   useRuntimeConfig().dataDir ||
   process.env.NUXT_DATA_DIR ||
   (process.platform === 'win32' ? join(process.cwd(), 'data') : '/data')
-const SCHLUESSEL = /^(s3:)?[0-9a-f]{32}$/
+const SCHLUESSEL = /^((s3|sftp[0-9]{1,9}):)?[0-9a-f]{32}$/
 const UPLOAD_ID = /^[0-9a-f]{24}$/
 
-export const ortVon = (ablage: string): Ort => (ablage.startsWith('s3:') ? 's3' : 'lokal')
+export const ortVon = (ablage: string): Ort => {
+  if (ablage.startsWith('s3:')) return 's3'
+  const m = /^(sftp[0-9]{1,9}):/.exec(ablage)
+  return m ? (m[1] as Ort) : 'lokal'
+}
+/** ID der SFTP-Erweiterung eines Ortes, sonst null. */
+export const sftpId = (o: Ort | string): number | null => {
+  const m = /^sftp([0-9]{1,9})$/.exec(o)
+  return m ? Number(m[1]) : null
+}
+/** Prüft einen gespeicherten Ort-Text (z. B. Spalte uploads.speicher) und liefert sonst null. */
+export const ortGueltig = (o: string): Ort | null => (o === 'lokal' || o === 's3' || sftpId(o) != null ? (o as Ort) : null)
 const kern = (ablage: string) => {
   if (!SCHLUESSEL.test(ablage)) throw new Error('ungueltiger Speicher-Schluessel')
-  return ablage.replace(/^s3:/, '')
+  return ablage.replace(/^(s3|sftp[0-9]+):/, '')
 }
 export type Neben = 'vorschau' | 'streifen' | 'ansicht' | 'live' | 'livemp4'
 export const NEBEN: Record<Neben, { endung: string; typ: string }> = {
@@ -54,7 +75,34 @@ export async function arbeitsPfad(endung = ''): Promise<string> {
 
 export async function zielOrt(): Promise<Ort> {
   const w = await getSpeicher()
+  if (w.art === 'sftp' && w.sftpZiel) {
+    // nur eine aktive, beschreibbare Erweiterung; sonst bleibt es lokal (die Oberfläche warnt davor)
+    const z = await zielLaden(w.sftpZiel)
+    return z?.aktiv && z.schreibbar ? (`sftp${z.id}` as Ort) : 'lokal'
+  }
   return w.art === 's3' && !!w.s3?.bucket && (await istPro('s3')) ? 's3' : 'lokal'
+}
+
+/** Wie ablageBereit, für mehrere Dateien (je Speicherort nur einmal geprüft). */
+export async function ablagenBereit(ablagen: string[]): Promise<void> {
+  const gesehen = new Set<string>()
+  for (const a of ablagen) {
+    const o = ortVon(a)
+    if (o === 'lokal' || o === 's3' || gesehen.has(o)) continue
+    gesehen.add(o)
+    await ablageBereit(a)
+  }
+}
+
+/** Vorab-Prüfung vor dem Ausliefern: ist der Speicherort der Datei erreichbar? Wirft sonst 503/502 mit klarer Meldung. */
+export async function ablageBereit(ablage: string): Promise<void> {
+  const id = sftpId(ortVon(ablage))
+  if (id == null) return
+  try {
+    await sftpBereit(id)
+  } catch (e) {
+    throw alsHttpFehler(e)
+  }
 }
 
 export interface Geschrieben {
@@ -67,7 +115,7 @@ export interface Geschrieben {
 export async function schreiben(quelle: Readable, maxBytes: number, ort?: Ort): Promise<Geschrieben> {
   const wo = ort || (await zielOrt())
   const k = neuerSchluessel()
-  const schluessel = wo === 's3' ? `s3:${k}` : k
+  const schluessel = wo === 'lokal' ? k : `${wo === 's3' ? 's3' : wo}:${k}`
   const hash = createHash('sha256')
   let size = 0
   let kopf = Buffer.alloc(0)
@@ -91,6 +139,24 @@ export async function schreiben(quelle: Readable, maxBytes: number, ort?: Ort): 
     }
     return { schluessel, size, sha256: hash.digest('hex'), kopf }
   }
+  const sid = sftpId(wo)
+  if (sid != null) {
+    zaehler.on('error', () => {})
+    quelle.on('error', (e) => zaehler.destroy(e))
+    quelle.pipe(zaehler)
+    try {
+      await sftpSchreiben(sid, objekt(schluessel), zaehler)
+    } catch (e: any) {
+      quelle.unpipe(zaehler)
+      zaehler.destroy()
+      // Reste entfernen; ist der Server gerade weg, kommt der Rest auf die Wiederholungsliste (siehe Plugin sftp-ziele)
+      void sftpNachLoeschen(schluessel).catch(() => loeschenVormerken(schluessel).catch(() => {}))
+      if (e?.code === 'ZU_GROSS' || (maxBytes !== 0 && size > maxBytes))
+        throw Object.assign(new Error('zu gross'), { code: 'ZU_GROSS' })
+      throw alsHttpFehler(e)
+    }
+    return { schluessel, size, sha256: hash.digest('hex'), kopf }
+  }
   const ziel = pfadVon(schluessel)
   await fs.mkdir(join(ziel, '..'), { recursive: true })
   try {
@@ -103,7 +169,11 @@ export async function schreiben(quelle: Readable, maxBytes: number, ort?: Ort): 
 }
 
 export function lesen(ablage: string, bereich?: { start: number; end: number }): Readable {
-  return ortVon(ablage) === 's3' ? s3Lesen(objekt(ablage), bereich) : createReadStream(pfadVon(ablage), bereich)
+  const ort = ortVon(ablage)
+  if (ort === 's3') return s3Lesen(objekt(ablage), bereich)
+  const sid = sftpId(ort)
+  if (sid != null) return sftpLesen(sid, objekt(ablage), bereich)
+  return createReadStream(pfadVon(ablage), bereich)
 }
 export async function loeschen(ablage: string): Promise<void> {
   if (ortVon(ablage) === 's3') {
@@ -112,18 +182,45 @@ export async function loeschen(ablage: string): Promise<void> {
     )
     return
   }
+  const sid = sftpId(ortVon(ablage))
+  if (sid != null) {
+    await sftpLoeschen(sid, [objekt(ablage), ...ALLE_NEBEN.map((n) => objekt(ablage, n))]).catch(async (e) => {
+      // Erweiterung offline: später erneut versuchen, sonst bliebe die Datei dort liegen
+      if (e?.code !== 'GELOESCHT') await loeschenVormerken(ablage).catch(() => {})
+      console.error('[vylariscloud] SFTP löschen:', e?.message)
+    })
+    return
+  }
   await fs.rm(pfadVon(ablage), { force: true }).catch(() => {})
   for (const n of ALLE_NEBEN) await fs.rm(nebenPfad(ablage, n), { force: true }).catch(() => {})
+}
+/** Löscht eine SFTP-Datei samt Nebendateien und wirft bei Verbindungsproblemen (für die Wiederholungsliste). */
+export async function sftpNachLoeschen(ablage: string): Promise<void> {
+  const sid = sftpId(ortVon(ablage))
+  if (sid == null) return
+  try {
+    await sftpLoeschen(sid, [objekt(ablage), ...ALLE_NEBEN.map((n) => objekt(ablage, n))])
+  } catch (e: any) {
+    if (e?.code === 'GELOESCHT') return // Erweiterung wurde entfernt: nichts mehr zu löschen
+    throw e
+  }
 }
 export async function nebenLoeschen(ablage: string, art: Neben): Promise<void> {
   if (ortVon(ablage) === 's3') {
     await s3Loeschen([objekt(ablage, art)]).catch(() => {})
     return
   }
+  const sid = sftpId(ortVon(ablage))
+  if (sid != null) {
+    await sftpLoeschen(sid, [objekt(ablage, art)]).catch(() => {})
+    return
+  }
   await fs.rm(nebenPfad(ablage, art), { force: true }).catch(() => {})
 }
 export async function vorhanden(ablage: string): Promise<boolean> {
   if (ortVon(ablage) === 's3') return (await s3Groesse(objekt(ablage)).catch(() => null)) != null
+  const sid = sftpId(ortVon(ablage))
+  if (sid != null) return (await sftpGroesse(sid, objekt(ablage)).catch(() => null)) != null
   return fs.stat(pfadVon(ablage)).then(
     () => true,
     () => false
@@ -149,6 +246,13 @@ export async function nebenSchreiben(ablage: string, art: Neben, datei: string):
       await s3Hochladen(objekt(ablage, art), createReadStream(datei), st.size, NEBEN[art].typ)
       return
     }
+    const sid = sftpId(ortVon(ablage))
+    if (sid != null) {
+      await sftpSchreiben(sid, objekt(ablage, art), createReadStream(datei)).catch((e) => {
+        throw alsHttpFehler(e)
+      })
+      return
+    }
     const ziel = nebenPfad(ablage, art)
     await fs.rename(datei, ziel).catch(async () => {
       await fs.copyFile(datei, ziel)
@@ -167,6 +271,15 @@ export async function nebenLesen(
     if (n == null) return null
     const b = bereich?.(n) || null
     return { strom: s3Lesen(objekt(ablage, art), b || undefined), groesse: n, bereich: b }
+  }
+  const sid = sftpId(ortVon(ablage))
+  if (sid != null) {
+    const n = await sftpGroesse(sid, objekt(ablage, art)).catch((e) => {
+      throw alsHttpFehler(e)
+    })
+    if (n == null) return null
+    const b = bereich?.(n) || null
+    return { strom: sftpLesen(sid, objekt(ablage, art), b || undefined), groesse: n, bereich: b }
   }
   const p = nebenPfad(ablage, art)
   const s = await fs.stat(p).catch(() => null)

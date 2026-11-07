@@ -4,7 +4,7 @@ import { alsApi } from '../../../utils/api'
 import { PassThrough } from 'node:stream'
 import { q, q1, ereignis } from '../../../utils/db'
 import { clientIp, requireUser } from '../../../utils/auth'
-import { schreiben, teileLoeschen, teilLesen, type Ort } from '../../../utils/speicher'
+import { ortGueltig, schreiben, teileLoeschen, teilLesen, type Ort } from '../../../utils/speicher'
 import { basisUrl, dateiAnlegen, fuerPanel } from '../../../utils/dateien'
 import { dateiGroesseMax } from '../../../utils/hochladen'
 import { dateinameEindeutig } from '../../../utils/dateiNamen'
@@ -31,7 +31,9 @@ export default defineEventHandler(async (event) => {
   if (fehlt.length)
     throw fehler(409, `Es fehlen noch ${fehlt.length} Stück(e).`, `${fehlt.length} chunk(s) still missing.`)
 
+  // Teile liegen lokal bzw. bei S3; die fertige Datei kommt an den beim Start gewählten Ort (auch SFTP-Erweiterung)
   const ort: Ort = up.speicher === 's3' ? 's3' : 'lokal'
+  const ziel: Ort = ortGueltig(up.speicher) || ort
   const strom = new PassThrough()
   void (async () => {
     try {
@@ -53,7 +55,7 @@ export default defineEventHandler(async (event) => {
   const grenzen = await uploadGrenzen(u, ordner, await dateiGroesseMax(u))
   let g
   try {
-    g = await schreiben(strom, grenzen.max, ort)
+    g = await schreiben(strom, grenzen.max, ziel)
   } catch (e: any) {
     strom.destroy()
     if (e?.code === 'ZU_GROSS') throw grenzFehler(grenzen, Number(up.size))

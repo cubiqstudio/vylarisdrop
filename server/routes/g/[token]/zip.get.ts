@@ -1,6 +1,6 @@
 import yazl from 'yazl'
 import { galerieDateien, galerieOrdner } from '../../../utils/galerie'
-import { lesen } from '../../../utils/speicher'
+import { ablagenBereit, lesen } from '../../../utils/speicher'
 import { limit, clientIp } from '../../../utils/auth'
 import { gezaehlt, trafficPruefen } from '../../../utils/traffic'
 
@@ -12,6 +12,7 @@ export default defineEventHandler(async (event) => {
     throw fehler(429, 'Zu viele Downloads — bitte kurz warten.', 'Too many downloads — please wait a moment.')
   await trafficPruefen(o.user_id)
   const dateien = await galerieDateien(o.id, o.galerie?.sortierung)
+  await ablagenBereit(dateien.map((f) => f.ablage))
   const zip = new yazl.ZipFile()
   const vergeben = new Map<string, number>()
   for (const f of dateien) {
