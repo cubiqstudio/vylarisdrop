@@ -12,6 +12,7 @@ import android.net.Uri
 import android.os.Build
 import android.os.IBinder
 import android.provider.OpenableColumns
+import android.webkit.CookieManager
 import android.widget.Toast
 import androidx.core.app.NotificationCompat
 import androidx.core.app.NotificationManagerCompat
@@ -68,7 +69,7 @@ class UploadDienst : Service() {
         }
         val uris = ArrayList<Uri>()
         intent.clipData?.let { c -> for (n in 0 until c.itemCount) c.getItemAt(n).uri?.let { if (it.scheme == "content") uris += it } }
-        val text = intent.getStringExtra(EXTRA_TEXT)
+        val text = intent.getCharSequenceExtra(EXTRA_TEXT)?.toString()
         if (uris.isEmpty() && text == null) {
             beenden()
             return START_NOT_STICKY
@@ -125,7 +126,7 @@ class UploadDienst : Service() {
         val quellen = ArrayList<UploadQuelle>()
         text?.let { quellen += TextQuelle(it) }
         uris.forEach { quellen += UriQuelle(applicationContext, it) }
-        val client = VylarisClient(s.url)
+        val client = VylarisClient(s.url, sitzungsAblage = { cookies -> webSitzungErsetzen(s.url, cookies) })
         val erfolge = ArrayList<UploadErgebnis>()
         var letzterFehler: String? = null
         for ((index, q) in quellen.withIndex()) {
@@ -155,6 +156,8 @@ class UploadDienst : Service() {
                     FehlerArt.ABGEBROCHEN -> break
                     FehlerArt.NICHT_ANGEMELDET -> {
                         einst.tokenLoeschen()
+                        // schon hochgeladene Dateien dieses Auftrags: Links nicht verlieren
+                        if (erfolge.isNotEmpty()) ergebnisMelden(erfolge)
                         nichtAngemeldet()
                         return
                     }
@@ -174,6 +177,22 @@ class UploadDienst : Service() {
         if (erfolge.isNotEmpty()) ergebnisMelden(erfolge)
         if (letzterFehler != null) fehlerMelden(letzterFehler)
         if (abbrechen && erfolge.isEmpty() && letzterFehler == null) toast(R.string.upload_abgebrochen)
+    }
+
+    /**
+     * Für große Dateien öffnet der Client eine neue Sitzung; der Server beendet dabei die übrigen Sitzungen dieses Geräts,
+     * auch die der WebView. Damit sie nicht auf /login fällt und die Seite neu lädt, bekommt sie das neue Cookie.
+     */
+    private fun webSitzungErsetzen(basis: String, cookies: List<String>) {
+        android.os.Handler(mainLooper).post {
+            try {
+                val cm = CookieManager.getInstance()
+                cookies.forEach { cm.setCookie(basis, it) }
+                cm.flush()
+            } catch (_: Exception) {
+                // WebView nicht verfügbar: sie meldet sich bei Bedarf selbst neu an
+            }
+        }
     }
 
     // ---------------------------------------------------------------- Benachrichtigungen

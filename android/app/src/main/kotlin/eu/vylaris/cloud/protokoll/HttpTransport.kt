@@ -66,6 +66,8 @@ open class HttpTransport(
             return Antwort(status, kopfAus, text)
         } catch (e: ProtokollFehler) {
             throw e
+        } catch (e: QuellFehler) {
+            throw e
         } catch (e: Exception) {
             throw ProtokollFehler(FehlerArt.NETZ, meldung = e.message ?: e.javaClass.simpleName, cause = e)
         } finally {

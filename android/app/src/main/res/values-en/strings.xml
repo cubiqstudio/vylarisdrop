@@ -18,10 +18,10 @@
     <string name="fehler_zu_viele">Too many attempts. Please wait a moment.</string>
     <string name="fehler_server">The server says: %1$s</string>
     <string name="token_speichern_fehler">This device could not store the token securely. You will have to sign in on the web.</string>
+    <string name="deeplink_titel">Connect this device?</string>
+    <string name="deeplink_koppeln">Connect this device to %1$s? Only confirm if you created this link yourself in your VylarisCloud.</string>
+    <string name="fehler_umleitung">The server redirects to a different address: %1$s. Enter that address yourself if you trust it.</string>
     <string name="deeplink_wechseln">You are connected to %1$s. Connect to %2$s and replace the current connection?</string>
-    <string name="deeplink_titel">Confirm connection</string>
-    <string name="deeplink_neu">This app was opened by a link. Connect to %1$s? Only connect to servers you trust.</string>
-    <string name="deeplink_gleich">This app was opened by a link. Pair again with %1$s and replace the current sign-in? Only do this if you created the code yourself in your cloud.</string>
 
     <!-- Main window -->
     <string name="fehler_titel">No connection</string>

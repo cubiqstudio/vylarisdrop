@@ -338,6 +338,8 @@ class HauptActivity : AppCompatActivity() {
 
         override fun onPageStarted(view: WebView, url: String?, favicon: android.graphics.Bitmap?) {
             balken.visibility = View.VISIBLE
+            // neues Dokument beginnt oben; das Skript meldet nur Änderungen, ein alter Stand würde Wisch-zum-Aktualisieren sperren
+            seiteOben = true
         }
 
         override fun onPageFinished(view: WebView, url: String?) {
@@ -553,42 +555,121 @@ class HauptActivity : AppCompatActivity() {
         }
     }
 
-    /** blob:-Adressen kennt der DownloadManager nicht: Inhalt per Skript holen und über die Brücke speichern. */
+    /**
+     * blob:-Adressen kennt der DownloadManager nicht: Inhalt per Skript holen und in Stücken (je 768 KiB, Base64) über
+     * die Brücke in eine Datei schreiben. So bleibt der Speicherbedarf klein, die Größe ist nur durch den Speicher
+     * begrenzt, und die Arbeit läuft nicht auf dem Hauptthread.
+     */
     private fun blobHolen(url: String, name: String) {
-        val js = "(function(u,n){fetch(u).then(function(r){return r.blob()}).then(function(b){var f=new FileReader();" +
-            "f.onloadend=function(){VdApp.blobSpeichern(f.result,n)};f.readAsDataURL(b)})})(" +
+        val js = "(function(u,n){var S=786432;function lies(t){return new Promise(function(ok,nein){var f=new FileReader();" +
+            "f.onload=function(){var r=String(f.result);ok(r.substring(r.indexOf(',')+1))};f.onerror=function(){nein(f.error)};f.readAsDataURL(t)})}" +
+            "fetch(u).then(function(r){return r.blob()}).then(async function(b){var id=VdApp.blobStart(n,b.type||'');if(!id)return;" +
+            "try{for(var p=0;p<b.size;p+=S){if(!VdApp.blobStueck(id,await lies(b.slice(p,p+S))))throw 0}VdApp.blobEnde(id,true)}" +
+            "catch(e){VdApp.blobEnde(id,false)}}).catch(function(){VdApp.blobFehler()})})(" +
             org.json.JSONObject.quote(url) + "," + org.json.JSONObject.quote(name) + ")"
         web.evaluateJavascript(js, null)
     }
 
-    private fun blobAblegen(dataUrl: String, name: String) {
-        val komma = dataUrl.indexOf(',')
-        if (!dataUrl.startsWith("data:") || komma < 0) return
-        val mime = dataUrl.substring(5, komma).substringBefore(';').ifBlank { "application/octet-stream" }
-        val bytes = try { Base64.decode(dataUrl.substring(komma + 1), Base64.DEFAULT) } catch (e: IllegalArgumentException) { return }
+    /** Eine laufende blob:-Ablage: Ziel (MediaStore-Eintrag oder Datei) und Ausgabestrom */
+    private class BlobAblage(val name: String, val aus: java.io.OutputStream, val uri: Uri?, val datei: File?) {
+        var bytes = 0L
+    }
+
+    private val blobAblagen = java.util.concurrent.ConcurrentHashMap<String, BlobAblage>()
+
+    /** Läuft auf dem Brücken-Thread (nicht auf dem Hauptthread). Gibt die Kennung der Ablage zurück oder "" bei Fehler. */
+    private fun blobBeginnen(name: String, mimeRoh: String): String {
+        blobAblagen.keys.toList().forEach { blobAbbrechen(it) } // nur ein Download zugleich
         val sauber = name.replace(Regex("[\\\\/:*?\"<>|\\u0000-\\u001f]"), "_").take(120).ifBlank { "datei" }
-        lifecycleScope.launch(Dispatchers.IO) {
-            val ok = try {
-                if (Build.VERSION.SDK_INT >= 29) {
-                    val v = ContentValues().apply {
-                        put(MediaStore.Downloads.DISPLAY_NAME, sauber)
-                        put(MediaStore.Downloads.MIME_TYPE, mime)
-                        put(MediaStore.Downloads.RELATIVE_PATH, Environment.DIRECTORY_DOWNLOADS)
-                    }
-                    val uri = contentResolver.insert(MediaStore.Downloads.EXTERNAL_CONTENT_URI, v)
-                    uri != null && contentResolver.openOutputStream(uri)?.use { it.write(bytes); true } == true
-                } else {
-                    val dir = getExternalFilesDir(Environment.DIRECTORY_DOWNLOADS) ?: filesDir
-                    File(dir, sauber).writeBytes(bytes)
-                    true
+        val mime = mimeRoh.substringBefore(';').trim().takeIf { Regex("^[A-Za-z0-9!#$&^_.+-]{1,60}/[A-Za-z0-9!#$&^_.+-]{1,100}$").matches(it) } ?: "application/octet-stream"
+        return try {
+            val ablage = if (Build.VERSION.SDK_INT >= 29) {
+                val v = ContentValues().apply {
+                    put(MediaStore.Downloads.DISPLAY_NAME, sauber)
+                    put(MediaStore.Downloads.MIME_TYPE, mime)
+                    put(MediaStore.Downloads.RELATIVE_PATH, Environment.DIRECTORY_DOWNLOADS)
+                    put(MediaStore.Downloads.IS_PENDING, 1)
                 }
-            } catch (e: Exception) {
-                false
+                val uri = contentResolver.insert(MediaStore.Downloads.EXTERNAL_CONTENT_URI, v) ?: return ""
+                val aus = contentResolver.openOutputStream(uri)
+                if (aus == null) {
+                    contentResolver.delete(uri, null, null)
+                    return ""
+                }
+                BlobAblage(sauber, aus, uri, null)
+            } else {
+                val dir = getExternalFilesDir(Environment.DIRECTORY_DOWNLOADS) ?: filesDir
+                val datei = File(dir, sauber)
+                BlobAblage(sauber, datei.outputStream(), null, datei)
             }
-            withContext(Dispatchers.Main) {
-                Toast.makeText(this@HauptActivity, if (ok) getString(R.string.gespeichert_downloads, sauber) else getString(R.string.download_fehler), Toast.LENGTH_LONG).show()
-            }
+            val id = java.util.UUID.randomUUID().toString()
+            blobAblagen[id] = ablage
+            id
+        } catch (e: Exception) {
+            ""
         }
+    }
+
+    private fun blobAbbrechen(id: String) {
+        val a = blobAblagen.remove(id) ?: return
+        try { a.aus.close() } catch (_: Exception) { }
+        try {
+            a.uri?.let { contentResolver.delete(it, null, null) }
+            a.datei?.delete()
+        } catch (_: Exception) { }
+    }
+
+    private fun blobStueckSchreiben(id: String, base64: String): Boolean {
+        val a = blobAblagen[id] ?: return false
+        return try {
+            val b = Base64.decode(base64, Base64.DEFAULT)
+            a.bytes += b.size
+            if (a.bytes > BLOB_MAX) throw IOException("zu groß")
+            a.aus.write(b)
+            true
+        } catch (e: Exception) {
+            blobAbbrechen(id)
+            false
+        }
+    }
+
+    private fun blobBeenden(id: String, ok: Boolean) {
+        val a = blobAblagen[id]
+        if (a == null) {
+            meldeDownload(false, "")
+            return
+        }
+        if (!ok) {
+            blobAbbrechen(id)
+            meldeDownload(false, "")
+            return
+        }
+        blobAblagen.remove(id)
+        val gespeichert = try {
+            a.aus.close()
+            a.uri?.let { contentResolver.update(it, ContentValues().apply { put(MediaStore.Downloads.IS_PENDING, 0) }, null, null) }
+            true
+        } catch (e: Exception) {
+            try { a.uri?.let { contentResolver.delete(it, null, null) }; a.datei?.delete() } catch (_: Exception) { }
+            false
+        }
+        meldeDownload(gespeichert, a.name)
+    }
+
+    private fun meldeDownload(ok: Boolean, name: String) {
+        runOnUiThread {
+            Toast.makeText(this, if (ok) getString(R.string.gespeichert_downloads, name) else getString(R.string.download_fehler), Toast.LENGTH_LONG).show()
+        }
+    }
+
+    /** Aus einem Nicht-UI-Thread: kommt der Aufruf von einer Seite dieses Servers? (WebView.getUrl() nur auf dem Hauptthread) */
+    private fun vonServerSeite(): Boolean {
+        val ok = java.util.concurrent.atomic.AtomicBoolean(false)
+        val fertig = java.util.concurrent.CountDownLatch(1)
+        runOnUiThread {
+            try { ok.set(istServerHost(web.url?.toUri())) } finally { fertig.countDown() }
+        }
+        return fertig.await(5, java.util.concurrent.TimeUnit.SECONDS) && ok.get()
     }
 
     // ------------------------------------------------------------------ Fehlerseite
@@ -730,15 +811,28 @@ class HauptActivity : AppCompatActivity() {
         }
 
         @JavascriptInterface
-        fun blobSpeichern(dataUrl: String?, name: String?) {
-            if (dataUrl == null || dataUrl.length > 64 * 1024 * 1024) return
-            runOnUiThread {
-                if (istServerHost(web.url?.toUri())) blobAblegen(dataUrl, name ?: "datei")
-            }
+        fun blobStart(name: String?, mime: String?): String =
+            if (vonServerSeite()) blobBeginnen((name ?: "datei").take(300), (mime ?: "").take(200)) else ""
+
+        @JavascriptInterface
+        fun blobStueck(id: String?, base64: String?): Boolean =
+            id != null && base64 != null && base64.length <= 2 * 1024 * 1024 && blobStueckSchreiben(id, base64)
+
+        @JavascriptInterface
+        fun blobEnde(id: String?, ok: Boolean) {
+            if (id != null) blobBeenden(id, ok)
+        }
+
+        @JavascriptInterface
+        fun blobFehler() {
+            if (vonServerSeite()) meldeDownload(false, "")
         }
     }
 
     private companion object {
+        /** Obergrenze für einen blob:-Download (die Web-Seite hält E2E-Dateien bis 1,5 GiB im Speicher) */
+        const val BLOB_MAX = 2L * 1024 * 1024 * 1024
+
         /** Meldet Scroll-Stand (für Wisch-zum-Aktualisieren) und Seitenfarbe (für Leisten) an die App */
         const val SKRIPT = """
 (function(){

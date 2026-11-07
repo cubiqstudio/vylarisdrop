@@ -39,7 +39,7 @@ class TeilenActivity : AppCompatActivity() {
             return
         }
         uris = freigegebeneUris(a)
-        text = a.getStringExtra(Intent.EXTRA_TEXT)?.takeIf { it.isNotBlank() && uris.isEmpty() }?.take(1_000_000)
+        text = a.getCharSequenceExtra(Intent.EXTRA_TEXT)?.toString()?.takeIf { it.isNotBlank() && uris.isEmpty() }?.take(1_000_000)
         if (uris.isEmpty() && text == null) {
             Toast.makeText(this, R.string.teilen_nichts, Toast.LENGTH_LONG).show()
             finish()
