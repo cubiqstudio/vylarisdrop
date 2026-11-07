@@ -436,7 +436,7 @@ dav "$A" GET "/dav/davt-doppelt.txt"; eq "(1) blieb unveraendert" "$(body)" eins
 dav "$A" GET "/dav/davt-doppelt%20(2).txt"; eq "(2) hat neuen Inhalt" "$(body)" zwei-neu
 dav "$A" DELETE "/dav/davt-doppelt%20(3).txt"; eq "DELETE auf (3) -> 204" "$CODE" 204
 dav "$A" GET "/dav/davt-doppelt%20(3).txt"; eq "(3) danach weg" "$CODE" 404
-dav "$A" DELETE "/dav/davt-doppelt%20(2).txt"; dav "$A" DELETE "/dav/davt-doppelt.txt"; dav "$A" DELETE "/dav/davt-doppelt.png"; dav "$A" DELETE "/dav/davt-Gross.txt"; dav "$A" DELETE "/dav/davt-gross%20(2).txt"
+dav "$A" DELETE "/dav/davt-doppelt%20(2).txt"; dav "$A" DELETE "/dav/davt-doppelt.txt"; dav "$A" DELETE "/dav/davt-doppelt.png"; dav "$A" DELETE "/dav/davt-Gross.txt"; dav "$A" DELETE "/dav/davt-gross%20(2).txt"; dav "$A" DELETE "/dav/davt-gross.txt"
 # macOS sendet Namen zerlegt (NFD), die Datei wurde zusammengesetzt (NFC) angelegt
 NFC=$(python3 -c 'import unicodedata,urllib.parse; print(urllib.parse.quote(unicodedata.normalize("NFC","Übung-nfc.txt")))')
 NFD=$(python3 -c 'import unicodedata,urllib.parse; print(urllib.parse.quote(unicodedata.normalize("NFD","Übung-nfc.txt")))')
@@ -501,9 +501,9 @@ dav "$RO" PROPPATCH /dav/davt/geheim.txt --data '<D:propertyupdate xmlns:D="DAV:
 dav "$A" GET /dav/davt/ro.txt; eq "RO: es wurde nichts angelegt" "$CODE" 404
 
 echo "== Falsches Passwort und Rate-Limit =="
-for i in $(seq 1 10); do dav "davt_ratetest:falsch$i" PROPFIND /dav/ -H 'Depth: 0'; done
+for i in $(seq 1 10); do dav "davt_rate$$:falsch$i" PROPFIND /dav/ -H 'Depth: 0'; done
 eq "10 Fehlversuche: noch 401" "$CODE" 401
-dav "davt_ratetest:falsch11" PROPFIND /dav/ -H 'Depth: 0'
+dav "davt_rate$$:falsch11" PROPFIND /dav/ -H 'Depth: 0'
 eq "11. Fehlversuch -> 429 (Rate-Limit)" "$CODE" 429
 has "429: Retry-After" "$(hdr retry-after)" "600"
 dav "$A" PROPFIND /dav/ -H 'Depth: 0'; eq "andere Benutzer sind vom Limit nicht betroffen" "$CODE" 207
