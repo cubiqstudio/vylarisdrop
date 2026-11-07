@@ -1,4 +1,4 @@
-name: Android-App (APK)
+name: Android-App (APK und AAB)
 
 on:
   push:
@@ -70,12 +70,13 @@ jobs:
         run: ./gradlew --no-daemon testDebugUnitTest
 
       - name: APK bauen
-        run: ./gradlew --no-daemon assembleRelease lintRelease
+        run: ./gradlew --no-daemon assembleRelease bundleRelease lintRelease
 
       - name: APK benennen
         run: |
           mkdir -p "$RUNNER_TEMP/out"
           cp app/build/outputs/apk/release/app-release.apk "$RUNNER_TEMP/out/VylarisCloud-1.1.0.apk"
+          cp app/build/outputs/bundle/release/app-release.aab "$RUNNER_TEMP/out/VylarisCloud-1.1.0.aab"
 
       - name: Signatur prüfen
         run: |
@@ -85,6 +86,13 @@ jobs:
         with:
           name: VylarisCloud-apk
           path: ${{ runner.temp }}/out/VylarisCloud-1.1.0.apk
+          if-no-files-found: error
+          retention-days: 30
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: VylarisCloud-aab
+          path: ${{ runner.temp }}/out/VylarisCloud-1.1.0.aab
           if-no-files-found: error
           retention-days: 30
 
