@@ -1,0 +1,20 @@
+services:
+  app:
+    image: ghcr.io/cubiqstudio/vylariscloud:latest
+    restart: unless-stopped
+    environment:
+      NUXT_DB_URL: ${DB_URL:?Bitte DB_URL in .env setzen}
+      VD_NODE_NAME: ${VD_NODE_NAME:-}
+      VD_LIZENZ_SERVER: ${VD_LIZENZ_SERVER:-}
+      VD_LIZENZ_KEY: ${VD_LIZENZ_KEY:-}
+      VD_SFTP_SCHLUESSEL: ${VD_SFTP_SCHLUESSEL:-}
+      TZ: ${TZ:-Europe/Berlin}
+      VD_NODE_ROLE: ${VD_NODE_ROLE:-}
+    volumes:
+      - dateien:/data
+    ports:
+      - "${VD_BIND:-127.0.0.1}:${VD_PORT:-3000}:3000"
+    stop_grace_period: 20s
+
+volumes:
+  dateien:

@@ -1,0 +1,31 @@
+import { q, q1 } from '../../utils/db'
+import { requireUser } from '../../utils/auth'
+import { platte } from '../../utils/speicher'
+import { quotaStand } from '../../utils/quota'
+import { quotaWarnen } from '../../utils/benachrichtigen'
+
+export default defineEventHandler(async (event) => {
+  const u = await requireUser(event)
+  const proArt = await q<{ art: string; n: string; s: string }>(
+    'SELECT art, count(*) AS n, coalesce(sum(size),0) AS s FROM files WHERE user_id = $1 GROUP BY art',
+    [u.id]
+  )
+  const ordner = await q1<{ n: string }>('SELECT count(*) AS n FROM folders WHERE user_id = $1', [u.id])
+  const letzte = await q1<{ t: string }>('SELECT max(created_at) AS t FROM files WHERE user_id = $1', [u.id])
+  // Belegung = Dateien + Papierkorb; Kontingent = wirksames Limit (Konto, Rolle, Standard), siehe utils/quota.ts
+  const quota = await quotaStand(u)
+  // Warnstufe nachziehen (z. B. wenn ein Admin das Limit geändert oder der Papierkorb sich geleert hat)
+  void quotaWarnen(u.id, quota).catch(() => {})
+  const p = u.role === 'owner' ? await platte() : null
+  return {
+    dateien: proArt.reduce((a, r) => a + Number(r.n), 0),
+    ordner: Number(ordner?.n || 0),
+    zuletzt: letzte?.t || null,
+    belegt: quota.used,
+    kontingent: quota.limit,
+    quota,
+    papierkorb: quota.papierkorb,
+    proArt: Object.fromEntries(proArt.map((r) => [r.art, { anzahl: Number(r.n), bytes: Number(r.s) }])),
+    platte: p
+  }
+})

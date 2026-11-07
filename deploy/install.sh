@@ -1,0 +1,1116 @@
+#!/usr/bin/env bash
+set -euo pipefail
+QUELLE="${VD_QUELLE:-https://raw.githubusercontent.com/cubiqstudio/vylarisdrop/main/deploy}"
+DATEIEN="docker-compose.yml compose.caddy.yml compose.port.yml compose.node.yml Caddyfile garage.toml install.sh update.sh .env.example README.md version.json"
+unraid_ziel() {
+  [ -f /etc/unraid-version ] && [ -d /mnt/user ] || return 1
+  case "$1" in /mnt/*|/boot/*) return 1 ;; esac
+  printf '%s' "/mnt/user/appdata/$(basename "$1")"
+}
+unraid_umziehen() {
+  local alt="$1" neu="$2" a f
+  [ -f "$alt/docker-compose.yml" ] || return 1
+  if [ -e "$neu" ] && [ -n "$(ls -A "$neu" 2>/dev/null)" ]; then return 1; fi
+  mkdir -p "$neu" && cp -a "$alt/." "$neu/" || { rm -rf "$neu"; return 1; }
+  a=$(printf '%s' "$alt" | sed 's/[][\.*^$#]/\\&/g')
+  for f in /usr/local/bin/vylariscloud-update /boot/config/plugins/vylariscloud/vylariscloud-update /boot/config/plugins/dynamix/vylariscloud-update.cron /etc/cron.d/root; do
+    [ -f "$f" ] && sed -i "s#\\([=\"' ]\\)$a\\([/\"';]\\|\$\\)#\\1$neu\\2#g" "$f"
+  done
+  if [ -x /usr/local/sbin/update_cron ]; then /usr/local/sbin/update_cron >/dev/null 2>&1 || true; fi
+  mv "$alt" "$alt.umgezogen-$(date +%Y%m%d-%H%M%S)" 2>/dev/null || true
+  return 0
+}
+inst_echt() {
+  local cf x
+  cf=$(sed -n 's/^COMPOSE_FILE=//p' "$1/.env" 2>/dev/null | tail -1 | tr -d '"'"'"'\r')
+  [ -n "$cf" ] || return 0
+  for x in $(printf '%s' "$cf" | tr ':' ' '); do
+    case "$x" in docker-compose.yml|compose.caddy.yml|compose.port.yml|compose.node.yml) ;; *) return 1 ;; esac
+  done
+}
+inst_ordner() {
+  local c d img
+  command -v docker >/dev/null 2>&1 || return 0
+  while IFS= read -r c; do
+    [ -n "$c" ] || continue
+    img=$(docker inspect -f '{{.Config.Image}}' "$c" 2>/dev/null || true)
+    case "$img" in *cubiqstudio/vylariscloud:*|*cubiqstudio/vylariscloud) ;; *) continue ;; esac
+    d=$(docker inspect -f '{{index .Config.Labels "com.docker.compose.project.working_dir"}}' "$c" 2>/dev/null || true)
+    [ -n "$d" ] && [ -f "$d/docker-compose.yml" ] && [ -f "$d/.env" ] && inst_echt "$d" && printf '%s\n' "$d"
+  done < <(docker ps "$@" -q --filter label=com.docker.compose.service=app 2>/dev/null)
+}
+inst_suchen() {
+  local f d t
+  t=$(inst_ordner | awk 'NF && !s[$0]++'); [ -n "$t" ] && { printf '%s\n' "$t"; return 0; }
+  t=$(inst_ordner -a | awk 'NF && !s[$0]++'); [ -n "$t" ] && { printf '%s\n' "$t"; return 0; }
+  while IFS= read -r f; do
+    case "$f" in */.sicherung/*|*.umgezogen-*|*/.trash*) continue ;; esac
+    grep -q 'cubiqstudio/vylariscloud:' "$f" 2>/dev/null || continue
+    d=$(dirname "$f"); [ -f "$d/.env" ] && inst_echt "$d" && printf '%s\n' "$d"
+  done < <(find /opt /srv /root /home /mnt/user/appdata /mnt/cache/appdata /docker /data -maxdepth 3 -name docker-compose.yml 2>/dev/null) | awk 'NF && !s[$0]++'
+}
+NUR_VHOST=""
+for a in "$@"; do [ "$a" = "--nur-vhost" ] && NUR_VHOST="ja"; done
+if [ -n "$NUR_VHOST" ]; then
+  v_dir="${VD_DIR:-$(dirname "$0")}"
+  [ -f "$v_dir/docker-compose.yml" ] && [ -f "$v_dir/.env" ] || { echo "FEHLER: --nur-vhost braucht VD_DIR mit einer VylarisCloud-Installation / ERROR: --nur-vhost needs VD_DIR with a VylarisCloud installation"; exit 1; }
+  cd "$v_dir"
+fi
+GEFUNDEN=""
+if [ -z "$NUR_VHOST" ] && [ -z "${VD_DIR:-}" ] && ! { [ -f "$0" ] && [ -f "$(dirname "$0")/docker-compose.yml" ]; }; then
+  g_alle=$(inst_suchen 2>/dev/null || true)
+  case "$(printf '%s\n' "$g_alle" | grep -c . || true)" in
+    0) ;;
+    1) GEFUNDEN="$g_alle"; echo "==> VylarisCloud: vorhandene Installation gefunden / existing installation found: $GEFUNDEN" ;;
+    *) echo "==> Mehrere VylarisCloud-Installationen gefunden / several installations found:"; printf '      %s\n' $g_alle
+       echo "    Bitte die richtige waehlen / please pick one: curl -fsSL $QUELLE/install.sh | sudo VD_DIR=/pfad bash"; exit 1 ;;
+  esac
+fi
+UNRAID_ZIEL=""
+if [ -z "$NUR_VHOST" ] && [ -z "${VD_DIR:-}" ] && [ -f /etc/unraid-version ] && [ -d /mnt/user ]; then
+  UNRAID_ZIEL="/mnt/user/appdata/vylariscloud"
+  u_hier=""; if [ -f "$0" ] && [ -f "$(dirname "$0")/docker-compose.yml" ]; then u_hier="$(cd "$(dirname "$0")" && pwd)"; fi
+  u_alt="${u_hier:-${GEFUNDEN:-/opt/vylariscloud}}"
+  if u_neu=$(unraid_ziel "$u_alt") && [ -f "$u_alt/docker-compose.yml" ]; then
+    if unraid_umziehen "$u_alt" "$u_neu"; then
+      echo "==> Unraid: $u_alt -> $u_neu (übersteht Neustarts / survives reboots)"
+      UNRAID_ZIEL="$u_neu"; [ -n "$GEFUNDEN" ] && GEFUNDEN="$u_neu"
+      if [ -n "$u_hier" ]; then
+        cd "$u_neu"
+        if { true </dev/tty; } 2>/dev/null; then exec bash ./install.sh "$@" </dev/tty; else exec bash ./install.sh "$@"; fi
+      fi
+    else
+      echo "==> Unraid: $u_alt liegt im Arbeitsspeicher, $u_neu ist schon belegt — bitte selbst umziehen / in RAM, $u_neu is taken — please move it yourself"
+      UNRAID_ZIEL=""
+    fi
+  fi
+fi
+if [ -n "$NUR_VHOST" ]; then
+  :
+elif [ -f "$0" ] && [ -f "$(dirname "$0")/docker-compose.yml" ]; then
+  cd "$(dirname "$0")"
+else
+  ZIEL="${VD_DIR:-${GEFUNDEN:-${UNRAID_ZIEL:-/opt/vylariscloud}}}"
+  echo "==> VylarisCloud: $ZIEL"
+  mkdir -p "$ZIEL" && cd "$ZIEL"
+  for f in $DATEIEN; do curl -fsSL -o "$f" "$QUELLE/$f" || { [ "$f" = "version.json" ] || { echo "ERROR: $f"; exit 1; }; }; done
+  [ -t 0 ] || cat >/dev/null 2>&1 || true
+  if { true </dev/tty; } 2>/dev/null; then exec bash ./install.sh "$@" </dev/tty; else exec bash ./install.sh "$@"; fi
+fi
+
+PORT=""; DOMAIN=""; EMAIL=""; MODUS=""; VHOST="ja"; WS_WAHL=""; WEG=""; SPR=""; VS=""; NUR_DIENST=""
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --lang) SPR="${2,,}"; shift 2 ;;
+    --port) PORT="$2"; MODUS="port"; shift 2 ;;
+    --domain) DOMAIN="${2,,}"; shift 2 ;;
+    --email) EMAIL="$2"; shift 2 ;;
+    --caddy) MODUS="caddy"; shift ;;
+    --no-vhost) VHOST="nein"; shift ;;
+    --webserver|--webserver=*)
+      if [ "$1" = "--webserver" ]; then WS_WAHL="${2:-}"; shift $(( $# > 1 ? 2 : 1 )); else WS_WAHL="${1#*=}"; shift; fi
+      WS_WAHL="${WS_WAHL,,}"
+      case "$WS_WAHL" in nginx|apache|apache2|httpd|keiner|none) ;; *) echo "--webserver: nginx | apache | keiner (none)"; exit 1 ;; esac ;;
+    --dienst) NUR_DIENST="ja"; shift ;;
+    --nur-vhost) shift ;;
+    --virenscan) VS="ja"; shift ;;
+    --no-virenscan) VS="nein"; shift ;;
+    --deinstallieren|--uninstall) WEG="ja"; shift ;;
+    *) echo "Unknown option / Unbekannter Schalter: $1"; exit 1 ;;
+  esac
+done
+
+if { [ -t 1 ] || [ -n "${VD_FARBE:-}" ]; } && [ -z "${NO_COLOR:-}" ] && [ "${TERM:-}" != "dumb" ]; then
+  R=$'\033[38;2;30;115;190m'; R2=$'\033[38;2;90;169;230m'; G=$'\033[38;2;74;222;128m'; Y=$'\033[38;2;251;191;36m'
+  C=$'\033[38;2;125;211;252m'; D=$'\033[2m'; B=$'\033[1m'; U=$'\033[4m'; N=$'\033[0m'
+else R=""; R2=""; G=""; Y=""; C=""; D=""; B=""; U=""; N=""; fi
+if locale charmap 2>/dev/null | grep -qi 'utf-\?8' || echo "${LANG:-}${LC_ALL:-}" | grep -qi 'utf-\?8'; then
+  Z_SCHRITT="▸"; Z_OK="✔"; Z_FEHLER="✖"; Z_FRAGE="?"; Z_PUNKT="·"; K_OL="╭"; K_OR="╮"; K_UL="╰"; K_UR="╯"; K_H="─"; K_V="│"; SPIN=(⠋ ⠙ ⠹ ⠸ ⠼ ⠴ ⠦ ⠧ ⠇ ⠏)
+else
+  Z_SCHRITT=">"; Z_OK="OK"; Z_FEHLER="X"; Z_FRAGE="?"; Z_PUNKT="-"; K_OL="+"; K_OR="+"; K_UL="+"; K_UR="+"; K_H="-"; K_V="|"; SPIN=('|' '/' '-' '\')
+fi
+if [ -n "$NUR_VHOST" ]; then Z_SCHRITT="==>"; Z_OK="==>"; Z_FEHLER="==>"; fi
+VERSION_TXT=$(sed -n 's/.*"version": *"\([^"]*\)".*/\1/p' version.json 2>/dev/null | head -1 || true)
+banner() {
+  echo ""
+  printf '%s\n' "${R}${B}   ██╗   ██╗██╗   ██╗██╗      █████╗ ██████╗ ██╗███████╗${N}" \
+                "${R}${B}   ██║   ██║╚██╗ ██╔╝██║     ██╔══██╗██╔══██╗██║██╔════╝${N}" \
+                "${R}${B}   ██║   ██║ ╚████╔╝ ██║     ███████║██████╔╝██║███████╗${N}" \
+                "${R}${B}   ╚██╗ ██╔╝  ╚██╔╝  ██║     ██╔══██║██╔══██╗██║╚════██║${N}" \
+                "${R}${B}    ╚████╔╝    ██║   ███████╗██║  ██║██║  ██║██║███████║${N}" \
+                "${R}${B}     ╚═══╝     ╚═╝   ╚══════╝╚═╝  ╚═╝╚═╝  ╚═╝╚═╝╚══════╝${N}" \
+                "${R2}${B}    ██████╗██╗      ██████╗ ██╗   ██╗██████╗${N}" \
+                "${R2}${B}   ██╔════╝██║     ██╔═══██╗██║   ██║██╔══██╗${N}" \
+                "${R2}${B}   ██║     ██║     ██║   ██║██║   ██║██║  ██║${N}" \
+                "${R2}${B}   ██║     ██║     ██║   ██║██║   ██║██║  ██║${N}" \
+                "${R2}${B}   ╚██████╗███████╗╚██████╔╝╚██████╔╝██████╔╝${N}" \
+                "${R2}${B}    ╚═════╝╚══════╝ ╚═════╝  ╚═════╝ ╚═════╝${N}"
+  echo "   ${D}Selbst gehostete Cloud für Dateien und Medien ${Z_PUNKT} self-hosted file & media cloud${N}"
+  echo "   ${D}${VERSION_TXT:+v$VERSION_TXT  ${Z_PUNKT}  }by VylarisGroupEurope ${Z_PUNKT} https://vylaris.eu${N}"
+  echo ""
+}
+kasten() {
+  local farbe="$1"; shift
+  local breit=0 z
+  for z in "$@"; do [ ${#z} -gt $breit ] && breit=${#z}; done
+  local linie; linie=$(printf "%$((breit + 4))s" "" | sed "s/ /${K_H}/g")
+  echo "  ${farbe}${K_OL}${linie}${K_OR}${N}"
+  for z in "$@"; do printf '  %s%s%s  %s%s%s%*s  %s%s%s\n' "$farbe" "$K_V" "$N" "$B" "$z" "$N" $((breit - ${#z})) "" "$farbe" "$K_V" "$N"; done
+  echo "  ${farbe}${K_UL}${linie}${K_UR}${N}"
+}
+[ -n "${VD_KEIN_BANNER:-}" ] || banner
+
+[ -n "$SPR" ] || SPR=$(sed -n 's/^VD_LANG=//p' .env 2>/dev/null | tail -1 || true)
+if [ "$SPR" != "de" ] && [ "$SPR" != "en" ]; then
+  SPR="en"
+  if [ -t 0 ]; then
+    echo ""
+    echo "  ${Y}${Z_FRAGE}${N} ${B}Language / Sprache:${N}   ${C}1${N}) English   ${C}2${N}) Deutsch"
+    read -r -p "    [1] " wahl </dev/tty || true
+    case "${wahl:-1}" in 2|de|d|deutsch|Deutsch) SPR="de" ;; esac
+  fi
+fi
+s() { if [ "$SPR" = "de" ]; then printf '%s' "$1"; else printf '%s' "$2"; fi; }
+say() {
+  local m; m=$(s "$1" "$2")
+  m=$(printf '%s' "$m" | sed -E "s#(https?://[^ )\"']+)#${C}${U}\1${N}#g")
+  case "$m" in
+    "==> Fertig"*|"==> Done"*) echo ""; echo "${G}${B}${Z_OK} ${m#==> }${N}" ;;
+    "==> "*) echo "${R}${B}${Z_SCHRITT}${N} ${B}${m#==> }${N}" ;;
+    FEHLER:*|ERROR:*) echo "${R}${B}${Z_FEHLER} ${m}${N}" ;;
+    "    FEHLER"*|"    ERROR"*) echo "  ${R}${Z_FEHLER}${N} ${m#    }" ;;
+    "    "*) echo "  ${D}${K_V}${N} ${m#    }" ;;
+    *) echo "$m" ;;
+  esac
+}
+
+tu() { if [ "${VD_DRY_RUN:-}" = "1" ]; then echo "    ($(s Probelauf "dry run")) $*"; else "$@"; fi; }
+frage() {
+  local antwort=""
+  local text="$1"; text="${text#==> }"; text="${text#    }"
+  if [ -t 0 ]; then read -r -p "  ${Y}${Z_FRAGE}${N} ${text} ${D}[$2]${N} " antwort </dev/tty || true; fi
+  echo "${antwort:-$2}"
+}
+ja() {
+  local vorgabe="$2" a
+  [ "$SPR" = "en" ] && { [ "$vorgabe" = "j" ] && vorgabe="y"; }
+  a=$(frage "$1 ($(s j/n y/n))" "$vorgabe"); case "${a,,}" in j|ja|y|yes) return 0 ;; *) return 1 ;; esac
+}
+belegt() {
+  if command -v ss >/dev/null 2>&1; then ss -ltnH "sport = :$1" 2>/dev/null | grep -q .
+  else (exec 3<>"/dev/tcp/127.0.0.1/$1") 2>/dev/null; fi
+}
+wer_lauscht() { ss -ltnpH "sport = :$1" 2>/dev/null | grep -o 'users:(("[^"]*"' | head -1 | sed 's/users:(("//'; }
+
+if [ -n "$WEG" ]; then
+  say "==> VylarisCloud entfernen (Ordner: $PWD)" "==> Removing VylarisCloud (folder: $PWD)"
+  daten="nein"
+  if ja "    $(s "Auch ALLE hochgeladenen Dateien und die Datenbank loeschen? Das laesst sich nicht rueckgaengig machen." "Also delete ALL uploaded files and the database? This cannot be undone.")" "n"; then
+    wort=$(s loeschen delete)
+    bestaetigt=$(frage "    $(s "Zur Bestaetigung bitte  $wort  eintippen" "To confirm, please type  $wort")" "")
+    [ "$bestaetigt" = "$wort" ] && daten="ja" || say "    Nicht bestaetigt — Dateien und Datenbank bleiben erhalten." "    Not confirmed — files and database are kept."
+  fi
+  if [ -f docker-compose.yml ] && command -v docker >/dev/null 2>&1; then
+    if [ "$daten" = "ja" ]; then docker compose down -v --remove-orphans || true; else docker compose down --remove-orphans || true; fi
+    docker image rm ghcr.io/cubiqstudio/vylariscloud:latest >/dev/null 2>&1 || true
+  fi
+  rm -f /etc/cron.d/vylariscloud-update
+  if [ -f /etc/systemd/system/vylariscloud-update.path ]; then
+    systemctl disable --now vylariscloud-update.path >/dev/null 2>&1 || true
+    rm -f /etc/systemd/system/vylariscloud-update.path /etc/systemd/system/vylariscloud-update.service /usr/local/bin/vylariscloud-update
+    systemctl daemon-reload || true
+  fi
+  if [ -d /boot/config/plugins/vylariscloud ]; then
+    rm -rf /boot/config/plugins/vylariscloud /boot/config/plugins/dynamix/vylariscloud-update.cron /usr/local/bin/vylariscloud-update
+    [ -x /usr/local/sbin/update_cron ] && /usr/local/sbin/update_cron >/dev/null 2>&1
+  fi
+  stempel=$(date +%Y%m%d-%H%M%S); neu_laden=""
+  for datei in /etc/nginx/sites-enabled/vylariscloud.conf /etc/nginx/sites-enabled/vylariscloud-setup.conf /etc/nginx/sites-available/vylariscloud.conf /etc/nginx/sites-available/vylariscloud-setup.conf \
+               /etc/nginx/conf.d/vylariscloud.conf /etc/nginx/conf.d/vylariscloud-setup.conf /etc/apache2/sites-enabled/vylariscloud.conf /etc/apache2/sites-enabled/vylariscloud-setup.conf \
+               /etc/apache2/sites-available/vylariscloud.conf /etc/apache2/sites-available/vylariscloud-setup.conf /etc/httpd/conf.d/vylariscloud.conf /etc/httpd/conf.d/vylariscloud-setup.conf \
+               /etc/apache2/sites-enabled/vylariscloud-le-ssl.conf /etc/apache2/sites-available/vylariscloud-le-ssl.conf /etc/httpd/conf.d/vylariscloud-le-ssl.conf; do
+    if [ -L "$datei" ]; then rm -f "$datei"; neu_laden="ja"
+    elif [ -f "$datei" ]; then mkdir -p /root/vylariscloud-backup && cp -a "$datei" "/root/vylariscloud-backup/$(basename "$datei").bak-$stempel" && rm -f "$datei"; neu_laden="ja"; fi
+  done
+  if [ -n "$neu_laden" ]; then
+    if command -v nginx >/dev/null 2>&1 && nginx -t >/dev/null 2>&1; then systemctl reload nginx 2>/dev/null || nginx -s reload 2>/dev/null || systemctl start nginx 2>/dev/null || nginx || pkill -HUP -o -x nginx; fi
+    if command -v apache2ctl >/dev/null 2>&1 && apache2ctl configtest >/dev/null 2>&1; then systemctl reload apache2 2>/dev/null || apache2ctl graceful || true; fi
+    if ! command -v apache2ctl >/dev/null 2>&1 && command -v httpd >/dev/null 2>&1 && httpd -t >/dev/null 2>&1; then systemctl reload httpd 2>/dev/null || httpd -k graceful || true; fi
+    say "==> Webserver-Eintraege entfernt (Sicherung in /root/vylariscloud-backup)." "==> Web server entries removed (backup in /root/vylariscloud-backup)."
+  fi
+  dom=$(sed -n 's/^VD_PROXY_DOMAIN=//p' .env 2>/dev/null | tail -1 || true)
+  if [ -n "$dom" ] && command -v certbot >/dev/null 2>&1 && certbot certificates 2>/dev/null | grep -q "Certificate Name: $dom$"; then
+    ja "    $(s "Zertifikat fuer $dom auch loeschen?" "Also delete the certificate for $dom?")" "n" && certbot delete --cert-name "$dom" -n || true
+  fi
+  if [ "$daten" = "ja" ]; then
+    ordner="$PWD"; cd /
+    if ja "    $(s "Ordner $ordner auch loeschen (inkl. .env und import/)?" "Also delete the folder $ordner (incl. .env and import/)?")" "j"; then rm -rf "$ordner"; say "==> Ordner entfernt." "==> Folder removed."; fi
+    say "==> VylarisCloud ist vollstaendig entfernt." "==> VylarisCloud has been removed completely."
+  else
+    say "==> Container gestoppt und entfernt. Dateien, Datenbank und dieser Ordner sind noch da —" "==> Containers stopped and removed. Files, database and this folder are still there —"
+    say "    neu starten mit  sudo bash install.sh  (gleiches Datenbank-Passwort aus der .env)." "    start again with  sudo bash install.sh  (same database password from .env)."
+  fi
+  exit 0
+fi
+
+sicher_ordner() {
+  local d="${1%/}" p
+  [ -d "$d" ] && [ ! -L "$d" ] || return 1
+  p=$(cd -P "${d%/*}/" 2>/dev/null && pwd) || return 1
+  [ "$(cd -P "$d" 2>/dev/null && pwd)" = "${p%/}/${d##*/}" ]
+}
+ablegen() {
+  local d="${1%/*}" n="${1##*/}"
+  sicher_ordner "$d" || return 1
+  ( cd -P "$d" || exit 1
+    t=".neu.$$.$RANDOM$RANDOM"
+    ( umask 022; set -C; cat > "$t" ) 2>/dev/null || exit 1
+    mv -fT "$t" "$n" 2>/dev/null || { rm -f "$n"; mv -f "$t" "$n"; } )
+}
+log_oeffnen() {
+  local d="${1%/*}" n="${1##*/}" t alt="$PWD" um rc=1 c=""
+  case "$2" in [3-9]) ;; *) return 1 ;; esac
+  sicher_ordner "$d" || return 1
+  cd -P "$d" || return 1
+  t=".neu.$$.$RANDOM$RANDOM"; um=$(umask); umask 022
+  case "$-" in *C*) c=1 ;; esac
+  set -C
+  if eval "exec $2>\"\$t\"" 2>/dev/null; then rc=0; fi
+  if [ "$rc" = 0 ]; then eval "exec $2>>/dev/fd/$2" 2>/dev/null || true; fi
+  [ -n "$c" ] || set +C; umask "$um"
+  if [ "$rc" = 0 ]; then mv -fT "$t" "$n" 2>/dev/null || { rm -f "$n"; mv -f "$t" "$n"; }; fi
+  cd "$alt" 2>/dev/null || true
+  return "$rc"
+}
+
+updater_einrichten() {
+  DIENST_GRUND=""
+  local app daten
+  app=$(docker compose ps -q app 2>/dev/null || true)
+  [ -n "$app" ] || { DIENST_GRUND="$(s "Der App-Container laeuft nicht (docker compose ps app ist leer)." "The app container is not running (docker compose ps app is empty).")"; return 1; }
+  daten=$(docker inspect -f '{{range .Mounts}}{{if eq .Destination "/data"}}{{.Source}}{{end}}{{end}}' "$app" 2>/dev/null || true)
+  if [ -n "$daten" ] && [ ! -d "$daten" ] && [ -d "/var/snap/docker/common/var-lib-docker${daten#/var/lib/docker}" ]; then daten="/var/snap/docker/common/var-lib-docker${daten#/var/lib/docker}"; fi
+  [ -n "$daten" ] && [ -d "$daten" ] || { DIENST_GRUND="$(s "Der Datenordner der App ($daten) ist vom Server aus nicht lesbar (Docker rootless oder in einer VM?)." "The app data folder ($daten) is not readable from the server (rootless Docker or inside a VM?).")"; return 1; }
+  cat > /usr/local/bin/vylariscloud-update.neu <<SKRIPT
+#!/usr/bin/env bash
+set -uo pipefail
+export PATH="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:\${PATH:-}"
+DIR="$PWD"; DATEN="$daten"; QUELLE="$QUELLE"
+[ -e "\$DATEN/.update-anfrage" ] || [ -L "\$DATEN/.update-anfrage" ] || exit 0
+$(declare -f sicher_ordner ablegen log_oeffnen)
+sicher_ordner "\$DATEN" || exit 1
+if [ -L "\$DATEN/.update-anfrage" ] || [ ! -f "\$DATEN/.update-anfrage" ]; then rm -f "\$DATEN/.update-anfrage"; exit 0; fi
+anfrage=\$(head -c 8192 "\$DATEN/.update-anfrage" 2>/dev/null)
+rm -f "\$DATEN/.update-anfrage"
+aktion=\$(printf '%s' "\$anfrage" | sed -n 's/.*"aktion":"\([a-z-]*\)".*/\1/p')
+tok=\$(printf '%s' "\$anfrage" | sed -n 's#.*"token":"\([A-Za-z0-9+/=_-]*\)".*#\1#p')
+art=\$(printf '%s' "\$anfrage" | sed -n 's/.*"art":"\([a-z]*\)".*/\1/p' | head -c 10)
+dom=\$(printf '%s' "\$anfrage" | sed -n 's/.*"domain":"\([a-z0-9.-]*\)".*/\1/p' | head -c 300)
+jid=\$(printf '%s' "\$anfrage" | sed -n 's/.*"id":"\([a-f0-9]*\)".*/\1/p' | head -c 32)
+prt=\$(printf '%s' "\$anfrage" | sed -n 's/.*"port":"\([0-9]*\)".*/\1/p' | head -c 5)
+status() { printf '{"status":"%s","zeit":"%s","meldung":"%s"}\n' "\$2" "\$(date -Is)" "\$3" | ablegen "\$DATEN/\$1"; }
+kurz() { echo "\$1" | tail -3 | tr '\n"\\\\' '   '; }
+$(declare -f ws_info)
+ws_info_schreiben() { ws_info | ablegen "\$DATEN/.webserver-info"; }
+profil() { # profil an|aus [name] — Profil (Standard "virenscan") in COMPOSE_PROFILES der .env
+  local n="\${2:-virenscan}" p; p=\$(sed -n 's/^COMPOSE_PROFILES=//p' .env | tail -1 | tr ',' ' ')
+  p=\$(echo " \$p " | sed "s/ \$n / /g" | xargs)
+  [ "\$1" = "an" ] && p=\$(echo "\$p \$n" | xargs)
+  sed -i '/^COMPOSE_PROFILES=/d' .env
+  [ -z "\$p" ] || echo "COMPOSE_PROFILES=\$(echo "\$p" | tr ' ' ',')" >> .env
+}
+cd "\$DIR" || { status .update-status fehler "Ordner \$DIR fehlt"; exit 1; }
+case "\${aktion:-update}" in
+  virenscan-an)
+    status .virenscan-status laeuft ""; profil an
+    if out=\$(docker compose up -d 2>&1); then status .virenscan-status fertig ""; else status .virenscan-status fehler "\$(kurz "\$out")"; fi ;;
+  virenscan-aus)
+    status .virenscan-status laeuft ""
+    if out=\$(docker compose stop clamav 2>&1 && docker compose rm -f clamav 2>&1); then profil aus; status .virenscan-status fertig ""; else status .virenscan-status fehler "\$(kurz "\$out")"; fi ;;
+  tunnel-an)
+    status .tunnel-status laeuft ""
+    [ -n "\$tok" ] || { status .tunnel-status fehler "Kein Tunnel-Token in der Anfrage"; exit 1; }
+    sed -i '/^VD_TUNNEL_TOKEN=/d' .env; echo "VD_TUNNEL_TOKEN=\$tok" >> .env; chmod 600 .env
+    profil an tunnel
+    if out=\$(docker compose up -d cloudflared 2>&1); then status .tunnel-status fertig ""; else status .tunnel-status fehler "\$(kurz "\$out")"; fi ;;
+  tunnel-aus)
+    status .tunnel-status laeuft ""
+    if out=\$(docker compose stop cloudflared 2>&1 && docker compose rm -f cloudflared 2>&1); then profil aus tunnel; sed -i '/^VD_TUNNEL_TOKEN=/d' .env; status .tunnel-status fertig ""
+    else status .tunnel-status fehler "\$(kurz "\$out")"; fi ;;
+  speicher-an)
+    status .speicher-status laeuft ""
+    if ! [[ "\$prt" =~ ^[0-9]{1,5}\$ ]] || [ "\$prt" -lt 1 ] || [ "\$prt" -gt 65535 ] || [ "\$prt" = 80 ] || [ "\$prt" = 443 ]; then status .speicher-status fehler "Ungueltiger Port fuer SFTP"; exit 1; fi
+    alt_prt=\$(sed -n 's/^VD_SFTP_PORT=//p' .env | tail -1)
+    if [ "\$prt" != "\$alt_prt" ] && command -v ss >/dev/null 2>&1 && ss -ltnH "sport = :\$prt" 2>/dev/null | grep -q .; then status .speicher-status fehler "Port \$prt ist auf dem Server schon belegt"; exit 1; fi
+    neu_geheim() { head -c 32 /dev/urandom | od -An -tx1 | tr -d ' \n'; }
+    for v in VD_GARAGE_RPC_SECRET VD_GARAGE_ADMIN_TOKEN VD_SFTPGO_ADMIN_PW; do grep -q "^\$v=." .env || echo "\$v=\$(neu_geheim)" >> .env; done
+    sed -i '/^VD_SFTP_PORT=/d' .env; echo "VD_SFTP_PORT=\$prt" >> .env; chmod 600 .env
+    [ -f garage.toml ] || curl -fsSL --max-time 30 -o garage.toml "\$QUELLE/garage.toml" 2>/dev/null || { status .speicher-status fehler "garage.toml liess sich nicht laden"; exit 1; }
+    if ! grep -q 'sftpgo:' docker-compose.yml; then
+      curl -fsSL --max-time 30 -o docker-compose.yml.neu "\$QUELLE/docker-compose.yml" 2>/dev/null && grep -q 'sftpgo:' docker-compose.yml.neu && mv -f docker-compose.yml.neu docker-compose.yml || { rm -f docker-compose.yml.neu; status .speicher-status fehler "docker-compose.yml ohne Speicher-Dienste (bitte update.sh ausfuehren)"; exit 1; }
+    fi
+    profil an speicher
+    if command -v ufw >/dev/null 2>&1; then case "\$(ufw status 2>/dev/null || true)" in *"Status: active"*) ufw allow "\$prt"/tcp >/dev/null 2>&1 || true ;; esac
+    elif command -v firewall-cmd >/dev/null 2>&1 && firewall-cmd --state >/dev/null 2>&1; then { firewall-cmd -q --permanent --add-port="\$prt"/tcp && firewall-cmd -q --reload; } >/dev/null 2>&1 || true; fi
+    if out=\$(docker compose up -d sftpgo garage app 2>&1); then status .speicher-status fertig ""; else status .speicher-status fehler "\$(kurz "\$out")"; fi ;;
+  speicher-aus)
+    status .speicher-status laeuft ""
+    if out=\$(docker compose stop sftpgo garage 2>&1 && docker compose rm -f sftpgo garage 2>&1); then profil aus speicher; status .speicher-status fertig ""
+    else status .speicher-status fehler "\$(kurz "\$out")"; fi ;;
+  webserver-info) ws_info_schreiben ;;
+  webserver)
+    wstat() { printf '{"status":"%s","zeit":"%s","id":"%s","domain":"%s","art":"%s","https":%s,"meldung":"%s"}\n' "\$1" "\$(date -Is)" "\$jid" "\$dom" "\$art" "\${3:-false}" "\$2" | ablegen "\$DATEN/.webserver-status"; }
+    re='^([a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,63}\$'
+    case "\$art" in nginx|apache) ;; *) art=""; wstat fehler "Unbekannter Webserver (nur nginx oder apache)"; exit 1 ;; esac
+    if [ -z "\$dom" ] || [ \${#dom} -gt 253 ] || ! [[ "\$dom" =~ \$re ]]; then dom=""; wstat fehler "Ungueltige Domain"; exit 1; fi
+    grep -q 'compose.port.yml' .env 2>/dev/null || { wstat fehler "Nur im Port-Modus (ohne eigenen Caddy) moeglich"; exit 1; }
+    log_oeffnen "\$DATEN/.webserver.log" 8 || { wstat fehler "Datenordner nicht beschreibbar"; exit 1; }
+    wstat laeuft ""
+    skript=\$(mktemp)
+    if ! { curl -fsSL --max-time 30 -o "\$skript" "\$QUELLE/install.sh?t=\$(date +%s)" 2>/dev/null && bash -n "\$skript" 2>/dev/null && grep -q -- '--nur-vhost' "\$skript"; }; then
+      if [ -f "\$DIR/install.sh" ] && grep -q -- '--nur-vhost' "\$DIR/install.sh"; then cp -f "\$DIR/install.sh" "\$skript"
+      else rm -f "\$skript"; wstat fehler "install.sh mit --nur-vhost weder von GitHub noch im Ordner gefunden"; exit 1; fi
+    fi
+    VD_DIR="\$DIR" VD_KEIN_BANNER=1 VD_QUELLE="\$QUELLE" bash "\$skript" --nur-vhost --domain "\$dom" --webserver "\$art" </dev/null >&8 2>&1 8>&-; rc=\$?
+    rm -f "\$skript"
+    letzte() { grep -E "\$1" /dev/fd/8 | tail -1 | sed 's/^[^A-Za-z]*//' | tr -d '\000-\010\013-\037' | tr '\n\t"\\\\' '    ' | cut -c1-300; }
+    case "\$rc" in
+      0) wstat fertig "" true ;;
+      3) wstat fertig "\$(letzte 'HTTPS|certbot')" false ;;
+      *) wstat fehler "\$(letzte 'FEHLER|ERROR')" ;;
+    esac
+    ws_info_schreiben ;;
+  *)
+    status .update-status laeuft ""
+    if [ -f .paket ]; then status .update-status fehler "Diese Installation stammt aus einem Paket. Bitte das neue Paket einspielen (siehe LIESMICH.txt). / This installation comes from a package. Please deploy the new package (see LIESMICH.txt)."; exit 0; fi
+    neu=\$(mktemp)
+    if curl -fsSL --max-time 30 -o "\$neu" "\$QUELLE/update.sh?t=\$(date +%s)" 2>/dev/null && bash -n "\$neu" 2>/dev/null; then
+      VD_QUELLE="\$QUELLE" exec bash "\$neu" --dir "\$DIR" --status "\$DATEN/.update-status"
+    fi
+    rm -f "\$neu"
+    dienste="app"; grep -q '^COMPOSE_PROFILES=.*virenscan' .env && dienste="\$dienste clamav"; grep -q '^COMPOSE_PROFILES=.*tunnel' .env && dienste="\$dienste cloudflared"; grep -q '^COMPOSE_PROFILES=.*speicher' .env && dienste="\$dienste sftpgo garage"
+    if out=\$(docker compose pull \$dienste 2>&1 && docker compose up -d \$dienste 2>&1); then status .update-status fertig ""
+    else status .update-status fehler "\$(kurz "\$out")"; fi ;;
+esac
+SKRIPT
+  chmod 755 /usr/local/bin/vylariscloud-update.neu && mv -f /usr/local/bin/vylariscloud-update.neu /usr/local/bin/vylariscloud-update
+  local ausloeser=""
+  if command -v systemctl >/dev/null 2>&1 && [ -d /run/systemd/system ]; then
+    printf '%s\n' "[Unit]" "Description=VylarisCloud: Update-Anfrage aus dem Panel" "[Path]" "PathExists=$daten/.update-anfrage" "[Install]" "WantedBy=multi-user.target" > /etc/systemd/system/vylariscloud-update.path
+    printf '%s\n' "[Unit]" "Description=VylarisCloud aktualisieren" "[Service]" "Type=oneshot" "ExecStart=/usr/local/bin/vylariscloud-update" > /etc/systemd/system/vylariscloud-update.service
+    if systemctl daemon-reload && systemctl enable --now vylariscloud-update.path >/dev/null 2>&1; then ausloeser="systemd"; rm -f /etc/cron.d/vylariscloud-update; fi
+  fi
+  if [ -z "$ausloeser" ] && [ -f /etc/unraid-version ] && [ -d /boot/config ]; then
+    mkdir -p /boot/config/plugins/vylariscloud /boot/config/plugins/dynamix
+    cp -f /usr/local/bin/vylariscloud-update /boot/config/plugins/vylariscloud/vylariscloud-update
+    local zeile="* * * * * [ -f \"$daten/.update-anfrage\" ] && bash /boot/config/plugins/vylariscloud/vylariscloud-update >/dev/null 2>&1"
+    printf '%s\n' "# VylarisCloud: Update-Anfrage aus dem Panel (angelegt von install.sh)" "$zeile" "" > /boot/config/plugins/dynamix/vylariscloud-update.cron
+    rm -f /etc/cron.d/vylariscloud-update
+    vd_cron_drin() { local alle; alle="$(cat /etc/cron.d/root 2>/dev/null || true)"; case "$alle" in *plugins/vylariscloud/vylariscloud-update*) return 0 ;; esac; return 1; }
+    if [ -x /usr/local/sbin/update_cron ]; then /usr/local/sbin/update_cron >/dev/null 2>&1 || true; fi
+    if ! vd_cron_drin && [ -d /etc/cron.d ]; then
+      { cat /etc/cron.d/root 2>/dev/null || true; echo "$zeile"; } > /tmp/vylariscloud-cron.$$ && cat /tmp/vylariscloud-cron.$$ > /etc/cron.d/root
+      rm -f /tmp/vylariscloud-cron.$$; crontab /etc/cron.d/root -c /etc/cron.d >/dev/null 2>&1 || true
+    fi
+    if vd_cron_drin; then ausloeser="cron (Unraid)"
+    else
+      DIENST_GRUND="$(s "Unraid: der Zeitplan liess sich nicht eintragen" "Unraid: the schedule could not be added") (Unraid $(cat /etc/unraid-version 2>/dev/null | tr -dc '0-9.' | head -c 12), update_cron: $([ -x /usr/local/sbin/update_cron ] && echo ja || echo nein), /etc/cron.d: $(ls /etc/cron.d 2>/dev/null | tr '\n' ' '), crond: $(pgrep -x crond >/dev/null 2>&1 && echo laeuft || echo aus))."
+      return 1
+    fi
+  fi
+  if [ -z "$ausloeser" ] && [ -d /etc/cron.d ] && { pgrep -x cron >/dev/null 2>&1 || pgrep -x crond >/dev/null 2>&1; }; then
+    printf '%s\n' "# VylarisCloud: Update-Anfrage aus dem Panel (angelegt von install.sh, ohne systemd)" "* * * * * root [ -f \"$daten/.update-anfrage\" ] && /usr/local/bin/vylariscloud-update >/dev/null 2>&1" > /etc/cron.d/vylariscloud-update
+    chmod 644 /etc/cron.d/vylariscloud-update; ausloeser="cron"
+  fi
+  [ -n "$ausloeser" ] || { DIENST_GRUND="$(s "Weder systemd noch cron laufen auf diesem Server – ohne einen davon kann der Knopf im Panel nichts ausloesen." "Neither systemd nor cron is running on this server – without one the panel button cannot trigger anything.")"; return 1; }
+  printf '%s\naktionen=update virenscan tunnel webserver speicher\nstand=4\n' "$PWD" | ablegen "$daten/.updater" || { DIENST_GRUND="$(s "Die Marker-Datei $daten/.updater liess sich nicht anlegen (Datenordner kein echter Ordner?)." "Could not create the marker file $daten/.updater (data folder not a real folder?).")"; return 1; }
+  { ws_info | ablegen "$daten/.webserver-info"; } 2>/dev/null || true
+  say "==> Update-Dienst eingerichtet ($ausloeser; Panel → Version unten links → „Jetzt aktualisieren“)" "==> Update service set up ($ausloeser; panel → version at the bottom left → “Update now”)"
+}
+
+
+ws_neu=""
+ws_paket() {
+  local log pid n=0 rc=0 txt
+  txt="$(s "Installiere" "Installing") $*"
+  log=$(mktemp "/tmp/vylariscloud-pakete.XXXXXX") || return 1
+  if command -v apt-get >/dev/null 2>&1; then
+    ( export DEBIAN_FRONTEND=noninteractive
+      apt-get -o DPkg::Lock::Timeout=300 update -qq && apt-get -o DPkg::Lock::Timeout=300 install -y -qq "$@" ) >"$log" 2>&1 &
+  elif command -v dnf >/dev/null 2>&1; then dnf install -y -q "$@" >"$log" 2>&1 &
+  elif command -v yum >/dev/null 2>&1; then yum install -y -q "$@" >"$log" 2>&1 &
+  else rm -f "$log"; return 1; fi
+  pid=$!
+  while kill -0 "$pid" 2>/dev/null; do
+    if [ -t 1 ]; then printf '\r  %s%s%s %s (%s s)' "$R" "${SPIN[$(( n % ${#SPIN[@]} ))]}" "$N" "$txt" "$(( n / 4 ))"
+    elif [ "$n" -gt 0 ] && [ $(( n % 40 )) -eq 0 ]; then echo "    $txt … $(( n / 4 )) s"; fi
+    n=$((n + 1)); sleep 0.25
+  done
+  wait "$pid" || rc=$?
+  if [ -t 1 ]; then printf '\r\033[K'; fi
+  if [ "$rc" = 0 ]; then say "    Installiert: $*" "    Installed: $*"
+  else say "    FEHLER: $* liess sich nicht installieren (Ausgabe unten)." "    ERROR: $* could not be installed (output below)."; tail -n 12 "$log" | sed 's/^/      /'; fi
+  rm -f "$log"
+  return "$rc"
+}
+ws_starten() {
+  if command -v systemctl >/dev/null 2>&1 && [ -d /run/systemd/system ]; then
+    systemctl enable "$1" >/dev/null 2>&1 || true
+    systemctl restart "$1" >/dev/null 2>&1 || return 1
+  else
+    case "$1" in
+      nginx) nginx -s reload >/dev/null 2>&1 || nginx || return 1 ;;
+      apache2) apache2ctl start >/dev/null 2>&1 || return 1 ;;
+      httpd) if [ ! -s /etc/pki/tls/certs/localhost.crt ] && [ -x /usr/libexec/httpd-ssl-gencerts ]; then /usr/libexec/httpd-ssl-gencerts >/dev/null 2>&1 || true; fi
+        httpd -k start >/dev/null 2>&1 || return 1 ;;
+    esac
+  fi
+}
+ws_anbieten() {
+  local wahl="$WS_WAHL" dienst wer=""
+  local -a pakete
+  case "$wahl" in keiner|none) return 1 ;; esac
+  if ! command -v apt-get >/dev/null 2>&1 && ! command -v dnf >/dev/null 2>&1 && ! command -v yum >/dev/null 2>&1; then
+    [ -z "$wahl" ] || say "    $wahl laesst sich hier nicht installieren (weder apt-get noch dnf/yum gefunden)." "    $wahl cannot be installed here (neither apt-get nor dnf/yum found)."
+    return 1
+  fi
+  if belegt 80 || belegt 443; then
+    wer=$(wer_lauscht 80 || true); [ -n "$wer" ] || wer=$(wer_lauscht 443 || true)
+    say "==> Kein nginx/Apache gefunden, aber Port 80/443 ist belegt (${wer:-unbekannter Dienst}) — einen Webserver installiere ich daneben nicht." "==> No nginx/Apache found, but port 80/443 is in use (${wer:-unknown service}) — I will not install a web server next to it."
+    return 1
+  fi
+  if [ -z "$wahl" ]; then
+    [ -t 0 ] || return 1
+    echo ""
+    say "==> Auf diesem Server laeuft weder nginx noch Apache." "==> Neither nginx nor Apache is installed on this server."
+    say "    Ich kann einen installieren, den Virtual Host fuer $DOMAIN anlegen und HTTPS per certbot holen." "    I can install one, create the virtual host for $DOMAIN and get HTTPS via certbot."
+    echo "  ${Y}${Z_FRAGE}${N} ${B}$(s "Webserver installieren:" "Install a web server:")${N}   ${C}1${N}) nginx ($(s empfohlen recommended))   ${C}2${N}) Apache   ${C}3${N}) $(s "Keinen (nur Vorlage anzeigen)" "None (only show the template)")"
+    read -r -p "    [1] " wahl </dev/tty || true
+    case "${wahl:-1}" in 1|nginx) wahl="nginx" ;; 2|apache|apache2|httpd) wahl="apache" ;; *) return 1 ;; esac
+  fi
+  if [ "$wahl" = "nginx" ]; then dienst="nginx"; pakete=(nginx)
+  elif command -v apt-get >/dev/null 2>&1; then dienst="apache2"; pakete=(apache2)
+  else dienst="httpd"; pakete=(httpd mod_ssl); fi
+  say "==> $dienst wird installiert …" "==> Installing $dienst …"
+  if [ "${VD_DRY_RUN:-}" = "1" ]; then tu ws_paket "${pakete[@]}"; webserver="$dienst"; ws_neu="ja"; return 0; fi
+  ws_paket "${pakete[@]}" || return 1
+  if [ "$dienst" = "apache2" ]; then a2enmod -q proxy proxy_http headers rewrite >/dev/null 2>&1 || true; fi
+  if command -v getenforce >/dev/null 2>&1 && [ "$(getenforce 2>/dev/null)" = "Enforcing" ]; then setsebool -P httpd_can_network_connect 1 >/dev/null 2>&1 || true; fi
+  if ! ws_starten "$dienst"; then
+    say "    FEHLER: $dienst ist installiert, startet aber nicht (systemctl status $dienst)." "    ERROR: $dienst is installed but does not start (systemctl status $dienst)."
+    return 1
+  fi
+  if command -v ufw >/dev/null 2>&1; then
+    case "$(ufw status 2>/dev/null || true)" in *"Status: active"*)
+      ufw allow 80/tcp >/dev/null 2>&1 || true; ufw allow 443/tcp >/dev/null 2>&1 || true
+      say "    Firewall (ufw): Port 80 und 443 freigegeben." "    Firewall (ufw): ports 80 and 443 opened." ;;
+    esac
+  elif command -v firewall-cmd >/dev/null 2>&1 && firewall-cmd --state >/dev/null 2>&1; then
+    { firewall-cmd -q --permanent --add-service=http --add-service=https && firewall-cmd -q --reload; } >/dev/null 2>&1 || true
+    say "    Firewall (firewalld): http und https freigegeben." "    Firewall (firewalld): http and https opened."
+  fi
+  webserver="$dienst"; ws_neu="ja"
+  say "==> $dienst laeuft und startet kuenftig mit dem Server." "==> $dienst is running and will start with the server."
+}
+certbot_installieren() {
+  if ! command -v apt-get >/dev/null 2>&1 && [ -f /etc/redhat-release ] && ! grep -qi fedora /etc/redhat-release && ! rpm -q epel-release >/dev/null 2>&1; then
+    tu ws_paket epel-release || true
+  fi
+  tu ws_paket certbot "python3-certbot-$1"
+}
+hsts_sichern() {
+  local f="" z="" muster="" ok=""
+  [ "${VD_DRY_RUN:-}" != "1" ] || return 0
+  case "$vhost_angelegt" in
+    nginx) f="$datei"; muster='listen[ \t]+[^;]*443'; z='    add_header Strict-Transport-Security "max-age=31536000" always;' ;;
+    apache2|httpd) f="${datei%.conf}-le-ssl.conf"; muster='<VirtualHost[^>]*:443>'; z='    Header always set Strict-Transport-Security "max-age=31536000"' ;;
+    *) return 0 ;;
+  esac
+  [ -f "$f" ] || return 0
+  if grep -q 'Strict-Transport-Security' "$f"; then say "    HSTS aktiv (Strict-Transport-Security, 1 Jahr)." "    HSTS active (Strict-Transport-Security, 1 year)."; return 0; fi
+  grep -qE "$muster" "$f" || return 0
+  cp -a "$f" "$f.bak-hsts"
+  awk -v z="$z" -v m="$muster" '{ print } !d && $0 ~ m { print z; d = 1 }' "$f.bak-hsts" > "$f.neu" && cat "$f.neu" > "$f"
+  rm -f "$f.neu"
+  case "$vhost_angelegt" in
+    nginx) if nginx -t >/dev/null 2>&1; then systemctl reload nginx 2>/dev/null || nginx -s reload 2>/dev/null || systemctl start nginx 2>/dev/null || nginx || pkill -HUP -o -x nginx; ok=1; fi ;;
+    apache2) if apache2ctl configtest >/dev/null 2>&1; then systemctl reload apache2 2>/dev/null || apache2ctl graceful; ok=1; fi ;;
+    httpd) if httpd -t >/dev/null 2>&1; then systemctl reload httpd 2>/dev/null || httpd -k graceful; ok=1; fi ;;
+  esac
+  if [ -n "$ok" ]; then rm -f "$f.bak-hsts"; say "    HSTS ergaenzt (Strict-Transport-Security, 1 Jahr): $f" "    HSTS added (Strict-Transport-Security, 1 year): $f"
+  else cat "$f.bak-hsts" > "$f"; rm -f "$f.bak-hsts"; say "    FEHLER: HSTS liess sich nicht ergaenzen (Konfigtest) — bitte von Hand in $f:  $z" "    ERROR: could not add HSTS (config test) — please add by hand in $f:  $z"; fi
+}
+vhost_angelegt=""; fremd=""
+vhost_einrichten() {
+if [ "$MODUS" = "port" ] && [ -n "$DOMAIN" ] && [ "$VHOST" = "ja" ]; then
+  webserver=""
+  if command -v nginx >/dev/null 2>&1; then webserver="nginx"
+  elif command -v apache2ctl >/dev/null 2>&1; then webserver="apache2"
+  elif command -v httpd >/dev/null 2>&1; then webserver="httpd"
+  fi
+  fremd=$(grep -RlsE "^[[:space:]]*(server_name|ServerName|ServerAlias)[[:space:]]+(.*[[:space:]])?${DOMAIN//./\\.}([[:space:];]|$)" /etc/nginx/sites-enabled /etc/nginx/conf.d /etc/apache2/sites-enabled /etc/httpd/conf.d 2>/dev/null | grep -v 'vylariscloud' | head -1 || true)
+  if [ -n "$fremd" ] && grep -qE "(proxy_pass|ProxyPass[[:space:]]+/)[[:space:]]+http://(127\.0\.0\.1|localhost):${PORT}(/|;|[[:space:]]|$)" "$fremd"; then
+    say "==> $DOMAIN zeigt schon auf VylarisCloud ($fremd)." "==> $DOMAIN already points to VylarisCloud ($fremd)."
+    fremd=""; webserver=""; vhost_angelegt="vorhanden"; https_ok=1
+  fi
+  if [ -n "$fremd" ]; then
+    say "==> Fuer $DOMAIN gibt es schon einen Eintrag: $fremd — den fasse ich nicht an." "==> There is already an entry for $DOMAIN: $fremd — I will not touch it."
+    webserver=""
+  fi
+  if [ -z "$webserver" ] && [ -z "$fremd" ] && [ "$vhost_angelegt" != "vorhanden" ]; then ws_anbieten || true; fi
+  if [ -n "$webserver" ] && { [ -n "$ws_neu" ] || ja "==> $(s "Virtual Host fuer $DOMAIN in $webserver anlegen (Backup vorhandener Dateien, Konfigtest, Neuladen)?" "Create a virtual host for $DOMAIN in $webserver (backup of existing files, config test, reload)?")" "j"; }; then
+    stempel=$(date +%Y%m%d-%H%M%S)
+    if [ "$webserver" = "nginx" ]; then
+      if [ -d /etc/nginx/sites-enabled ]; then datei=/etc/nginx/sites-available/vylariscloud.conf; link=/etc/nginx/sites-enabled/vylariscloud.conf
+      else datei=/etc/nginx/conf.d/vylariscloud.conf; link=""; fi
+      inhalt="# VylarisCloud — angelegt von install.sh am $stempel
+server {
+    listen 80;
+    listen [::]:80;
+    server_name $DOMAIN;
+    add_header Strict-Transport-Security \"max-age=31536000\" always;
+    client_max_body_size 0;
+    proxy_request_buffering off;
+    proxy_read_timeout 3600s;
+    location / {
+        proxy_pass http://127.0.0.1:$PORT;
+        proxy_http_version 1.1;
+        proxy_set_header Host \$host;
+        proxy_set_header X-Real-IP \$remote_addr;
+        proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto \$scheme;
+    }
+}"
+      [ -f "$datei" ] && tu cp -a "$datei" "$datei.bak-$stempel"
+      if [ "${VD_DRY_RUN:-}" = "1" ]; then echo "    ($(s Probelauf "dry run")) $datei:"; echo "$inhalt" | sed 's/^/        /'; else printf '%s\n' "$inhalt" > "$datei"; fi
+      [ -n "$link" ] && tu ln -sf "$datei" "$link"
+      if tu nginx -t; then tu systemctl reload nginx 2>/dev/null || tu nginx -s reload 2>/dev/null || tu systemctl start nginx 2>/dev/null || tu nginx || tu pkill -HUP -o -x nginx; vhost_angelegt="$webserver"
+      else say "    FEHLER: nginx -t schlaegt fehl — Datei $datei bitte pruefen (Backup: $datei.bak-$stempel)." "    ERROR: nginx -t fails — please check $datei (backup: $datei.bak-$stempel)."; fi
+    else
+      if [ "$webserver" = "apache2" ]; then datei=/etc/apache2/sites-available/vylariscloud.conf; else datei=/etc/httpd/conf.d/vylariscloud.conf; fi
+      inhalt="# VylarisCloud — angelegt von install.sh am $stempel
+<VirtualHost *:80>
+    ServerName $DOMAIN
+    ProxyPreserveHost On
+    ProxyPass / http://127.0.0.1:$PORT/
+    ProxyPassReverse / http://127.0.0.1:$PORT/
+    RequestHeader set X-Forwarded-Proto \"expr=%{REQUEST_SCHEME}\"
+    Header always set Strict-Transport-Security \"max-age=31536000\"
+</VirtualHost>"
+      [ -f "$datei" ] && tu cp -a "$datei" "$datei.bak-$stempel"
+      if [ "${VD_DRY_RUN:-}" = "1" ]; then echo "    ($(s Probelauf "dry run")) $datei:"; echo "$inhalt" | sed 's/^/        /'; else printf '%s\n' "$inhalt" > "$datei"; fi
+      if [ "$webserver" = "apache2" ]; then
+        tu a2enmod -q proxy proxy_http headers
+        tu a2ensite -q vylariscloud.conf
+        if tu apache2ctl configtest; then tu systemctl reload apache2 2>/dev/null || tu apache2ctl graceful; vhost_angelegt="$webserver"; else say "    FEHLER: Apache-Konfigtest schlaegt fehl — $datei bitte pruefen." "    ERROR: Apache config test fails — please check $datei."; fi
+      else
+        if tu httpd -t; then tu systemctl reload httpd 2>/dev/null || tu httpd -k graceful; vhost_angelegt="$webserver"; else say "    FEHLER: httpd -t schlaegt fehl — $datei bitte pruefen." "    ERROR: httpd -t fails — please check $datei."; fi
+      fi
+    fi
+  elif [ -z "$webserver" ] && [ -z "$fremd" ] && [ "$vhost_angelegt" != "vorhanden" ]; then
+    say "==> Keinen nginx/Apache gefunden — die Vorlage fuer deinen Webserver steht unten." "==> No nginx/Apache found — the template for your web server is shown below."
+    if ! belegt 80 && ! belegt 443; then say "    Oder alles automatisch (Webserver, Virtual Host, HTTPS):  sudo bash install.sh --webserver nginx  (bzw. apache)" "    Or everything automatically (web server, virtual host, HTTPS):  sudo bash install.sh --webserver nginx  (or apache)"; fi
+  fi
+
+  if [ -n "$vhost_angelegt" ] && [ "$vhost_angelegt" != "vorhanden" ]; then
+    plugin="nginx"; [ "$vhost_angelegt" = "nginx" ] || plugin="apache"
+    meine_ip=$(curl -fsS --max-time 5 https://api.ipify.org 2>/dev/null || true)
+    domain_ip=$(getent ahostsv4 "$DOMAIN" 2>/dev/null | awk '{print $1; exit}' || true)
+    if [ -n "$meine_ip" ] && [ "$domain_ip" != "$meine_ip" ]; then
+      if [ -n "$ws_neu" ] && ! command -v certbot >/dev/null 2>&1; then certbot_installieren "$plugin" || true; fi
+      say "==> $DOMAIN zeigt auf '${domain_ip:-nichts}', dieser Server hat $meine_ip — Zertifikat spaeter holen:" "==> $DOMAIN points to '${domain_ip:-nothing}', this server has $meine_ip — get the certificate later:"
+      echo "    certbot --$plugin -d $DOMAIN --redirect"
+    elif ja "==> $(s "HTTPS-Zertifikat fuer $DOMAIN mit certbot holen (Let's Encrypt)?" "Get an HTTPS certificate for $DOMAIN with certbot (Let's Encrypt)?")" "j"; then
+      if ! command -v certbot >/dev/null 2>&1; then
+        if command -v apt-get >/dev/null 2>&1 || command -v dnf >/dev/null 2>&1 || command -v yum >/dev/null 2>&1; then certbot_installieren "$plugin" || true
+        else say "    certbot fehlt und konnte nicht installiert werden — bitte von Hand: certbot --$plugin -d $DOMAIN --redirect" "    certbot is missing and could not be installed — please run by hand: certbot --$plugin -d $DOMAIN --redirect"; fi
+      fi
+      if command -v certbot >/dev/null 2>&1 || [ "${VD_DRY_RUN:-}" = "1" ]; then
+        [ -n "$EMAIL" ] || EMAIL=$(frage "    $(s "E-Mail fuer Ablauf-Hinweise von Let's Encrypt (leer = keine)" "Email for Let's Encrypt expiry notices (empty = none)")" "")
+        if [ -n "$EMAIL" ]; then mail_arg=(-m "$EMAIL"); else mail_arg=(--register-unsafely-without-email); fi
+        if tu certbot "--$plugin" -d "$DOMAIN" --redirect -n --agree-tos "${mail_arg[@]}"; then https_ok=1; hsts_sichern || true
+        else say "    certbot hat nicht geklappt (Ausgabe oben). Spaeter nochmal: certbot --$plugin -d $DOMAIN --redirect" "    certbot did not work (output above). Try again later: certbot --$plugin -d $DOMAIN --redirect"; fi
+      fi
+    fi
+  fi
+fi
+}
+ws_info() {
+  local ws="" frei=true wer="" paket=false cb=false modus=caddy p
+  if command -v nginx >/dev/null 2>&1; then ws="nginx"
+  elif command -v apache2ctl >/dev/null 2>&1; then ws="apache2"
+  elif command -v httpd >/dev/null 2>&1; then ws="httpd"; fi
+  for p in 80 443; do
+    if command -v ss >/dev/null 2>&1; then
+      ss -ltnH "sport = :$p" 2>/dev/null | grep -q . || continue
+      [ -n "$wer" ] || wer=$(ss -ltnpH "sport = :$p" 2>/dev/null | grep -o 'users:(("[^"]*"' | head -1 | sed 's/users:(("//' || true)
+    else
+      (exec 3<>"/dev/tcp/127.0.0.1/$p") 2>/dev/null || continue
+    fi
+    frei=false
+  done
+  if command -v apt-get >/dev/null 2>&1 || command -v dnf >/dev/null 2>&1 || command -v yum >/dev/null 2>&1; then paket=true; fi
+  if command -v certbot >/dev/null 2>&1; then cb=true; fi
+  if grep -q 'compose.port.yml' .env 2>/dev/null; then modus=port; fi
+  wer=$(printf '%s' "$wer" | tr -cd 'A-Za-z0-9._-' | cut -c1-40)
+  printf '{"zeit":"%s","modus":"%s","webserver":"%s","portsFrei":%s,"belegtVon":"%s","paketverwaltung":%s,"certbot":%s}\n' "$(date -Is)" "$modus" "$ws" "$frei" "$wer" "$paket" "$cb"
+}
+
+if [ -n "$NUR_DIENST" ]; then
+  mkdir -p import && chmod 755 import
+  updater_einrichten || { say "FEHLER: Update-Dienst nicht eingerichtet: $DIENST_GRUND" "ERROR: update service not set up: $DIENST_GRUND"; exit 1; }
+  exit 0
+fi
+
+if [ -n "$NUR_VHOST" ]; then
+  v_sperre="$PWD/.webserver.lock"
+  if [ -f "$v_sperre" ] && v_pid=$(tr -cd '0-9' < "$v_sperre") && [ -n "$v_pid" ] && kill -0 "$v_pid" 2>/dev/null; then
+    say "FEHLER: Es laeuft schon eine Einrichtung des Webservers." "ERROR: A web server setup is already running."; exit 1
+  fi
+  echo "$$" > "$v_sperre"; trap 'rm -f "$v_sperre"' EXIT
+  grep -q 'compose.port.yml' .env 2>/dev/null || { say "FEHLER: Diese Installation hat einen eigenen Caddy (kein Port-Modus) — dort holt Caddy das Zertifikat selbst." "ERROR: This installation has its own Caddy (not port mode) — Caddy gets the certificate itself."; exit 1; }
+  PORT=$(sed -n 's/^VD_PORT=//p' .env | tail -1 | tr -d '[:space:]')
+  [[ "$PORT" =~ ^[0-9]{1,5}$ ]] || { say "FEHLER: VD_PORT fehlt in der .env." "ERROR: VD_PORT is missing in .env."; exit 1; }
+  [ -n "$DOMAIN" ] || DOMAIN=$(sed -n 's/^VD_PROXY_DOMAIN=//p' .env | tail -1 | tr -d '[:space:]')
+  v_re='^([a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,63}$'
+  { [ "${#DOMAIN}" -le 253 ] && [[ "$DOMAIN" =~ $v_re ]]; } || { say "FEHLER: ungueltige Domain: $DOMAIN" "ERROR: invalid domain: $DOMAIN"; exit 1; }
+  case "$WS_WAHL" in ""|nginx|apache|apache2|httpd) ;; *) say "FEHLER: --webserver: nginx oder apache" "ERROR: --webserver: nginx or apache"; exit 1 ;; esac
+  MODUS="port"; VHOST="ja"; https_ok=""
+  if grep -q '^VD_PROXY_DOMAIN=' .env; then sed -i "s|^VD_PROXY_DOMAIN=.*|VD_PROXY_DOMAIN=$DOMAIN|" .env; else echo "VD_PROXY_DOMAIN=$DOMAIN" >> .env; fi
+  say "==> Webserver fuer $DOMAIN einrichten (VylarisCloud auf 127.0.0.1:$PORT)" "==> Setting up the web server for $DOMAIN (VylarisCloud on 127.0.0.1:$PORT)"
+  vhost_einrichten
+  if [ -z "$vhost_angelegt" ]; then
+    if [ -n "$fremd" ]; then say "FEHLER: Fuer $DOMAIN gibt es schon einen anderen Eintrag ($fremd) — den fasse ich nicht an. Bitte dort auf 127.0.0.1:$PORT weiterleiten." "ERROR: There is already another entry for $DOMAIN ($fremd) — I will not touch it. Please forward it to 127.0.0.1:$PORT there."
+    elif [ -z "${webserver:-}" ]; then say "FEHLER: Kein Webserver eingerichtet (siehe oben) — Weiterleitung bitte von Hand auf 127.0.0.1:$PORT." "ERROR: No web server set up (see above) — please forward to 127.0.0.1:$PORT by hand."
+    else say "FEHLER: Der Virtual Host liess sich nicht anlegen (siehe oben)." "ERROR: The virtual host could not be created (see above)."; fi
+    exit 1
+  fi
+  if [ -n "${https_ok:-}" ]; then say "==> Fertig. VylarisCloud laeuft unter  https://$DOMAIN" "==> Done. VylarisCloud runs at  https://$DOMAIN"; exit 0; fi
+  say "==> Virtual Host steht (http://$DOMAIN) — HTTPS noch nicht: sobald die Domain auf diesen Server zeigt, nochmal versuchen." "==> Virtual host is in place (http://$DOMAIN) — no HTTPS yet: try again once the domain points to this server."
+  exit 3
+fi
+
+say "==> VylarisCloud wird eingerichtet" "==> Setting up VylarisCloud"
+
+if ! command -v docker >/dev/null 2>&1; then
+  say "==> Docker wird installiert …" "==> Installing Docker …"
+  curl -fsSL https://get.docker.com | sh
+fi
+docker compose version >/dev/null 2>&1 || { say "FEHLER: 'docker compose' fehlt. Bitte Docker aktualisieren." "ERROR: 'docker compose' is missing. Please update Docker."; exit 1; }
+for f in docker-compose.yml compose.caddy.yml compose.port.yml Caddyfile; do
+  [ -f "$f" ] || curl -fsSL -o "$f" "$QUELLE/$f" || { say "FEHLER: $f fehlt neben install.sh und konnte nicht geladen werden." "ERROR: $f is missing next to install.sh and could not be downloaded."; exit 1; }
+done
+
+ram_mb=$(awk '/MemTotal/ {print int($2/1024)}' /proc/meminfo)
+if [ "$ram_mb" -lt 1500 ] && [ "$(swapon --noheadings 2>/dev/null | wc -l)" -eq 0 ] && [ ! -f /swapfile ]; then
+  say "==> Nur ${ram_mb} MB RAM: lege 1 GB Auslagerungsdatei an …" "==> Only ${ram_mb} MB RAM: creating a 1 GB swap file …"
+  fallocate -l 1G /swapfile && chmod 600 /swapfile && mkswap /swapfile >/dev/null && swapon /swapfile
+  grep -q '^/swapfile' /etc/fstab || echo '/swapfile none swap sw 0 0' >> /etc/fstab
+fi
+
+ENV_NEU=0; WEG_FERTIG=0
+if [ ! -f .env ]; then
+  env_db=$(docker ps -aq --filter "label=com.docker.compose.project=$(basename "$PWD")" --filter label=com.docker.compose.service=db 2>/dev/null || true)
+  env_db=${env_db%%$'\n'*}
+  env_pw=""
+  [ -n "$env_db" ] && env_pw=$(docker inspect -f '{{range .Config.Env}}{{println .}}{{end}}' "$env_db" 2>/dev/null | sed -n 's/^POSTGRES_PASSWORD=//p' || true)
+  if [ -n "$env_pw" ]; then
+    printf 'DB_PASSWORD=%s\nTZ=Europe/Berlin\n' "$env_pw" > .env && chmod 600 .env
+    say "==> .env fehlte — Datenbank-Passwort aus dem vorhandenen Datenbank-Container übernommen" "==> .env was missing — database password taken from the existing database container"
+  else
+    ENV_NEU=1
+  fi
+fi
+trap 'if [ "${ENV_NEU:-0}" = 1 ] && [ "${WEG_FERTIG:-0}" != 1 ]; then rm -f "$PWD/.env"; fi' EXIT
+if [ ! -f .env ]; then
+  printf 'DB_PASSWORD=%s\nTZ=Europe/Berlin\n' "$(head -c 32 /dev/urandom | od -An -tx1 | tr -d ' \n')" > .env
+  chmod 600 .env
+  say "==> .env mit zufaelligem Datenbank-Passwort angelegt" "==> Created .env with a random database password"
+fi
+if grep -q '^VD_LANG=' .env; then sed -i "s/^VD_LANG=.*/VD_LANG=$SPR/" .env; else echo "VD_LANG=$SPR" >> .env; fi
+
+weg_retten() {
+  WEG_GERETTET=""
+  if grep -q '^COMPOSE_FILE=' .env 2>/dev/null; then return 0; fi
+  local proj c port ip alt
+  proj=$(basename "$PWD")
+  c=$(docker ps -q --filter "label=com.docker.compose.project=$proj" --filter label=com.docker.compose.service=caddy 2>/dev/null || true)
+  if [ -n "$c" ]; then
+    echo "COMPOSE_FILE=docker-compose.yml:compose.caddy.yml" >> .env; WEG_GERETTET="Caddy"; return 0
+  fi
+  c=$(docker ps -q --filter "label=com.docker.compose.project=$proj" --filter label=com.docker.compose.service=app 2>/dev/null || true)
+  c=${c%%$'\n'*}
+  port=""; ip=""
+  if [ -n "$c" ]; then
+    port=$(docker inspect -f '{{with index .HostConfig.PortBindings "3000/tcp"}}{{(index . 0).HostPort}}{{end}}' "$c" 2>/dev/null || true)
+    ip=$(docker inspect -f '{{with index .HostConfig.PortBindings "3000/tcp"}}{{(index . 0).HostIp}}{{end}}' "$c" 2>/dev/null || true)
+  fi
+  if [ -n "$port" ]; then
+    printf 'COMPOSE_FILE=docker-compose.yml:compose.port.yml\nVD_PORT=%s\nVD_BIND=%s\n' "$port" "${ip:-0.0.0.0}" >> .env
+    WEG_GERETTET="Port ${ip:-0.0.0.0}:$port"; return 0
+  fi
+  for alt in $(ls -1d .sicherung/*/ 2>/dev/null | sort -r); do
+    if grep -q '^COMPOSE_FILE=' "${alt}.env" 2>/dev/null; then
+      grep -E '^(COMPOSE_FILE|VD_PORT|VD_BIND|VD_PROXY_DOMAIN)=' "${alt}.env" >> .env || true
+      WEG_GERETTET="Sicherung ${alt%/}"; return 0
+    fi
+  done
+  return 0
+}
+weg_retten
+[ -n "$WEG_GERETTET" ] && say "==> Die .env kannte keinen Weg nach außen — vom laufenden VylarisCloud übernommen ($WEG_GERETTET)" "==> .env had no way in — taken over from the running VylarisCloud ($WEG_GERETTET)"
+
+if ! grep -q '^COMPOSE_FILE=' .env; then
+  if [ -z "$MODUS" ] && docker ps --filter "label=com.docker.compose.service=caddy" --format '{{.Label "com.docker.compose.project.working_dir"}}' 2>/dev/null | grep -qx "$PWD"; then
+    MODUS="caddy"
+  fi
+  if [ -z "$MODUS" ]; then
+    if belegt 80 || belegt 443; then
+      server=$(wer_lauscht 80 || true); [ -n "$server" ] || server=$(wer_lauscht 443 || true)
+      echo ""
+      say "==> Port 80/443 sind schon belegt (${server:-unbekannter Dienst})." "==> Port 80/443 are already in use (${server:-unknown service})."
+      say "    VylarisCloud bekommt dann einen eigenen Port auf 127.0.0.1, und dein Webserver" "    VylarisCloud then gets its own port on 127.0.0.1, and your web server"
+      say "    leitet die Domain dorthin weiter (Virtual Host, HTTPS ueber deinen Webserver)." "    forwards the domain to it (virtual host, HTTPS via your web server)."
+      if ja "    $(s "So einrichten? Bei Nein versucht Caddy, Port 80/443 selbst zu belegen." "Set it up this way? If not, Caddy tries to take port 80/443 itself.")" "j"; then MODUS="port"; else MODUS="caddy"; fi
+    else
+      MODUS="caddy"
+    fi
+  fi
+
+  if [ "$MODUS" = "port" ]; then
+    if [ -z "$PORT" ]; then
+      for p in 8080 8081 8082 8088 8090 8100 8180 8280 3100 3200 9080; do belegt "$p" || { PORT=$p; break; }; done
+      [ -n "$PORT" ] || { say "FEHLER: kein freier Port gefunden. Bitte mit --port angeben." "ERROR: no free port found. Please pass one with --port."; exit 1; }
+      PORT=$(frage "    $(s "Port fuer VylarisCloud (frei)" "Port for VylarisCloud (free)")" "$PORT")
+    fi
+    belegt "$PORT" && { say "FEHLER: Port $PORT ist belegt." "ERROR: port $PORT is in use."; exit 1; }
+    [ -n "$DOMAIN" ] || DOMAIN=$(frage "    $(s "Domain, unter der das Panel laufen soll (leer = spaeter)" "Domain for the panel (empty = later)")" "")
+    DOMAIN="${DOMAIN,,}"
+    {
+      echo "COMPOSE_FILE=docker-compose.yml:compose.port.yml"
+      echo "VD_PORT=$PORT"
+      echo "VD_BIND=127.0.0.1"
+      echo "VD_PROXY_DOMAIN=$DOMAIN"
+    } >> .env
+    say "==> App hoert auf 127.0.0.1:$PORT (ohne eigenen Caddy)" "==> App listens on 127.0.0.1:$PORT (without its own Caddy)"
+  else
+    echo "COMPOSE_FILE=docker-compose.yml:compose.caddy.yml" >> .env
+    say "==> Caddy uebernimmt Port 80/443 und holt das Zertifikat selbst" "==> Caddy takes port 80/443 and gets the certificate by itself"
+  fi
+fi
+WEG_FERTIG=1
+profil_setzen() {
+  local p; p=$(sed -n 's/^COMPOSE_PROFILES=//p' .env | tail -1 | tr ',' ' ')
+  p=$(echo " $p " | sed 's/ virenscan / /g' | xargs)
+  [ "$1" = "an" ] && p=$(echo "$p virenscan" | xargs)
+  sed -i '/^COMPOSE_PROFILES=/d' .env
+  [ -z "$p" ] || echo "COMPOSE_PROFILES=$(echo "$p" | tr ' ' ',')" >> .env
+}
+if [ -n "$VS" ]; then
+  profil_setzen "$([ "$VS" = "ja" ] && echo an || echo aus)"; grep -q '^VD_VIRENSCAN_GEFRAGT=' .env || echo "VD_VIRENSCAN_GEFRAGT=1" >> .env
+elif ! grep -q '^VD_VIRENSCAN_GEFRAGT=' .env; then
+  echo ""
+  say "==> Virenscan: ClamAV prueft jede hochgeladene Datei, Funde kommen in Quarantaene." "==> Virus scan: ClamAV checks every uploaded file, findings are quarantined."
+  say "    Braucht etwa 1,5 GB Arbeitsspeicher (dieser Server: ${ram_mb} MB). Spaeter im Panel umschaltbar." "    Needs about 1.5 GB of RAM (this server: ${ram_mb} MB). Can be switched later in the panel."
+  if [ "$ram_mb" -ge 3000 ]; then vs_vorgabe="j"; else vs_vorgabe="n"; fi
+  if ja "    $(s "Virenscan einschalten?" "Turn on the virus scan?")" "$vs_vorgabe"; then profil_setzen an; else profil_setzen aus; fi
+  echo "VD_VIRENSCAN_GEFRAGT=1" >> .env
+fi
+
+PORT=$(sed -n 's/^VD_PORT=//p' .env | tail -1)
+[ -n "$DOMAIN" ] || DOMAIN=$(sed -n 's/^VD_PROXY_DOMAIN=//p' .env | tail -1)
+grep -q 'compose.port.yml' .env && MODUS="port" || MODUS="caddy"
+if [ "$MODUS" = "port" ] && [ -n "$DOMAIN" ]; then
+  [[ "$DOMAIN" =~ ^[a-z0-9.-]+$ ]] || { say "FEHLER: ungueltige Domain: $DOMAIN" "ERROR: invalid domain: $DOMAIN"; exit 1; }
+  if grep -q '^VD_PROXY_DOMAIN=' .env; then sed -i "s|^VD_PROXY_DOMAIN=.*|VD_PROXY_DOMAIN=$DOMAIN|" .env; else echo "VD_PROXY_DOMAIN=$DOMAIN" >> .env; fi
+fi
+
+db_passwort_angleichen() {
+  local i
+  [ -n "$(docker compose ps -q db 2>/dev/null)" ] || return 0
+  for i in $(seq 1 30); do docker compose exec -T db pg_isready -q >/dev/null 2>&1 && break; sleep 1; done
+  docker compose exec -T db sh -c 'PGPASSWORD="$POSTGRES_PASSWORD" psql -h "$(hostname -i 2>/dev/null | cut -d" " -f1)" -U "$POSTGRES_USER" -d "$POSTGRES_DB" -tAc "select 1"' >/dev/null 2>&1 && return 0
+  printf '%s\n' "ALTER USER CURRENT_USER PASSWORD :'pw';" | docker compose exec -T db sh -c 'psql -q -U "$POSTGRES_USER" -d "$POSTGRES_DB" -v ON_ERROR_STOP=1 -v pw="$POSTGRES_PASSWORD"' >/dev/null 2>&1 || return 1
+  docker compose exec -T db sh -c 'PGPASSWORD="$POSTGRES_PASSWORD" psql -h "$(hostname -i 2>/dev/null | cut -d" " -f1)" -U "$POSTGRES_USER" -d "$POSTGRES_DB" -tAc "select 1"' >/dev/null 2>&1 || return 1
+  docker compose restart app >/dev/null 2>&1 || true
+  return 2
+}
+
+mkdir -p import && chmod 755 import
+if [ -f .paket ]; then docker build -t ghcr.io/cubiqstudio/vylariscloud:latest . && docker compose up -d; elif [ -d .output ]; then docker compose up -d --build; else docker compose pull && docker compose up -d; fi
+db_rc=0; db_passwort_angleichen || db_rc=$?
+if [ "$db_rc" = 2 ]; then say "    Das Datenbank-Passwort passte nicht zur .env — angeglichen (Daten bleiben)." "    The database password did not match .env — fixed (data kept)."
+elif [ "$db_rc" = 1 ]; then say "    FEHLER: Das Datenbank-Passwort passt nicht zur .env und liess sich nicht angleichen." "    ERROR: The database password does not match .env and could not be fixed."; fi
+
+updater_einrichten || say "    Update-Dienst nicht eingerichtet: $DIENST_GRUND" "    Update service not set up: $DIENST_GRUND"
+
+vhost_einrichten
+
+say "==> Warte auf den Start …" "==> Waiting for the start …"
+for n in $(seq 1 60); do
+  if docker compose logs app 2>/dev/null | grep -q 'Setup-Code\|bereit\|ready'; then break; fi
+  for k in 0 1 2 3 4 5 6 7; do [ -t 1 ] && printf '\r  %s%s%s %s' "$R" "${SPIN[$(( (n * 8 + k) % ${#SPIN[@]} ))]}" "$N" "$(s "VylarisCloud startet" "VylarisCloud is starting") ($((n * 2)) s)"; sleep 0.25; done
+done
+[ -t 1 ] && printf '\r\033[K'
+ip_pub=$(curl -fsS --max-time 5 https://api.ipify.org 2>/dev/null || true)
+ip_lan=$(ip -4 route get 1.1.1.1 2>/dev/null | sed -n 's/.* src \([0-9.]*\).*/\1/p' | head -1 || true)
+[ -n "$ip_lan" ] || ip_lan=$(hostname -I 2>/dev/null | awk '{print $1}')
+hinter_router=""
+if [ -n "$ip_pub" ] && ip -4 addr 2>/dev/null | grep -qF "inet ${ip_pub}/"; then ip="$ip_pub"
+elif [ -n "$ip_lan" ]; then ip="$ip_lan"; [ -n "$ip_pub" ] && [ "$ip_pub" != "$ip_lan" ] && hinter_router="ja"
+else ip="$ip_pub"; fi
+code=$(docker compose logs app 2>/dev/null | grep -o 'Setup-Code: *[A-F0-9]\{4\}-[A-F0-9]\{4\}' | tail -1 | sed 's/.*: *//' || true)
+echo ""
+if [ -n "$code" ]; then
+  kasten "$R" "$(s "Setup-Code" "Setup code"):  $code" "$(s "Brauchst du gleich im Browser." "You need it in the browser in a moment.")"
+else
+  docker compose logs app 2>/dev/null | grep -A1 -B2 'Setup-Code' | tail -5 || true
+fi
+echo ""
+
+setup_wert() { docker compose exec -T db psql -U vylariscloud -d vylariscloud -tAc "SELECT coalesce(value->>'$2', '') FROM settings WHERE key = '$1'" 2>/dev/null | tr -d '[:space:]'; }
+setup_fertig() { [ "$(setup_wert setup done)" = "true" ]; }
+kurz_datei=""; kurz_link=""; kurz_web=""; direkt_url=""
+direkt_freigeben() {
+  if grep -q '^VD_BIND=' .env; then sed -i 's|^VD_BIND=.*|VD_BIND=0.0.0.0|' .env; else echo "VD_BIND=0.0.0.0" >> .env; fi
+  tu docker compose up -d app >/dev/null 2>&1 || true
+  direkt_url="http://${ip}:${PORT}"
+  echo ""
+  say "==> VylarisCloud ist jetzt direkt erreichbar:  ${direkt_url}" "==> VylarisCloud is now directly reachable:  ${direkt_url}"
+  say "    Gib dort den Setup-Code von oben ein und waehle „Nur ueber die IP“. Eine Domain geht spaeter:  sudo bash install.sh --domain cloud.deinefirma.de" "    Enter the setup code from above there and choose “IP address only”. A domain works later:  sudo bash install.sh --domain cloud.example.com"
+  say "    Firewall: Port ${PORT}/tcp muss erreichbar sein." "    Firewall: port ${PORT}/tcp must be reachable."
+  [ -n "$hinter_router" ] && say "    Von ausserhalb deines Netzes nur mit Portweiterleitung im Router (${ip_pub}:${PORT} → ${ip}:${PORT}) — oder per Cloudflare Tunnel im Panel." "    From outside your network only with port forwarding in your router (${ip_pub}:${PORT} → ${ip}:${PORT}) — or via Cloudflare Tunnel in the panel."
+  return 0
+}
+kurz_weg() {
+  [ -n "$kurz_datei" ] || return 0
+  if [ "$kurz_web" = "apache2" ]; then a2dissite -q vylariscloud-setup.conf >/dev/null 2>&1 || true; fi
+  rm -f "$kurz_datei" ${kurz_link:+"$kurz_link"}
+  case "$kurz_web" in nginx) nginx -t >/dev/null 2>&1 && { systemctl reload nginx 2>/dev/null || nginx -s reload 2>/dev/null || systemctl start nginx 2>/dev/null || nginx || pkill -HUP -o -x nginx; } ;; apache2) { systemctl reload apache2 2>/dev/null || apache2ctl graceful; } ;; httpd) { systemctl reload httpd 2>/dev/null || httpd -k graceful; } ;; esac
+  say "==> Kurzzeit-Eintrag fuer http://${ip} wieder entfernt." "==> Temporary entry for http://${ip} removed again."
+  kurz_datei=""
+}
+umzug_schl=""; umzug_ordner=""; umzug_netz=""; umzug_app=""
+umzug_api() {
+  docker compose exec -T app wget -qO- --header "x-vd-installer: $umzug_schl" --header "content-type: application/json" --post-data "$1" http://127.0.0.1:3000/api/internal/installer 2>/dev/null || true
+}
+json_wert() { sed -n "s/.*\"$1\":\"\{0,1\}\([^\",}]*\).*/\1/p" | head -1; }
+umzug_aufraeumen() {
+  [ -n "$umzug_schl" ] && docker compose exec -T app rm -f /data/.installer-schluessel >/dev/null 2>&1 || true
+  [ -n "$umzug_ordner" ] && rm -rf "./import/$umzug_ordner"
+  [ -n "$umzug_netz" ] && docker network disconnect "$umzug_netz" "$umzug_app" >/dev/null 2>&1 || true
+  umzug_ordner=""; umzug_netz=""
+}
+umzug_lauf() {
+  local antwort id st
+  antwort=$(umzug_api "$1")
+  id=$(echo "$antwort" | json_wert id)
+  [ -n "$id" ] || { say "    FEHLER: Import liess sich nicht anlegen: $antwort" "    ERROR: could not create the import: $antwort"; return 1; }
+  echo -n "    $(s "Lese Zipline" "Reading Zipline") "
+  for _ in $(seq 1 360); do st=$(umzug_api "{\"aktion\":\"stand\",\"id\":$id}" | json_wert status); [ "$st" = "analyse" ] || break; echo -n "."; sleep 5; done
+  echo ""
+  if [ "$st" != "bereit" ]; then say "    FEHLER: $(umzug_api "{\"aktion\":\"stand\",\"id\":$id}" | json_wert meldung)" "    ERROR: $(umzug_api "{\"aktion\":\"stand\",\"id\":$id}" | json_wert meldung)"; return 1; fi
+  antwort=$(umzug_api "{\"aktion\":\"stand\",\"id\":$id}")
+  say "    Gefunden: $(echo "$antwort" | json_wert gesamt) Dateien, $(echo "$antwort" | json_wert nutzer) Konten — wird uebertragen …" "    Found: $(echo "$antwort" | json_wert gesamt) files, $(echo "$antwort" | json_wert nutzer) accounts — transferring …"
+  umzug_api "{\"aktion\":\"starten\",\"id\":$id}" >/dev/null
+  for _ in $(seq 1 4320); do
+    antwort=$(umzug_api "{\"aktion\":\"stand\",\"id\":$id}"); st=$(echo "$antwort" | json_wert status)
+    printf "\r    %s / %s $(s "Dateien (schon da %s, Fehler %s)" "files (already there %s, errors %s)")   " "$(echo "$antwort" | json_wert erledigt)" "$(echo "$antwort" | json_wert gesamt)" "$(echo "$antwort" | json_wert uebersprungen)" "$(echo "$antwort" | json_wert fehler)"
+    case "$st" in laeuft|pausiert) sleep 3 ;; *) break ;; esac
+  done
+  echo ""
+  [ "$st" = "fertig" ] || { say "    Import endete mit Status: $st" "    Import ended with status: $st"; return 1; }
+}
+zipline_durchgang() {
+  local quelle stempel exp
+  stempel=$(date +%Y%m%d-%H%M%S)
+  quelle=$(docker inspect -f '{{range .Mounts}}{{if eq .Destination "/zipline/uploads"}}{{.Source}}{{end}}{{end}}' "$2" 2>/dev/null || true)
+  if [ -n "$quelle" ] && [ -d "$quelle" ] && [ -n "$(ls -A "$quelle" 2>/dev/null)" ]; then
+    umzug_ordner="zipline-umzug-$stempel"
+    mkdir -p "./import/$umzug_ordner"
+    exp="./import/$umzug_ordner/zipline4_export_$stempel.json"
+    if ! curl -fsS --max-time 300 -H "authorization: $3" "$1/api/server/export?nometrics=true" -o "$exp" || ! grep -q '"export":"4"' "$exp"; then
+      say "    FEHLER: Zipline gibt keinen Server-Export heraus — ist das der Token eines Super-Admins?" "    ERROR: Zipline does not hand out a server export — is this a super admin's token?"; umzug_aufraeumen; return 1
+    fi
+    chown 1000:1000 "$exp"; chmod 600 "$exp"
+    if [ "$(stat -c %d "$quelle")" = "$(stat -c %d ./import)" ]; then cp -al "$quelle/." "./import/$umzug_ordner/"
+    else say "    Ziplines Dateien liegen auf einem anderen Laufwerk — kopiere sie (braucht einmal so viel Platz) …" "    Zipline's files are on another drive — copying them (needs the same space once) …"; cp -a "$quelle/." "./import/$umzug_ordner/"; fi
+    umzug_lauf "{\"aktion\":\"zipline\",\"ordner\":\"$umzug_ordner\"}" || { umzug_aufraeumen; return 1; }
+  else
+    local zport
+    umzug_app=$(docker compose ps -q app)
+    umzug_netz=$(docker inspect -f '{{range $k, $v := .NetworkSettings.Networks}}{{$k}} {{end}}' "$2" | awk '{print $1}')
+    zport=$(docker inspect -f '{{range $p, $v := .Config.ExposedPorts}}{{$p}} {{end}}' "$2" | grep -oE '^[0-9]+' | head -1)
+    docker network connect "$umzug_netz" "$umzug_app" 2>/dev/null || true
+    umzug_lauf "{\"aktion\":\"zipline\",\"url\":\"http://$2:${zport:-3000}\",\"token\":\"$3\"}" || { umzug_aufraeumen; return 1; }
+  fi
+  umzug_aufraeumen
+}
+umzug_anbieten() {
+  local ziel port zc zbild token stempel sicher datei projekt ok=""
+  datei=$(readlink -f "$fremd")
+  ziel=$(grep -oE '(proxy_pass|ProxyPass[[:space:]]+/)[[:space:]]+https?://[^;[:space:]]+' "$datei" | head -1 | awk '{print $NF}' | sed 's#/$##')
+  port=$(echo "$ziel" | sed -nE 's#^https?://[^/]+:([0-9]+).*#\1#p')
+  zc=""; zbild=""
+  if [ -n "$port" ]; then
+    zc=$(docker ps --format '{{.Names}} {{.Ports}}' | grep -E ":${port}->" | awk '{print $1}' | head -1 || true)
+    [ -n "$zc" ] && zbild=$(docker inspect -f '{{.Config.Image}}' "$zc" 2>/dev/null || true)
+  fi
+  echo ""
+  say "==> $DOMAIN zeigt bisher auf ${ziel:-einen anderen Dienst}${zc:+ (Container $zc, $zbild)}." "==> $DOMAIN currently points to ${ziel:-another service}${zc:+ (container $zc, $zbild)}."
+  if echo "$zbild" | grep -qi zipline; then
+    ja "    $(s "Zipline komplett nach VylarisCloud uebernehmen (Konten mit Passwoertern, Ordner, Tags, Linknamen, alte /u/-Links) und danach $DOMAIN umstellen?" "Move Zipline to VylarisCloud completely (accounts with passwords, folders, tags, link names, old /u/ links) and then switch $DOMAIN?")" "j" || return 1
+    say "    Dafuer brauche ich deinen Zipline-Token: in Zipline oben rechts → Einstellungen (Settings) → Token kopieren." "    For this I need your Zipline token: in Zipline top right → Settings → copy token."
+    say "    Es muss ein Super-Admin sein (sonst kommen nicht alle Konten mit). Der Token wird nicht angezeigt und nirgends gespeichert." "    It must be a super admin (otherwise not all accounts come along). The token is not shown and not stored anywhere."
+    token=""
+    if [ -t 0 ]; then read -r -s -p "    Zipline-Token: " token </dev/tty || true; echo ""; fi
+    [[ "$token" =~ ^[A-Za-z0-9._=+/-]{10,2000}$ ]] || { say "    Kein gueltiger Token — Umzug uebersprungen. Spaeter einfach nochmal: sudo bash install.sh" "    No valid token — move skipped. Simply run again later: sudo bash install.sh"; return 1; }
+    umzug_schl=$(head -c 24 /dev/urandom | od -An -tx1 | tr -d ' \n')
+    docker compose exec -T app sh -c "umask 077; printf %s '$umzug_schl' > /data/.installer-schluessel"
+    trap 'umzug_aufraeumen' EXIT
+    trap 'echo; umzug_aufraeumen; exit 130' INT TERM
+    say "==> Uebertrage Zipline (laeuft dabei normal weiter) …" "==> Transferring Zipline (it keeps running normally) …"
+    if ! zipline_durchgang "$ziel" "$zc" "$token"; then say "    $DOMAIN bleibt bei Zipline. Erneut versuchen: sudo bash install.sh" "    $DOMAIN stays with Zipline. Try again: sudo bash install.sh"; return 1; fi
+  else
+    ja "    $(s "$DOMAIN auf VylarisCloud umstellen? (Der bisherige Dienst ist unter dieser Domain dann nicht mehr erreichbar.)" "Switch $DOMAIN to VylarisCloud? (The previous service is then no longer reachable under this domain.)")" "n" || return 1
+  fi
+  stempel=$(date +%Y%m%d-%H%M%S); mkdir -p /root/vylariscloud-backup
+  sicher="/root/vylariscloud-backup/$(basename "$datei").bak-$stempel"
+  cp -a "$datei" "$sicher"
+  sed -i -E "s#(proxy_pass[[:space:]]+)https?://[^;[:space:]]+#\1http://127.0.0.1:${PORT}#; s#(ProxyPass(Reverse)?[[:space:]]+/[[:space:]]+)https?://[^[:space:]]+#\1http://127.0.0.1:${PORT}/#" "$datei"
+  if grep -q 'proxy_pass' "$datei" && ! grep -q 'proxy_set_header[[:space:]]\+Host' "$datei"; then
+    sed -i -E "s#^([[:space:]]*)(proxy_pass[[:space:]]+http://127\.0\.0\.1:${PORT};)#\1\2\n\1proxy_set_header Host \$host;\n\1proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;\n\1proxy_set_header X-Forwarded-Proto \$scheme;#" "$datei"
+  fi
+  if grep -q 'proxy_pass' "$datei" && ! grep -q 'client_max_body_size' "$datei"; then
+    sed -i -E "s#^([[:space:]]*)(proxy_pass[[:space:]]+http://127\.0\.0\.1:${PORT};)#\1\2\n\1client_max_body_size 0;#" "$datei"
+  fi
+  if grep -q 'proxy_pass' "$datei"; then nginx -t >/dev/null 2>&1 && { systemctl reload nginx 2>/dev/null || nginx -s reload 2>/dev/null || systemctl start nginx 2>/dev/null || nginx || pkill -HUP -o -x nginx; ok=1; }
+  elif command -v apache2ctl >/dev/null 2>&1; then apache2ctl configtest >/dev/null 2>&1 && { { systemctl reload apache2 2>/dev/null || apache2ctl graceful; }; ok=1; }
+  elif command -v httpd >/dev/null 2>&1; then httpd -t >/dev/null 2>&1 && { { systemctl reload httpd 2>/dev/null || httpd -k graceful; }; ok=1; }
+  fi
+  if [ -z "$ok" ]; then
+    cp -a "$sicher" "$datei"
+    say "    FEHLER: Konfigtest nach dem Umstellen fehlgeschlagen — alter Stand wiederhergestellt ($sicher)." "    ERROR: config test failed after switching — previous state restored ($sicher)."; return 1
+  fi
+  say "==> $DOMAIN zeigt jetzt auf VylarisCloud (alter Eintrag gesichert: $sicher)." "==> $DOMAIN now points to VylarisCloud (old entry saved: $sicher)."
+  if [ -n "${token:-}" ]; then
+    say "==> Hole nach, was waehrend der Uebertragung noch in Zipline hochgeladen wurde …" "==> Catching up on anything uploaded to Zipline during the transfer …"
+    zipline_durchgang "$ziel" "$zc" "$token" || true
+    docker compose exec -T app rm -f /data/.installer-schluessel >/dev/null 2>&1 || true
+    trap - EXIT INT TERM
+    token=""
+    projekt=$(docker inspect -f '{{index .Config.Labels "com.docker.compose.project"}}' "$zc" 2>/dev/null || true)
+    if ja "    $(s "Zipline jetzt stoppen? (Daten und Container bleiben fuer ein Zurueck erhalten)" "Stop Zipline now? (data and containers are kept so you can go back)")" "j"; then
+      if [ -n "$projekt" ]; then docker ps -q --filter "label=com.docker.compose.project=$projekt" | xargs -r docker stop >/dev/null; else docker stop "$zc" >/dev/null; fi
+      say "    Zipline gestoppt." "    Zipline stopped."
+    fi
+    echo ""
+    say "    Zurueck zu Zipline, falls noetig:" "    Back to Zipline, if needed:"
+    echo "      cp $sicher $datei && systemctl reload nginx"
+    echo "      docker start \$(docker ps -aq --filter label=com.docker.compose.project=${projekt:-zipline})"
+  fi
+  echo ""
+  say "==> Fertig. VylarisCloud laeuft unter  https://${DOMAIN}" "==> Done. VylarisCloud runs at  https://${DOMAIN}"
+  say "    Die uebernommenen Zipline-Konten melden sich mit ihren bisherigen Passwoertern an." "    The moved Zipline accounts sign in with their previous passwords."
+  return 0
+}
+
+if [ "$MODUS" = "port" ] && [ -n "$DOMAIN" ] && [ -n "$fremd" ] && [ "${VD_DRY_RUN:-}" != "1" ] && setup_fertig; then
+  umzug_anbieten && exit 0
+fi
+
+if [ "$MODUS" = "port" ] && [ -z "$vhost_angelegt" ] && { [ -z "$DOMAIN" ] || [ -n "$fremd" ]; } && [ "$VHOST" = "ja" ] && [[ "${ip:-}" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]] && [ "${VD_DRY_RUN:-}" != "1" ] && ! setup_fertig; then
+  if command -v nginx >/dev/null 2>&1; then kurz_web="nginx"
+  elif command -v apache2ctl >/dev/null 2>&1; then kurz_web="apache2"
+  elif command -v httpd >/dev/null 2>&1; then kurz_web="httpd"
+  fi
+  if [ -n "$kurz_web" ] && ja "==> $(s "Fuer die Einrichtung voruebergehend unter http://${ip} erreichbar machen? (eigener Eintrag nur fuer die IP, wird danach entfernt — bei Nein direkt unter http://${ip}:${PORT})" "Make it reachable at http://${ip} temporarily for the setup? (own entry for the IP only, removed afterwards — if no, directly at http://${ip}:${PORT})")" "j"; then
+    if [ "$kurz_web" = "nginx" ]; then
+      if [ -d /etc/nginx/sites-enabled ]; then kurz_datei=/etc/nginx/sites-available/vylariscloud-setup.conf; kurz_link=/etc/nginx/sites-enabled/vylariscloud-setup.conf
+      else kurz_datei=/etc/nginx/conf.d/vylariscloud-setup.conf; fi
+      printf '%s\n' "# VylarisCloud — nur fuer die Einrichtung, entfernt install.sh wieder" "server {" "    listen 80;" "    server_name ${ip}${hinter_router:+ $ip_pub};" "    client_max_body_size 0;" \
+        "    location / {" "        proxy_pass http://127.0.0.1:${PORT};" "        proxy_set_header Host \$host;" "        proxy_set_header X-Real-IP \$remote_addr;" \
+        "        proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;" "        proxy_set_header X-Forwarded-Proto \$scheme;" "    }" "}" > "$kurz_datei"
+      [ -n "$kurz_link" ] && ln -sf "$kurz_datei" "$kurz_link"
+      if nginx -t >/dev/null 2>&1; then systemctl reload nginx 2>/dev/null || nginx -s reload 2>/dev/null || systemctl start nginx 2>/dev/null || nginx || pkill -HUP -o -x nginx; else say "    nginx -t schlaegt fehl — Kurzzeit-Eintrag wieder entfernt." "    nginx -t fails — temporary entry removed again."; kurz_weg; fi
+    else
+      if [ "$kurz_web" = "apache2" ]; then kurz_datei=/etc/apache2/sites-available/vylariscloud-setup.conf; else kurz_datei=/etc/httpd/conf.d/vylariscloud-setup.conf; fi
+      printf '%s\n' "# VylarisCloud — nur fuer die Einrichtung, entfernt install.sh wieder" "<VirtualHost *:80>" "    ServerName ${ip}" ${hinter_router:+"    ServerAlias ${ip_pub}"} "    ProxyPreserveHost On" \
+        "    ProxyPass / http://127.0.0.1:${PORT}/" "    ProxyPassReverse / http://127.0.0.1:${PORT}/" "</VirtualHost>" > "$kurz_datei"
+      if [ "$kurz_web" = "apache2" ]; then a2enmod -q proxy proxy_http >/dev/null; a2ensite -q vylariscloud-setup.conf >/dev/null; apache2ctl configtest >/dev/null 2>&1 && systemctl reload apache2 || { say "    Apache-Konfigtest schlaegt fehl — Kurzzeit-Eintrag wieder entfernt." "    Apache config test fails — temporary entry removed again."; kurz_weg; }
+      else httpd -t >/dev/null 2>&1 && systemctl reload httpd || { say "    httpd -t schlaegt fehl — Kurzzeit-Eintrag wieder entfernt." "    httpd -t fails — temporary entry removed again."; kurz_weg; }; fi
+    fi
+    if [ -n "$kurz_datei" ]; then
+      trap 'echo; kurz_weg; exit 130' INT TERM
+      trap 'kurz_weg' EXIT
+      echo ""
+      say "==> Oeffne jetzt im Browser:  http://${ip}   und gib den Setup-Code von oben ein." "==> Now open in your browser:  http://${ip}   and enter the setup code from above."
+      say "    Waehle im Assistenten „Hinter eigenem Webserver“ und trage deine Domain ein — der Installer" "    In the wizard choose “Behind your web server” and enter your domain — the installer"
+      say "    legt danach den Virtual Host und das Zertifikat dafuer an. (Strg+C bricht ab.)" "    then creates the virtual host and the certificate for it. (Ctrl+C cancels.)"
+      [ -n "$fremd" ] && say "    Hinweis: $DOMAIN zeigt noch auf den alten Dienst — nach der Einrichtung geht es hier im Terminal mit dem Umzug weiter." "    Note: $DOMAIN still points to the old service — after the setup the move continues here in the terminal."
+      echo -n "    $(s "Warte auf die Einrichtung" "Waiting for the setup") "
+      for _ in $(seq 1 720); do setup_fertig && break; echo -n "."; sleep 10; done
+      echo ""
+      kurz_weg
+      trap - INT TERM EXIT
+      if setup_fertig; then
+        neu=$(setup_wert net domain | tr 'A-Z' 'a-z' || true)
+        if [[ "$neu" =~ ^[a-z0-9.-]+\.[a-z]{2,}$ ]]; then
+          DOMAIN="$neu"
+          if grep -q '^VD_PROXY_DOMAIN=' .env; then sed -i "s|^VD_PROXY_DOMAIN=.*|VD_PROXY_DOMAIN=$DOMAIN|" .env; else echo "VD_PROXY_DOMAIN=$DOMAIN" >> .env; fi
+          say "==> Einrichtung abgeschlossen. Domain aus dem Assistenten: $DOMAIN" "==> Setup complete. Domain from the wizard: $DOMAIN"
+          vhost_einrichten
+          if [ -n "$fremd" ]; then umzug_anbieten || true; exit 0; fi
+          if [ -n "$vhost_angelegt" ]; then
+            if [ -n "${https_ok:-}" ]; then say "==> Fertig. VylarisCloud laeuft unter  https://${DOMAIN}" "==> Done. VylarisCloud runs at  https://${DOMAIN}"; else say "==> Fertig. VylarisCloud laeuft unter  http://${DOMAIN}  (HTTPS: certbot --nginx -d ${DOMAIN} --redirect)" "==> Done. VylarisCloud runs at  http://${DOMAIN}  (HTTPS: certbot --nginx -d ${DOMAIN} --redirect)"; fi
+            exit 0
+          fi
+        else
+          say "==> Einrichtung abgeschlossen, aber ohne Domain. Spaeter:  sudo bash install.sh --domain cloud.deinefirma.de" "==> Setup complete, but without a domain. Later:  sudo bash install.sh --domain cloud.example.com"
+          exit 0
+        fi
+      else
+        say "==> Zeit abgelaufen. Einfach nochmal:  sudo bash install.sh" "==> Time is up. Simply run again:  sudo bash install.sh"
+        exit 0
+      fi
+    fi
+  else
+    direkt_freigeben
+  fi
+fi
+if [ -n "$direkt_url" ]; then
+  say "==> Fertig. Oeffne im Browser:  ${direkt_url}" "==> Done. Open in your browser:  ${direkt_url}"
+elif [ "$MODUS" = "port" ]; then
+  if [ -n "$vhost_angelegt" ]; then
+    if [ -n "${https_ok:-}" ]; then say "==> Fertig. Oeffne im Browser:  https://${DOMAIN}" "==> Done. Open in your browser:  https://${DOMAIN}"; else say "==> Fertig. Oeffne im Browser:  http://${DOMAIN}" "==> Done. Open in your browser:  http://${DOMAIN}"; fi
+  else
+    say "==> Fertig. Die App hoert auf 127.0.0.1:${PORT}. Trage in deinem Webserver einen Virtual Host ein:" "==> Done. The app listens on 127.0.0.1:${PORT}. Add a virtual host to your web server:"
+    echo ""
+    echo "    nginx:                                                 Apache:"
+    echo "    server {                                               <VirtualHost *:80>"
+    echo "        listen 80;                                             ServerName ${DOMAIN:-cloud.example.com}"
+    echo "        server_name ${DOMAIN:-cloud.example.com};          ProxyPreserveHost On"
+    echo "        location / {                                           ProxyPass / http://127.0.0.1:${PORT}/"
+    echo "            proxy_pass http://127.0.0.1:${PORT};               ProxyPassReverse / http://127.0.0.1:${PORT}/"
+    echo "            proxy_set_header Host \$host;                       RequestHeader set X-Forwarded-Proto \"expr=%{REQUEST_SCHEME}\""
+    echo "            proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;   </VirtualHost>"
+    echo "            proxy_set_header X-Forwarded-Proto \$scheme;"
+    echo "        }"
+    echo "    }"
+    echo ""
+    say "    HTTPS danach z. B. mit:  certbot --nginx -d ${DOMAIN:-cloud.example.com} --redirect" "    HTTPS afterwards e.g. with:  certbot --nginx -d ${DOMAIN:-cloud.example.com} --redirect"
+    say "    Und HSTS im HTTPS-Eintrag:  nginx  add_header Strict-Transport-Security \"max-age=31536000\" always;   Apache  Header always set Strict-Transport-Security \"max-age=31536000\"" "    And HSTS in the HTTPS entry:  nginx  add_header Strict-Transport-Security \"max-age=31536000\" always;   Apache  Header always set Strict-Transport-Security \"max-age=31536000\""
+    say "    Zum Ausprobieren ohne Domain:  ssh -L ${PORT}:127.0.0.1:${PORT} root@${ip}  und dann  http://127.0.0.1:${PORT}" "    To try it without a domain:  ssh -L ${PORT}:127.0.0.1:${PORT} root@${ip}  and then  http://127.0.0.1:${PORT}"
+  fi
+  say "    Im Assistenten ist „Hinter eigenem Webserver“ mit deiner Domain schon vorgewaehlt." "    In the wizard, “Behind your web server” with your domain is already preselected."
+else
+  say "==> Fertig. Oeffne im Browser:  http://${ip}" "==> Done. Open in your browser:  http://${ip}"
+  say "    Firewall: Port 80 und 443 muessen von aussen erreichbar sein." "    Firewall: port 80 and 443 must be reachable from outside."
+fi
+say "    Den Setup-Code siehst du oben (oder: docker compose logs app | grep Setup-Code)." "    You can see the setup code above (or: docker compose logs app | grep Setup-Code)."
+ziel_url=""
+if [ -n "$direkt_url" ]; then ziel_url="$direkt_url"
+elif [ "$MODUS" = "port" ] && [ -n "${vhost_angelegt:-}" ] && [ -n "${DOMAIN:-}" ]; then ziel_url="$([ -n "${https_ok:-}" ] && echo https || echo http)://${DOMAIN}"
+elif [ "$MODUS" != "port" ]; then ziel_url="http://${ip}"; fi
+if [ -n "$ziel_url" ]; then echo ""; kasten "$G" "VylarisCloud  ${Z_PUNKT}  $ziel_url"; fi
+echo ""

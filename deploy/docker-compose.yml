@@ -1,0 +1,115 @@
+services:
+  app:
+    image: ghcr.io/cubiqstudio/vylariscloud:latest
+    restart: unless-stopped
+    environment:
+      NUXT_DB_URL: postgres://vylariscloud:${DB_PASSWORD:?Bitte DB_PASSWORD in .env setzen}@db:5432/vylariscloud
+      TZ: ${TZ:-Europe/Berlin}
+      VD_RESET_2FA: ${VD_RESET_2FA:-}
+      VD_LANG: ${VD_LANG:-de}
+      VD_NODE_NAME: ${VD_NODE_NAME:-}
+      VD_LIZENZ_SERVER: ${VD_LIZENZ_SERVER:-}
+      VD_LIZENZ_KEY: ${VD_LIZENZ_KEY:-}
+      VD_SFTP_SCHLUESSEL: ${VD_SFTP_SCHLUESSEL:-}
+      VD_S3_ENDPOINT: ${VD_S3_ENDPOINT:-}
+      VD_S3_REGION: ${VD_S3_REGION:-}
+      VD_S3_BUCKET: ${VD_S3_BUCKET:-}
+      VD_S3_ACCESS_KEY: ${VD_S3_ACCESS_KEY:-}
+      VD_S3_SECRET_KEY: ${VD_S3_SECRET_KEY:-}
+      VD_S3_PATH_STYLE: ${VD_S3_PATH_STYLE:-}
+      VD_S3_PREFIX: ${VD_S3_PREFIX:-}
+      VD_CLAMAV: ${VD_CLAMAV:-clamav:3310}
+      VD_TUNNEL_METRICS: ${VD_TUNNEL_METRICS:-cloudflared:2000}
+      VD_SFTPGO_ADMIN_PW: ${VD_SFTPGO_ADMIN_PW:-}
+      VD_GARAGE_ADMIN_TOKEN: ${VD_GARAGE_ADMIN_TOKEN:-}
+      VD_SFTP_PORT: ${VD_SFTP_PORT:-}
+    volumes:
+      - dateien:/data
+      - speicher:/speicher
+      - ./import:/import:ro
+    depends_on:
+      db:
+        condition: service_healthy
+    expose: ["3000"]
+    stop_grace_period: 20s
+
+  db:
+    image: postgres:17-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: vylariscloud
+      POSTGRES_PASSWORD: ${DB_PASSWORD}
+      POSTGRES_DB: vylariscloud
+    volumes:
+      - db:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U vylariscloud -d vylariscloud"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  clamav:
+    image: clamav/clamav:1.4
+    profiles: ["virenscan"]
+    restart: unless-stopped
+    volumes:
+      - clamav:/var/lib/clamav
+    expose: ["3310"]
+
+  cloudflared:
+    image: cloudflare/cloudflared:2026.9.3
+    profiles: ["tunnel"]
+    restart: unless-stopped
+    command: tunnel --no-autoupdate --metrics 0.0.0.0:2000 run
+    environment:
+      TUNNEL_TOKEN: ${VD_TUNNEL_TOKEN:-}
+    depends_on:
+      - app
+
+  sftpgo:
+    image: drakkan/sftpgo:v2.7.6-alpine
+    profiles: ["speicher"]
+    restart: unless-stopped
+    environment:
+      SFTPGO_DATA_PROVIDER__CREATE_DEFAULT_ADMIN: "true"
+      SFTPGO_DEFAULT_ADMIN_USERNAME: vylariscloud
+      SFTPGO_DEFAULT_ADMIN_PASSWORD: ${VD_SFTPGO_ADMIN_PW:-}
+      SFTPGO_HTTPD__BINDINGS__0__PORT: "8080"
+      SFTPGO_HTTPD__BINDINGS__0__ENABLE_WEB_ADMIN: "false"
+      SFTPGO_HTTPD__BINDINGS__0__ENABLE_WEB_CLIENT: "false"
+      SFTPGO_HTTPD__BINDINGS__0__ENABLE_REST_API: "true"
+      SFTPGO_WEBDAVD__BINDINGS__0__PORT: "8090"
+      SFTPGO_WEBDAVD__BINDINGS__0__PREFIX: /webdav
+      SFTPGO_WEBDAVD__BINDINGS__0__PROXY_ALLOWED: "10.0.0.0/8,172.16.0.0/12,192.168.0.0/16"
+      SFTPGO_WEBDAVD__BINDINGS__0__CLIENT_IP_PROXY_HEADER: X-Forwarded-For
+      SFTPGO_SFTPD__BINDINGS__0__PORT: "2022"
+      SFTPGO_COMMON__DEFENDER__ENABLED: "true"
+    volumes:
+      - speicher:/srv/sftpgo/data
+      - sftpgo:/var/lib/sftpgo
+    ports:
+      - "${VD_SFTP_PORT:-2222}:2022"
+    expose: ["8080", "8090"]
+
+  garage:
+    image: dxflrs/garage:v2.5.0
+    profiles: ["speicher"]
+    restart: unless-stopped
+    command: ["/garage", "server", "--single-node"]
+    environment:
+      GARAGE_RPC_SECRET: ${VD_GARAGE_RPC_SECRET:-}
+      GARAGE_ADMIN_TOKEN: ${VD_GARAGE_ADMIN_TOKEN:-}
+    volumes:
+      - ./garage.toml:/etc/garage.toml:ro
+      - garage-meta:/var/lib/garage/meta
+      - garage-daten:/var/lib/garage/data
+    expose: ["3900", "3903"]
+
+volumes:
+  db:
+  dateien:
+  clamav:
+  speicher:
+  sftpgo:
+  garage-meta:
+  garage-daten:
