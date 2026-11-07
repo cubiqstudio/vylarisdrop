@@ -7,7 +7,7 @@ import { sftpId, type Ort } from '../../../utils/speicher'
 import { umzugStand, umzugStarten, umzugSteuern } from '../../../utils/umzug'
 
 const Body = z.discriminatedUnion('aktion', [
-  z.object({ aktion: z.literal('starten'), ziel: z.string().regex(/^(lokal|s3|sftp[0-9]{1,9})$/) }),
+  z.object({ aktion: z.literal('starten'), ziel: z.string().regex(/^(lokal|s3|sftp[1-9][0-9]{0,8})$/) }),
   z.object({ aktion: z.literal('steuern'), was: z.enum(['pausieren', 'fortsetzen', 'verwerfen', 'abbrechen']) })
 ])
 

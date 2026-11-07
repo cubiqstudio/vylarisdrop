@@ -4,7 +4,7 @@ import { q } from './db'
 import type { Nutzer } from './auth'
 import { dateiRecht, meineTeams, ordnerRecht } from './teams'
 import { freierName } from './dateiNamen'
-import { lesen, vorhanden } from './speicher'
+import { ablagenBereit, lesen, vorhanden } from './speicher'
 import { gezaehlt } from './traffic'
 import { unterbaum } from './cloudAktionen'
 import type { DateiZeile } from './dateien'
@@ -100,6 +100,9 @@ export async function zipAusliefern(event: H3Event, u: Nutzer, query: { dateien?
       for (const [oid, pfad] of pfade) if (!mitDatei.has(oid) && !mitKind.has(oid)) leereOrdner.push(pfad)
     }
   }
+
+  // Speicherort nicht erreichbar (SFTP offline, Host-Schlüssel): sauberes 503/502 statt eines ZIP mit „Dateien fehlen“
+  await ablagenBereit(dateien.map((d) => d.f.ablage))
 
   const einzigerOrdner = !dIds.length && oIds.length === 1
   let titel = String(query.name || '').trim()

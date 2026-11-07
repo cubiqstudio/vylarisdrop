@@ -21,17 +21,17 @@ export const datenordner = () =>
   useRuntimeConfig().dataDir ||
   process.env.NUXT_DATA_DIR ||
   (process.platform === 'win32' ? join(process.cwd(), 'data') : '/data')
-const SCHLUESSEL = /^((s3|sftp[0-9]{1,9}):)?[0-9a-f]{32}$/
+const SCHLUESSEL = /^((s3|sftp[1-9][0-9]{0,8}):)?[0-9a-f]{32}$/
 const UPLOAD_ID = /^[0-9a-f]{24}$/
 
 export const ortVon = (ablage: string): Ort => {
   if (ablage.startsWith('s3:')) return 's3'
-  const m = /^(sftp[0-9]{1,9}):/.exec(ablage)
+  const m = /^(sftp[1-9][0-9]{0,8}):/.exec(ablage)
   return m ? (m[1] as Ort) : 'lokal'
 }
 /** ID der SFTP-Erweiterung eines Ortes, sonst null. */
 export const sftpId = (o: Ort | string): number | null => {
-  const m = /^sftp([0-9]{1,9})$/.exec(o)
+  const m = /^sftp([1-9][0-9]{0,8})$/.exec(o)
   return m ? Number(m[1]) : null
 }
 /** Prüft einen gespeicherten Ort-Text (z. B. Spalte uploads.speicher) und liefert sonst null. */

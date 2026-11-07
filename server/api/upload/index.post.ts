@@ -23,6 +23,7 @@ export default defineEventHandler(async (event) => {
   const max = grenzen.max
   const geschaetzt = nutzlastSchaetzen(Number(getRequestHeader(event, 'content-length')) || undefined, typ)
   let quotaFehler: any = null
+  let ausfall: any = null // Speicher nicht erreichbar (503/502): dieser Status soll beim Client ankommen
   const felder: Record<string, string> = {}
   const erledigt: DateiZeile[] = []
   const fehlerListe: string[] = []
@@ -62,6 +63,7 @@ export default defineEventHandler(async (event) => {
             if (e?.code === 'ZU_GROSS') return zuGross()
             strom.resume()
             if (istQuotaFehler(e)) quotaFehler ||= e
+            else if (e?.statusCode === 503 || e?.statusCode === 502) ausfall ||= e
             fehlerListe.push(String(e?.message || e))
           }
         })()
@@ -86,6 +88,7 @@ export default defineEventHandler(async (event) => {
 
   if (!erledigt.length) {
     if (quotaFehler) throw quotaFehler
+    if (ausfall) throw ausfall
     throw fehler(400, fehlerListe[0] || 'Keine Datei im Upload.', fehlerListe[0] || 'No file in the upload.')
   }
   await ereignis('upload', u.id, { anzahl: erledigt.length }, clientIp(event))
