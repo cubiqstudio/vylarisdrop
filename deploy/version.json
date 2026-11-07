@@ -1,12 +1,20 @@
 {
-  "version": "1.0.0",
+  "version": "1.1.0",
   "datum": "2026-11-07",
   "hinweise": {
     "de": [
-      "Erstveröffentlichung von VylarisCloud."
+      "Neue Cloud-Dateiverwaltung mit Ordnern, Teilen, Papierkorb und Suche. Das bisherige System lebt als Bereich „Drop“ weiter.",
+      "WebDAV-Server unter /dav mit App-Passwörtern und neuer Seite „Sync“ für Desktop- und Mobil-Clients.",
+      "Kontingente pro Nutzer, Rolle und Team mit Warnungen per E-Mail und Discord.",
+      "SFTP-Speicher-Erweiterungen für Administratoren (Speicherziele, Verbindungstest, Umzug vorhandener Dateien).",
+      "Korrekturen: Dateinamen mit Umlauten beim Upload per API, Datei-Dialog auf dem Handy, Installer-Banner."
     ],
     "en": [
-      "First release of VylarisCloud."
+      "New cloud file manager with folders, sharing, trash and search. The previous system lives on as the “Drop” area.",
+      "WebDAV server at /dav with app passwords and a new “Sync” page for desktop and mobile clients.",
+      "Quotas per user, role and team with warnings by e-mail and Discord.",
+      "SFTP storage add-ons for administrators (storage targets, connection test, moving existing files).",
+      "Fixes: file names with umlauts in API uploads, file dialog on phones, installer banner."
     ]
   }
 }

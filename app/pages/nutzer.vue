@@ -4,8 +4,13 @@ const theme = useTheme()
 const { ok, fehler } = useToast()
 const bestaetigen = useBestaetigen()
 const istInhaber = computed(() => theme.value.user?.role === 'owner')
-const { data, refresh } = await (useFetch as any)('/api/users', { key: 'nutzer' })
-const { data: ueb, refresh: uebNeu } = await (useFetch as any)('/api/quota', { key: 'quota-uebersicht' })
+const istAdmin = computed(() => ['owner', 'admin'].includes(theme.value.user?.role || ''))
+// Nicht-Admins rufen die Verwaltungs-APIs gar nicht erst ab (sie würden 403 liefern)
+const { data, refresh } = await (useFetch as any)('/api/users', { key: 'nutzer', immediate: istAdmin.value })
+const { data: ueb, refresh: uebNeu } = await (useFetch as any)('/api/quota', {
+  key: 'quota-uebersicht',
+  immediate: istAdmin.value
+})
 const alleNutzer = computed<any[]>(() => data.value?.users || [])
 const neu = reactive({
   offen: false,
@@ -122,6 +127,11 @@ function bearbeiten(u: any) {
 
 <template>
   <section class="rein">
+    <div v-if="!istAdmin" class="block leer-hinweis">
+      <h3>{{ t('Nur für Administratoren', 'Administrators only') }}</h3>
+      <p>{{ t('Dafür fehlt dir die Berechtigung.', 'You do not have permission for this.') }}</p>
+    </div>
+    <template v-else>
     <div class="kopf">
       <div>
         <div class="eyebrow"><Ico n="users" /> {{ t('Verwaltung', 'Manage') }}</div>
@@ -319,6 +329,7 @@ function bearbeiten(u: any) {
         </div>
       </form>
     </VdModal>
+    </template>
   </section>
 </template>
 

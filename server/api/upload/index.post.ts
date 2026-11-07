@@ -30,7 +30,7 @@ export default defineEventHandler(async (event) => {
 
   await new Promise<void>((resolve, reject) => {
     const req = event.node.req
-    const bb = busboy({ headers: req.headers as any, limits: { files: 50, fields: 20, fieldSize: 4096 } })
+    const bb = busboy({ headers: req.headers as any, defParamCharset: 'utf8', limits: { files: 50, fields: 20, fieldSize: 4096 } })
     const laufend: Promise<void>[] = []
     let vorbei = false
     const zuGross = () => {

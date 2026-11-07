@@ -9,7 +9,7 @@ import { datenordner } from './speicher'
 export const KNOTEN_ID = randomUUID()
 export const KNOTEN_NAME = (process.env.VD_NODE_NAME || hostname() || 'vylariscloud').slice(0, 60)
 export const NUR_WEB = process.env.VD_NODE_ROLE === 'web'
-export const VERSION = process.env.VD_VERSION || '1.0.0'
+export const VERSION = process.env.VD_VERSION || '1.1.0'
 const GESTARTET = new Date()
 let ordnerId = ''
 export const meinOrdner = () => ordnerId

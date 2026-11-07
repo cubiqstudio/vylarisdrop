@@ -1,6 +1,6 @@
 FROM node:22-alpine
 WORKDIR /app
-ENV NODE_ENV=production HOST=0.0.0.0 PORT=3000 NITRO_PORT=3000 NUXT_DATA_DIR=/data VD_VERSION=1.0.0
+ENV NODE_ENV=production HOST=0.0.0.0 PORT=3000 NITRO_PORT=3000 NUXT_DATA_DIR=/data VD_VERSION=1.1.0
 RUN apk add --no-cache ffmpeg libheif-tools && mkdir -p /data /speicher && chown node:node /data /speicher
 COPY --chown=node:node .output ./.output
 USER node

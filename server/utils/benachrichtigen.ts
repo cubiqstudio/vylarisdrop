@@ -50,7 +50,7 @@ function transport(m: Mail) {
 const esc = (s: string) =>
   s.replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]!)
 
-export async function mailSenden(an: string, betreff: string, text: string, link?: { url: string; text: string }) {
+export async function mailSenden(an: string, betreff: string, text: string, link?: { url: string; text: string }, sprache: 'de' | 'en' = 'de') {
   const m = await getMail()
   if (!mailBereit(m)) throw new Error('kein-smtp')
   const d = await getDesign()
@@ -61,7 +61,7 @@ export async function mailSenden(an: string, betreff: string, text: string, link
 <h1 style="font-size:20px;margin:14px 0 8px;letter-spacing:-.02em">${esc(betreff)}</h1>
 <p style="font-size:14.5px;line-height:1.6;color:#5c5a60;margin:0 0 20px;white-space:pre-line">${esc(text)}</p>
 ${link ? `<a href="${esc(link.url)}" style="display:inline-block;background:${d.color};color:#fff;text-decoration:none;font-weight:600;font-size:14px;padding:11px 18px;border-radius:10px">${esc(link.text)}</a>` : ''}
-</td></tr><tr><td style="padding:20px 28px 26px;font-size:12px;color:#8d8a90">Benachrichtigungen stellst du in ${esc(d.name)} unter Einstellungen ein.</td></tr></table>
+</td></tr><tr><td style="padding:20px 28px 26px;font-size:12px;color:#8d8a90">${sprache === 'en' ? `You can change notifications in ${esc(d.name)} under Settings.` : `Benachrichtigungen stellst du in ${esc(d.name)} unter Einstellungen ein.`}</td></tr></table>
 </td></tr></table></body></html>`
   await transport(m).sendMail({
     from: m.von,
@@ -124,7 +124,7 @@ export async function benachrichtigen(
   }
   if (e.email && u.email) {
     try {
-      await mailSenden(u.email, n.titel, n.text, n.link)
+      await mailSenden(u.email, n.titel, n.text, n.link, u.prefs?.lang === 'en' ? 'en' : 'de')
       aus.email = 'ok'
     } catch (x: any) {
       aus.email = x?.message === 'kein-smtp' ? 'kein-smtp' : 'fehler'

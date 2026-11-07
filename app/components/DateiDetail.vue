@@ -419,7 +419,11 @@ function tagUm(id: number) {
 @media (max-width: 720px) {
   .detail,
   .bearbeiten {
-    grid-template-columns: 1fr;
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .detail > *,
+  .bearbeiten > * {
+    min-width: 0;
   }
 }
 </style>

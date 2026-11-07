@@ -43,7 +43,7 @@ export default defineEventHandler(async (event) => {
   const felder: Record<string, string> = {}
   const ergebnis = await new Promise<{ name: string; slug: string; datei: DateiZeile } | null>((resolve, reject) => {
     const req = event.node.req
-    const bb = busboy({ headers: req.headers as any, limits: { files: 1, fields: 6, fieldSize: 1200 } })
+    const bb = busboy({ headers: req.headers as any, defParamCharset: 'utf8', limits: { files: 1, fields: 6, fieldSize: 1200 } })
     let fertig = false
     const ende = (fn: () => void) => {
       if (!fertig) {
