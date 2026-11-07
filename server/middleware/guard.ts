@@ -37,7 +37,8 @@ export default defineEventHandler(async (event) => {
     return
   }
 
-  if (fertig && process.env.VD_DISABLE_HTTPS_REDIRECT !== '1') {
+  // Der direkte DAV-Hostname (VD_DAV_HOST) wird nicht auf die Hauptdomain umgeleitet (siehe 00.davhost.ts: dort gilt nur WebDAV, nur HTTPS)
+  if (fertig && process.env.VD_DISABLE_HTTPS_REDIRECT !== '1' && !event.context.davHost) {
     const net = await getNet()
     const host = String(getRequestHeader(event, 'host') || '')
       .split(':')[0]!

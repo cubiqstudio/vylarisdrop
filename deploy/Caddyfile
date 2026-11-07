@@ -16,3 +16,7 @@ https:// {
 	encode gzip zstd
 	reverse_proxy app:3000
 }
+
+# Optionale Zusatz-Sites (z. B. direkter WebDAV-Hostname fuer grosse Dateien, siehe dav-direkt.sh und compose.dav-direkt.yml).
+# Ohne passende Dateien in diesem Ordner passiert nichts.
+import /etc/caddy/conf.d/*

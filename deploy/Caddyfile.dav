@@ -1,0 +1,55 @@
+# VylarisCloud: direkter WebDAV-Hostname fuer grosse Dateien (OHNE Cloudflare davor).
+#
+# Wird von compose.dav-direkt.yml nach /etc/caddy/conf.d/dav.caddy eingehaengt; die Haupt-Caddyfile liest den Ordner per "import".
+# Der Hostname kommt aus der .env (VD_DAV_HOST=dav.deinefirma.de). Der DNS-Eintrag muss "DNS only" (graue Wolke) auf die
+# Server-IP zeigen — dadurch wird die Server-IP oeffentlich sichtbar. Lies vorher den Abschnitt
+# "Grosse Dateien hinter Cloudflare" in deploy/README.md.
+#
+# Was diese Site tut:
+#   - gibt NUR /dav, /dav/*, /webdav und /webdav/* an die App weiter, alles andere ist 404 (die App prueft das zusaetzlich selbst)
+#   - holt sich ihr Zertifikat selbst (Let's Encrypt, normaler Abruf fuer genau diesen Hostnamen, kein on_demand) und erzwingt HTTPS
+#   - hat KEIN Limit fuer die Groesse einer Anfrage und keine kurzen Zeitlimits (Uploads werden an die App durchgereicht, nicht zwischengespeichert)
+#   - schreibt ein Zugriffsprotokoll (JSON) nach /var/log/caddy/dav-zugriff.log — Grundlage fuer fail2ban (deploy/fail2ban/)
+#   - sperrt optional alle Adressen ausser einer Freigabeliste (VD_DAV_ERLAUBT in der .env, Leerzeichen getrennt, z. B.
+#     "203.0.113.7 198.51.100.0/24 2001:db8::/32"); ohne Angabe darf jeder verbinden
+#
+# Anmelde-Versuche begrenzt die App selbst (je IP und je Benutzer, danach HTTP 429); Caddy bringt ohne Zusatzmodul keine Rate-Limits
+# mit. Es ist KEIN Plugin noetig. Wer eines moechte: Caddy mit "github.com/mholt/caddy-ratelimit" selbst bauen (xcaddy).
+{$VD_DAV_HOST} {
+	log {
+		output file /var/log/caddy/dav-zugriff.log {
+			roll_size 20MiB
+			roll_keep 5
+			roll_keep_for 720h
+		}
+		format json
+	}
+
+	header {
+		Strict-Transport-Security "max-age=31536000"
+		X-Content-Type-Options nosniff
+		-Server
+	}
+
+	# Freigabeliste (Standard: alle). remote_ip ist hier die echte Verbindungsadresse, weil nichts davorsteht.
+	@gesperrt not remote_ip {$VD_DAV_ERLAUBT:0.0.0.0/0 ::/0}
+	respond @gesperrt "Zugriff nicht erlaubt / access not allowed" 403
+
+	@dav path /dav /dav/* /webdav /webdav/*
+	handle @dav {
+		reverse_proxy app:3000 {
+			# Antworten (Downloads) sofort weiterreichen, Uploads nicht puffern; grosszuegige Zeitlimits fuer lange Uebertragungen
+			flush_interval -1
+			transport http {
+				dial_timeout 10s
+				response_header_timeout 30m
+				read_timeout 30m
+				write_timeout 30m
+			}
+		}
+	}
+
+	handle {
+		respond "Nicht gefunden / not found" 404
+	}
+}

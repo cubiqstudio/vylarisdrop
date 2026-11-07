@@ -1,6 +1,13 @@
 <script setup lang="ts">
 // Anleitungen zum Einbinden der Cloud per WebDAV mit kopierfertigen Beispielen
-const props = defineProps<{ adresse: string; benutzer: string; passwort?: string; https: boolean }>()
+const props = defineProps<{
+  adresse: string
+  benutzer: string
+  passwort?: string
+  https: boolean
+  grossAdresse?: string | null
+  skript?: { url: string; sha256: string; groesse: number } | null
+}>()
 
 type Plattform = 'windows' | 'macos' | 'mobil' | 'linux' | 'rclone' | 'cyberduck' | 'curl'
 const wahl = ref<Plattform>('windows')
@@ -84,8 +91,57 @@ function wechsel(e: KeyboardEvent) {
           {{ t('Windows übergibt Passwörter bei http:// nicht im Klartext und lehnt die Anmeldung ab. Richte HTTPS ein (Einstellungen → Netzwerk) oder erlaube es einmalig in der Registry (Administrator-Eingabeaufforderung), danach den Dienst neu starten:', 'Windows refuses to send passwords in clear text over http://. Set up HTTPS (Settings → Network) or allow it once in the registry (administrator prompt), then restart the service:') }}
         </div>
         <VdSyncCode v-if="!https" :code="`reg add HKLM\\SYSTEM\\CurrentControlSet\\Services\\WebClient\\Parameters /v BasicAuthLevel /t REG_DWORD /d 2 /f\nnet stop webclient && net start webclient`" />
-        <p class="sehrleise">{{ t('Große Dateien: Windows begrenzt WebDAV-Dateien standardmäßig auf 50 MB. Mit diesem Befehl (Administrator) steigt die Grenze auf 4 GB:', 'Large files: Windows limits WebDAV files to 50 MB by default. This command (administrator) raises the limit to 4 GB:') }}</p>
-        <VdSyncCode code="reg add HKLM\SYSTEM\CurrentControlSet\Services\WebClient\Parameters /v FileSizeLimitInBytes /t REG_DWORD /d 4294967295 /f" />
+        <h3 class="sa-h">{{ t('Große Dateien (über 50 MB)', 'Large files (over 50 MB)') }}</h3>
+        <p class="leise">
+          {{
+            t(
+              'Zwei Grenzen greifen unabhängig voneinander. Beide musst du kennen, wenn eine große Datei im Explorer abbricht:',
+              'Two limits apply independently of each other. You need to know both when a large file fails in Explorer:'
+            )
+          }}
+        </p>
+        <ul>
+          <li>
+            <b>Windows:</b>
+            {{
+              t(
+                'Der WebDAV-Client lässt Dateien nur bis 50 MB zu (Fehler 0x800700DF „Dateigröße überschreitet das Limit“). Das Skript unten hebt das auf den Höchstwert, knapp 4 GB. Größere Dateien kann der Explorer nie — dafür rclone, WinSCP oder Cyberduck.',
+                'The WebDAV client only allows files up to 50 MB (error 0x800700DF “file size exceeds the limit”). The script below raises it to the maximum, just under 4 GB. Explorer can never go beyond that — use rclone, WinSCP or Cyberduck for larger files.'
+              )
+            }}
+          </li>
+          <li>
+            <b>Cloudflare:</b>
+            {{
+              t(
+                'Läuft die Cloud hinter einem Cloudflare-Tunnel oder -Proxy (Tarif Free/Pro), nimmt Cloudflare höchstens 100 MB je Anfrage an. Ein WebDAV-Upload ist eine einzige Anfrage — größere Dateien scheitern dort, egal was Windows erlaubt.',
+                'If the cloud runs behind a Cloudflare tunnel or proxy (Free/Pro plan), Cloudflare accepts at most 100 MB per request. A WebDAV upload is a single request — larger files fail there no matter what Windows allows.'
+              )
+            }}
+            <template v-if="grossAdresse">
+              {{ t('Nimm dafür die Adresse „für große Dateien“ von oben:', 'Use the “for large files” address from above for this:') }}
+              <code class="mono">{{ grossAdresse }}</code>
+            </template>
+            <template v-else>
+              {{ t('Frag den Betreiber nach einer Adresse für große Dateien, oder lade große Dateien über die Weboberfläche hoch (die lädt in kleinen Stücken).', 'Ask the operator for an address for large files, or upload large files through the web interface (it uploads in small pieces).') }}
+            </template>
+          </li>
+        </ul>
+        <VdSyncCode v-if="grossAdresse" :code="`net use Y: ${grossAdresse} /user:${benutzer} ${PW} /persistent:yes`" :titel="t('Netzlaufwerk für große Dateien (direkte Adresse)', 'Network drive for large files (direct address)')" />
+        <template v-if="skript">
+          <p class="leise">
+            {{ t('Das Skript stellt die Windows-Grenze ein (mit Rückfrage, Anzeige der alten Werte und „-Rueckgaengig“):', 'The script sets the Windows limit (asks first, shows the old values, supports “-Rueckgaengig” to undo):') }}
+            <a :href="skript.url" download class="sa-link">windows-webdav.ps1</a> ·
+            <a :href="skript.url + '?ansehen=1'" target="_blank" rel="noopener" class="sa-link">{{ t('ansehen', 'view') }}</a>
+          </p>
+          <div class="meldung" role="note">
+            {{ t('Lies das Skript, bevor du es ausführst — es ändert nur zwei Registry-Werte des Dienstes WebClient, lädt nichts nach und sendet nichts. Prüfsumme (SHA-256):', 'Read the script before you run it — it only changes two registry values of the WebClient service, downloads nothing and sends nothing. Checksum (SHA-256):') }}
+            <code class="mono sa-hash">{{ skript.sha256 }}</code>
+          </div>
+          <VdSyncCode :code="`Get-FileHash .\\windows-webdav.ps1 -Algorithm SHA256   # muss die Prüfsumme von oben zeigen\npowershell -ExecutionPolicy Bypass -File .\\windows-webdav.ps1 -Trocken   # nur ansehen, was geändert würde\npowershell -ExecutionPolicy Bypass -File .\\windows-webdav.ps1             # ändern (als Administrator)`" :titel="t('In PowerShell (Ordner mit der Datei)', 'In PowerShell (folder with the file)')" />
+        </template>
+        <p class="sehrleise">{{ t('Ohne Skript, von Hand (Administrator-Eingabeaufforderung, danach den Dienst neu starten):', 'Without the script, by hand (administrator prompt, then restart the service):') }}</p>
+        <VdSyncCode :code="`reg add HKLM\\SYSTEM\\CurrentControlSet\\Services\\WebClient\\Parameters /v FileSizeLimitInBytes /t REG_DWORD /d 4294967295 /f\nnet stop webclient && net start webclient`" />
       </template>
 
       <!-- macOS -->
@@ -219,6 +275,16 @@ function wechsel(e: KeyboardEvent) {
   border-radius: 6px;
   padding: 1px 6px;
   word-break: break-all;
+}
+.sa-link {
+  color: var(--a);
+  font-weight: 600;
+}
+.sa-hash {
+  display: block;
+  margin-top: 4px;
+  overflow-wrap: anywhere;
+  font-size: 11px;
 }
 .sa-felder {
   margin: 8px 0 0;
