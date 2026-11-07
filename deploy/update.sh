@@ -3,7 +3,7 @@ set -uo pipefail
 {
 exec </dev/null
 QUELLE="${VD_QUELLE:-https://raw.githubusercontent.com/cubiqstudio/vylarisdrop/main/deploy}"
-DATEIEN="docker-compose.yml compose.caddy.yml compose.port.yml compose.node.yml Caddyfile garage.toml install.sh update.sh daten-verschieben.sh .env.example README.md version.json"
+DATEIEN="docker-compose.yml compose.caddy.yml compose.port.yml compose.node.yml Caddyfile garage.toml install.sh update.sh daten-verschieben.sh dav-direkt.sh Caddyfile.dav Caddyfile.dav-nur compose.dav-direkt.yml .env.example README.md version.json"
 DIR="${VD_DIR:-}"; STATUS=""
 while [ $# -gt 0 ]; do
   case "$1" in
@@ -136,7 +136,7 @@ inst_echt() {
   cf=$(sed -n 's/^COMPOSE_FILE=//p' "$1/.env" 2>/dev/null | tail -1 | tr -d '"'"'"'\r')
   [ -n "$cf" ] || return 0
   for x in $(printf '%s' "$cf" | tr ':' ' '); do
-    case "$x" in docker-compose.yml|compose.caddy.yml|compose.port.yml|compose.node.yml|compose.hdd.yml) ;; *) return 1 ;; esac
+    case "$x" in docker-compose.yml|compose.caddy.yml|compose.port.yml|compose.node.yml|compose.hdd.yml|compose.dav-direkt.yml) ;; *) return 1 ;; esac
   done
 }
 inst_ordner() {
@@ -252,7 +252,7 @@ for f in $DATEIEN; do
   warte_text "Dateien werden geladen: $f" "Downloading files: $f"
   if ! curl -fsSL --max-time 30 -o "$tmp/$f" "$QUELLE/$f?t=$t" 2>/dev/null; then
     rm -f "$tmp/$f"
-    case "$f" in version.json|.env.example|README.md|daten-verschieben.sh) ;; *) geladen=0; break ;; esac
+    case "$f" in version.json|.env.example|README.md|daten-verschieben.sh|dav-direkt.sh|Caddyfile.dav|Caddyfile.dav-nur|compose.dav-direkt.yml) ;; *) geladen=0; break ;; esac
   fi
 done
 if [ "$geladen" = 1 ]; then
@@ -267,7 +267,7 @@ if [ "$geladen" = 1 ]; then
     [ ! -f "$f" ] || cp -a "$f" "$sich/"
     cp "$tmp/$f" "$f.neu" && mv -f "$f.neu" "$f" && geaendert="$geaendert $f"
   done
-  chmod 755 install.sh update.sh daten-verschieben.sh 2>/dev/null || true
+  chmod 755 install.sh update.sh daten-verschieben.sh dav-direkt.sh 2>/dev/null || true
   if [ -n "$geaendert" ] && ! docker compose config -q >/dev/null 2>&1; then
     for f in $geaendert; do if [ -f "$sich/$f" ]; then cp -a "$sich/$f" "$f"; else rm -f "$f"; fi; done
     info "${Y}Die neuen Compose-Dateien passen nicht zu dieser .env — die bisherigen bleiben.${N}" "${Y}The new compose files do not fit this .env — keeping the current ones.${N}"
