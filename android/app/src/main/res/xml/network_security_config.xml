@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Klartext (http) wird auf Systemebene zugelassen, weil die Netzwerk-Sicherheitskonfiguration keine IP-Bereiche
+  (192.168.0.0/16, 10.0.0.0/8 ...) ausdrücken kann, Heimserver aber oft nur per http im lokalen Netz laufen.
+  Die Beschränkung auf lokale Adressen erzwingt der Code: ServerAdresse.erlaubt() beim Einrichten, im HTTP-Client
+  und für jede Anfrage der WebView (shouldInterceptRequest). Vermischte Inhalte (http auf https-Seiten) sind gesperrt.
+-->
+<network-security-config xmlns:tools="http://schemas.android.com/tools">
+    <base-config cleartextTrafficPermitted="true" tools:ignore="InsecureBaseConfiguration">
+        <trust-anchors>
+            <certificates src="system" />
+        </trust-anchors>
+    </base-config>
+</network-security-config>

@@ -1,0 +1,88 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name" translatable="false">VylarisCloud</string>
+
+    <!-- Einrichtung -->
+    <string name="einrichtung_untertitel">Verbinde die App mit deinem VylarisCloud-Server.</string>
+    <string name="server_adresse">Server-Adresse (z. B. https://cloud.beispiel.de)</string>
+    <string name="koppelcode">Kopplungscode (optional)</string>
+    <string name="koppelcode_hilfe">Format ABCD-EFGH. Im Panel unter \"Verbundene Geräte\" erzeugst du einen Code. Ohne Code meldest du dich auf der Webseite ganz normal an.</string>
+    <string name="verbinden">Verbinden</string>
+    <string name="adresse_leer">Bitte gib die Adresse deines Servers ein.</string>
+    <string name="adresse_ungueltig">Das ist keine gültige Adresse.</string>
+    <string name="adresse_schema">Es sind nur Adressen mit https:// (oder http:// im lokalen Netz) möglich.</string>
+    <string name="adresse_zugangsdaten">Bitte gib die Adresse ohne Benutzername und Passwort ein.</string>
+    <string name="adresse_http_warnung">Warnung: http:// ist unverschlüsselt und nur für Adressen im lokalen Netz erlaubt (z. B. 192.168.x.x). Ich habe https:// eingesetzt, bitte prüfe die Adresse.</string>
+    <string name="code_ungueltig">Der Kopplungscode hat 8 Zeichen, z. B. ABCD-EFGH.</string>
+    <string name="fehler_netz_detail">Der Server ist nicht erreichbar. Prüfe Adresse und Internetverbindung. (%1$s)</string>
+    <string name="fehler_kein_server">Unter dieser Adresse läuft kein VylarisCloud-Server.</string>
+    <string name="fehler_code">Der Kopplungscode ist unbekannt, abgelaufen oder wurde schon benutzt.</string>
+    <string name="fehler_zu_viele">Zu viele Versuche. Bitte warte einen Moment.</string>
+    <string name="fehler_server">Der Server meldet: %1$s</string>
+    <string name="token_speichern_fehler">Das Gerät konnte das Token nicht sicher speichern. Du musst dich im Web anmelden.</string>
+    <string name="deeplink_wechseln">Du bist mit %1$s verbunden. Mit %2$s verbinden und die bisherige Verbindung ersetzen?</string>
+
+    <!-- Hauptfenster -->
+    <string name="fehler_titel">Keine Verbindung</string>
+    <string name="fehler_netz">Die Seite konnte nicht geladen werden. Prüfe deine Internetverbindung.</string>
+    <string name="fehler_zertifikat">Das Sicherheitszertifikat des Servers ist nicht vertrauenswürdig. Die Verbindung wurde aus Sicherheitsgründen abgebrochen.</string>
+    <string name="erneut_versuchen">Erneut versuchen</string>
+    <string name="server_aendern">Server ändern</string>
+    <string name="datei_waehlen">Datei auswählen</string>
+    <string name="kein_programm">Dafür ist keine App installiert.</string>
+    <string name="http_blockiert">Unverschlüsselte Verbindungen sind nur im lokalen Netz erlaubt.</string>
+    <string name="download_gestartet">Download gestartet: %1$s</string>
+    <string name="download_fehler">Der Download ist fehlgeschlagen.</string>
+    <string name="gespeichert_downloads">Gespeichert in Downloads: %1$s</string>
+
+    <!-- Einstellungen -->
+    <string name="kurzbefehl_einstellungen">Einstellungen</string>
+    <string name="einstellungen_titel">Einstellungen</string>
+    <string name="einst_server" translatable="false">%1$s\n%2$s</string>
+    <string name="einst_gekoppelt">Dieses Gerät ist gekoppelt (%1$s). Teilen aus anderen Apps ist aktiv.</string>
+    <string name="einst_nicht_gekoppelt">Noch nicht angemeldet. Melde dich auf der Webseite an, dann wird das Gerät automatisch gekoppelt.</string>
+    <string name="einst_version">Version %1$s</string>
+    <string name="verknuepfung_hinzufuegen">Verknüpfung auf den Startbildschirm</string>
+    <string name="verknuepfung_hilfe">Legt ein Symbol mit dem Logo deiner Marke an, falls dein Server eines hinterlegt hat.</string>
+    <string name="verknuepfung_angefragt">Bestätige das Hinzufügen im Dialog deines Startbildschirms.</string>
+    <string name="verknuepfung_nicht_unterstuetzt">Dein Startbildschirm unterstützt keine Verknüpfungen.</string>
+    <string name="verknuepfung_fehler">Die Verknüpfung konnte nicht angelegt werden.</string>
+    <string name="geraete_verwalten">Verbundene Geräte im Browser öffnen</string>
+    <string name="server_wechseln">Abmelden und Server wechseln</string>
+    <string name="server_wechseln_hilfe">Widerruft dieses Gerät, löscht Anmeldung und lokale Daten und öffnet die Einrichtung.</string>
+    <string name="server_wechseln_frage">Dieses Gerät wird abgemeldet und alle lokalen App-Daten werden gelöscht.</string>
+
+    <!-- Teilen und Upload -->
+    <string name="teilen_label" translatable="false">VylarisCloud</string>
+    <string name="teilen_nichts">Es wurde nichts zum Hochladen übergeben.</string>
+    <string name="teilen_anmelden_titel">Zuerst anmelden</string>
+    <string name="teilen_anmelden_text">Bitte öffne die VylarisCloud-App und melde dich zuerst an, dann kannst du Dateien aus anderen Apps teilen.</string>
+    <string name="app_oeffnen">App öffnen</string>
+    <string name="teilen_gestartet">Upload gestartet</string>
+    <string name="teilen_fehler">Der Upload konnte nicht gestartet werden.</string>
+    <string name="kanal_fortschritt">Upload-Fortschritt</string>
+    <string name="kanal_ergebnis">Upload-Ergebnis</string>
+    <string name="upload_vorbereiten">Wird vorbereitet …</string>
+    <string name="upload_titel">Hochladen:</string>
+    <string name="upload_titel_n">Hochladen (%1$d/%2$d):</string>
+    <string name="upload_abbrechen">Abbrechen</string>
+    <string name="upload_abgebrochen">Upload abgebrochen.</string>
+    <string name="upload_fehlgeschlagen">Upload fehlgeschlagen</string>
+    <string name="upload_fehler_netz">%1$s: keine Verbindung zum Server.</string>
+    <string name="upload_fehler_gross">%1$s: die Datei ist zu groß. %2$s</string>
+    <string name="upload_fehler_server">%1$s: %2$s</string>
+    <string name="upload_fehler_lesen">%1$s: die Datei konnte nicht gelesen werden.</string>
+    <string name="upload_fehler_unbekannt">Beim Hochladen ist ein unerwarteter Fehler aufgetreten.</string>
+    <string name="hochgeladen">Hochgeladen</string>
+    <plurals name="hochgeladen_n">
+        <item quantity="one">%d Datei hochgeladen</item>
+        <item quantity="other">%d Dateien hochgeladen</item>
+    </plurals>
+    <plurals name="hochgeladen_n_text">
+        <item quantity="one">%1$s und %2$d weitere Datei</item>
+        <item quantity="other">%1$s und %2$d weitere Dateien</item>
+    </plurals>
+    <string name="link_kopieren">Link kopieren</string>
+    <string name="link_kopiert">Link kopiert</string>
+    <string name="oeffnen">Öffnen</string>
+</resources>
