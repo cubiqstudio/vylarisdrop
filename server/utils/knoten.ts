@@ -163,6 +163,8 @@ async function lauschen(): Promise<void> {
   await c.query('LISTEN vd_live')
   lauscher = c
   for (const fn of hoerer.get('vd_settings') || []) fn('*')
+  // Live-Seiten: Meldungen aus der Zeit ohne Hörverbindung fehlen, die Clients laden alles neu
+  for (const fn of hoerer.get('vd_live') || []) fn('*')
 }
 
 let zweitSeit = 0
