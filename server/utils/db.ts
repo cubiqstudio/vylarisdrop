@@ -235,6 +235,8 @@ CREATE INDEX IF NOT EXISTS dav_sperren_ablauf_idx ON dav_sperren(ablauf_at);
 -- [cloud:quota] Warnstufe je Konto (0 | 80 | 100) und Team-Kontingent
 ALTER TABLE users ADD COLUMN IF NOT EXISTS quota_gewarnt int NOT NULL DEFAULT 0;
 ALTER TABLE teams ADD COLUMN IF NOT EXISTS quota_bytes bigint;
+-- Chunk-Upload: Zeitpunkt, an dem ein fertig-Aufruf den Upload beansprucht hat (verhindert doppeltes Anlegen bei Parallelaufrufen)
+ALTER TABLE uploads ADD COLUMN IF NOT EXISTS fertig_at timestamptz;
 
 -- [cloud:sftp] Speicher-Erweiterungen: externe SFTP-Speicher, die Admins online einbinden (Zugang verschluesselt)
 CREATE TABLE IF NOT EXISTS speicher_ziele (
