@@ -8,11 +8,17 @@ const { vorbereiten: hochladen, neu } = useUploads()
 const { ok } = useToast()
 
 const { data: stats } = await (useFetch as any)('/api/files/stats', { key: 'stats' })
+// Kurzinfo für die Navigation: ob "Mein Team" erscheint (Pro und Mitglied in mindestens einem Team, oder Admin)
+const { data: teamKurz } = await (useFetch as any)('/api/team?kurz=1', { key: 'team-kurz' })
+const teamSichtbar = computed(() => !!teamKurz.value?.pro && (Number(teamKurz.value?.anzahl || 0) > 0 || !!teamKurz.value?.admin))
 // EINE gemeinsame, gebündelte Aktualisierung der Zähler/Belegung für den ganzen Rahmen (und alle Seiten, die den Schlüssel
 // 'stats' teilen): Änderungen von überall (anderer Tab, Gerät, WebDAV, Team, API) und eigene Uploads laufen hier zusammen.
 const { aktualisieren: statsNeu } = useLiveDaten({
-  daten: [{ schluessel: 'stats', url: '/api/files/stats' }],
-  themen: ['dateien', 'ordner', 'papierkorb'],
+  daten: [
+    { schluessel: 'stats', url: '/api/files/stats' },
+    { schluessel: 'team-kurz', url: '/api/team?kurz=1' }
+  ],
+  themen: ['dateien', 'ordner', 'papierkorb', 'teams'],
   mind: 1500
 })
 watch(neu, () => statsNeu())
@@ -56,6 +62,7 @@ const NAV = computed<Array<{ gruppe: string; punkte: NavPunkt[] }>>(() => [
     punkte: [
       { zu: '/', ic: 'cloud', text: t('Meine Dateien', 'My files'), zahl: stats.value?.dateien },
       { zu: '/sync', ic: 'umzug', text: t('Sync & WebDAV', 'Sync & WebDAV') },
+      ...(teamSichtbar.value ? [{ zu: '/team', ic: 'users', text: t('Mein Team', 'My team') }] : []),
       { zu: '/geraete', ic: 'laptop', text: t('Verbundene Geräte', 'Connected devices') },
       ...(stats.value?.speicherSichtbar === false ? [] : [{ zu: '/speicher', ic: 'box', text: t('Speicher', 'Storage') }]),
       { zu: '/statistik', ic: 'chart', text: t('Statistik', 'Statistics') },
