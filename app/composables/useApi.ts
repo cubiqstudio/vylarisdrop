@@ -176,16 +176,26 @@ export function feiern(quelle: Element | null, link: string) {
 }
 
 export function useHochzaehlen(ziel: () => number, ms = 1300) {
-  const wert = ref(0)
+  // Beim Hydratisieren muss der Startwert dem vom Server gerenderten Text entsprechen (sonst Hydration-Fehler);
+  // beim Seitenwechsel im Browser zählt der Zähler wie gewohnt von 0 hoch.
+  const wert = ref(import.meta.client && !useNuxtApp().isHydrating ? 0 : ziel())
+  // Nur ein Lauf gleichzeitig: kommt (z. B. durch Live-Aktualisierung) ein neues Ziel, läuft der Zähler sanft von der
+  // aktuellen Anzeige dorthin, ohne dass ein alter Lauf dazwischenfunkt
+  let lauf = 0
   const los = (z: number) => {
+    const mein = ++lauf
     if (!import.meta.client || ruhig()) {
       wert.value = z
       return
     }
     const start = wert.value,
       t0 = performance.now()
+    if (start === z) return
+    // Kleine Änderungen sind kürzer unterwegs als der Einstiegs-Zähler von 0
+    const dauer = start === 0 ? ms : Math.min(ms, 600)
     const f = (n: number) => {
-      const p = Math.min(1, (n - t0) / ms)
+      if (mein !== lauf) return
+      const p = Math.min(1, (n - t0) / dauer)
       wert.value = start + (z - start) * (1 - Math.pow(1 - p, 4))
       if (p < 1) requestAnimationFrame(f)
     }

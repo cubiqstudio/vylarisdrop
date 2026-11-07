@@ -5,6 +5,14 @@ const bestaetigen = useBestaetigen()
 const { data: pro } = await (useFetch as any)('/api/pro', { key: 'pro' })
 const an = computed(() => !!pro.value?.funktionen?.teams)
 const { data, refresh } = await (useFetch as any)('/api/pro/teams', { key: 'teams' })
+// Live: Team-Belegung und Kontingent (Dateien samt Papierkorb); Dateien von Mitgliedern, die der Admin nicht teilt, über den ruhigen Abgleich
+useLiveDaten({
+  daten: [{ schluessel: 'teams', url: '/api/pro/teams' }],
+  themen: ['dateien', 'ordner', 'papierkorb'],
+  mind: 3000,
+  intervall: 15_000,
+  aktiv: () => !!pro.value?.funktionen?.teams
+})
 const teams = computed<any[]>(() => data.value?.teams || [])
 const rollen = computed<any[]>(() => data.value?.rollen || [])
 const konten = computed<any[]>(() => data.value?.konten || [])

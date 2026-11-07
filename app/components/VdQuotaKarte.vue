@@ -1,6 +1,8 @@
 <script setup lang="ts">
 // Eigene Belegung im Detail: Balken nach Dateiart, Papierkorb, Kontingent-Quelle und Kontingente der eigenen Teams
 const { data } = await (useFetch as any)('/api/quota/me', { key: 'quota-me' })
+// Live: Belegung nach Dateiart und Papierkorb aktualisieren sich bei Änderungen von überall (gemeinsam gebündelt, still bei Fehlern)
+useLiveDaten({ daten: [{ schluessel: 'quota-me', url: '/api/quota/me' }], themen: ['dateien', 'papierkorb'], mind: 2000 })
 const q = computed(() => data.value)
 const ARTEN = [
   { k: 'bild', c: '#1e73be', de: 'Bilder', en: 'Images' },

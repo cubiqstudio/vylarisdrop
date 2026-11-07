@@ -7,10 +7,15 @@ const istInhaber = computed(() => ich.value?.role === 'owner')
 const { vorbereiten: hochladen, neu } = useUploads()
 const { ok } = useToast()
 
-const { data: stats, refresh: statsNeu } = await (useFetch as any)('/api/files/stats', { key: 'stats' })
-watch(neu, () => {
-  void statsNeu()
+const { data: stats } = await (useFetch as any)('/api/files/stats', { key: 'stats' })
+// EINE gemeinsame, gebündelte Aktualisierung der Zähler/Belegung für den ganzen Rahmen (und alle Seiten, die den Schlüssel
+// 'stats' teilen): Änderungen von überall (anderer Tab, Gerät, WebDAV, Team, API) und eigene Uploads laufen hier zusammen.
+const { aktualisieren: statsNeu } = useLiveDaten({
+  daten: [{ schluessel: 'stats', url: '/api/files/stats' }],
+  themen: ['dateien', 'ordner', 'papierkorb'],
+  mind: 1500
 })
+watch(neu, () => statsNeu())
 const belegt = useHochzaehlen(() => Number(stats.value?.belegt || 0))
 const ARTEN = [
   { k: 'bild', c: '#1e73be', de: 'Bilder', en: 'Images' },
@@ -297,12 +302,12 @@ watch(
         <div class="oben">
           <span>{{ t('Speicher', 'Storage') }}</span
           ><span
-            ><b class="zahl">{{ groesse(belegt) }}</b
+            ><b class="zahl">{{ groesse(Math.round(belegt)) }}</b
             ><template v-if="stats?.kontingent">&nbsp;{{ t('von', 'of') }} {{ groesse(stats.kontingent) }}</template></span
           >
         </div>
         <VdQuotaBalken class="q-balken" :used="Number(stats?.belegt || 0)" :limit="stats?.kontingent || null" :segmente="segmente" klein />
-        <div v-if="speicherText" class="q-status" :class="quota?.stufe" role="status">
+        <div v-if="speicherText" class="q-status" :class="quota?.stufe">
           <Ico n="alert" /> {{ speicherText }}
         </div>
         <div class="legende">
