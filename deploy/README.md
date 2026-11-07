@@ -354,6 +354,17 @@ VD_SFTP_SCHLUESSEL=ein-langer-zufaelliger-wert
 
 Danach `docker compose up -d`. Mit `docker compose config | grep VD_` siehst du, was ankommt.
 
+### Speicher-Pool (mehrere Speicher zusammenlegen)
+
+Auf der Seite **Speicher-Erweiterungen** wählst du statt „Nur ein Speicher“ den **Speicher-Pool**: Du hakst an, welche Speicher dazugehören (dieser Server und beliebig viele SFTP-Speicher) und wählst die Verteilung:
+
+- **Größter freier Platz** (Standard): Neue Dateien gehen an das Mitglied mit dem meisten freien Platz. Mitglieder ohne bekannte Platzangabe (manche SFTP-Server liefern keine) kommen nur dran, wenn kein Mitglied eine Angabe hat, dann reihum.
+- **Abwechselnd:** Neue Dateien wechseln reihum zwischen den Mitgliedern.
+
+Ausgefallene, deaktivierte oder schreibgeschützte Mitglieder werden übersprungen; fällt alles aus, bleibt es der lokale Speicher. Vorhandene Dateien bleiben, wo sie sind, und werden von dort geliefert. Die Seite zeigt den **Gesamtplatz** (gesamt, belegt, frei) je Mitglied und als Summe; Mitglieder ohne Platzangabe stehen als „unbekannt“ daneben und sind nicht in der Summe. Der freie Platz der SFTP-Mitglieder wird alle 2 Minuten aktualisiert, der lokale alle 30 Sekunden. Ein SFTP-Speicher, der Pool-Mitglied ist, wird beim Entfernen aus dem Pool genommen; Entfernen geht weiter nur, solange dort keine Dateien liegen.
+
+Nicht Teil des Pools: Monitoring und Alarm auf der System-Seite zeigen weiter den lokalen Plattenplatz, und die Sicherung nutzt im Pool-Modus ein einzelnes Mitglied. Der Pool wurde mit zwei Test-SFTP-Servern geprüft (12 Uploads gleichmäßig verteilt, Download von allen Orten, Ausfall eines Mitglieds); echte Platzangaben per `statvfs` habe ich gegen keinen realen SFTP-Server gesehen.
+
 ## Upload-Werkzeuge
 
 Im Panel unter **Upload-Werkzeuge** gibt es fertige Konfigurationen für **ShareX** (`.sxcu`), **Flameshot** (Skript) und **curl**. Hochgeladen wird über `POST /api/upload` mit einem Upload-Token. Optionen lassen sich als Header mitgeben:
