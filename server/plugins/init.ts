@@ -46,7 +46,7 @@ export default defineNitroPlugin(async (nitro) => {
     if (!(await setupDone())) {
       console.log('')
       console.log('  ┌──────────────────────────────────────────────┐')
-      console.log('  │  VylarisCloud — Einrichtung                       │')
+      console.log(`  │  ${'VylarisCloud — Einrichtung'.padEnd(44)}│`)
       console.log(`  │  Setup-Code:  ${inst.setupToken.padEnd(31)}│`)
       console.log('  │  Öffne die Adresse dieses Servers im Browser │')
       console.log('  └──────────────────────────────────────────────┘')

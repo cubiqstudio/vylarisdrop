@@ -9,7 +9,9 @@ export default defineEventHandler(async (event) => {
     await mailSenden(
       ich.email,
       ich.prefs?.lang === 'en' ? 'Test e-mail' : 'Test-E-Mail',
-      ich.prefs?.lang === 'en' ? 'The mail settings work.' : 'Der E-Mail-Versand funktioniert.'
+      ich.prefs?.lang === 'en' ? 'The mail settings work.' : 'Der E-Mail-Versand funktioniert.',
+      undefined,
+      ich.prefs?.lang === 'en' ? 'en' : 'de'
     )
   } catch (e: any) {
     console.warn('[vylariscloud] Test-E-Mail:', e?.code, e?.message)

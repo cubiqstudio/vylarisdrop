@@ -1,5 +1,5 @@
 <script setup lang="ts">
-useHead({ title: () => t('Dateien', 'Files') })
+useHead({ title: () => t('Uploads & Links', 'Uploads & links') })
 const route = useRoute()
 const { ok, fehler } = useToast()
 const bestaetigen = useBestaetigen()
@@ -169,8 +169,8 @@ async function tagAnlegen() {
   <section class="rein">
     <div class="kopf">
       <div>
-        <div class="eyebrow">{{ aktOrdner ? t('Ordner', 'Folder') : t('Bibliothek', 'Library') }}</div>
-        <h1>{{ aktOrdner ? aktOrdner.name : suche ? t(`Suche: „${suche}“`, `Search: “${suche}”`) : t('Alle Dateien', 'All files') }}</h1>
+        <div class="eyebrow">{{ aktOrdner ? t('Ordner', 'Folder') : 'Drop' }}</div>
+        <h1>{{ aktOrdner ? aktOrdner.name : suche ? t(`Suche: „${suche}“`, `Search: “${suche}”`) : t('Uploads & Links', 'Uploads & links') }}</h1>
         <p><b class="zahl" style="font-weight:500;color:var(--text)">{{ zahl(Math.round(anzahl)) }}</b> {{ t('Dateien', 'files') }} · {{ zahl(stats?.ordner || 0) }} {{ t('Ordner', 'folders') }}<template v-if="stats?.zuletzt"> · {{ t('zuletzt hochgeladen', 'last upload') }} {{ vorher(stats.zuletzt) }}</template></p>
       </div>
       <div class="reihe">
