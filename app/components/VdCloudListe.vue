@@ -40,11 +40,14 @@ const teilweise = computed(() => props.auswahl.size > 0 && !alleAn.value)
 // ----- Umbenennen -----
 const eingabe = ref<HTMLInputElement[] | HTMLInputElement | null>(null)
 let fertig = false
+// Der getippte Name gehört der Eingabe, nicht der Zeile: ein Live-Neuladen darf ihn nicht zurücksetzen
+const umbWert = ref('')
 watch(
   () => props.umbenennen,
   (k) => {
     if (!k) return
     fertig = false
+    umbWert.value = props.eintraege.find((x) => key(x) === k)?.name ?? ''
     void nextTick(() => {
       const el = Array.isArray(eingabe.value) ? eingabe.value[0] : eingabe.value
       const e = props.eintraege.find((x) => key(x) === k)
@@ -225,7 +228,7 @@ const ariaSort = (k: CloudSortierung) => (props.sort === k ? (props.richtung ===
             v-if="umbenennen === key(e)"
             ref="eingabe"
             class="eingabe umb"
-            :value="e.name"
+            :value="umbWert"
             :maxlength="e.typ === 'ordner' ? 80 : 200"
             :aria-label="t('Neuer Name', 'New name')"
             spellcheck="false"
@@ -233,6 +236,7 @@ const ariaSort = (k: CloudSortierung) => (props.sort === k ? (props.richtung ===
             draggable="false"
             @click.stop
             @dblclick.stop
+            @input="umbWert = ($event.target as HTMLInputElement).value"
             @keydown.enter.prevent.stop="bestaetigen(e, $event)"
             @keydown.esc.prevent.stop="abbrechen(e)"
             @keydown.stop
