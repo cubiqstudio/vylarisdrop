@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <color name="vylaris_blau">#1E73BE</color>
+    <color name="hintergrund">#F5F9FE</color>
+    <color name="text">#101010</color>
+    <color name="text_leise">#5B6472</color>
+    <color name="fehler">#C0262D</color>
+</resources>
