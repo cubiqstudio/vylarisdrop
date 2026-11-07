@@ -74,35 +74,36 @@ export class SftpFehler extends Error {
   }
 }
 export function sftpText(code: SftpCode, ziel = ''): string {
-  const z = ziel ? `„${ziel}“` : st('der SFTP-Speicher', 'the SFTP storage')
-  const ze = ziel ? `“${ziel}”` : 'the SFTP storage'
+  // Name (falls bekannt) steht hinter dem Hauptwort: „Der SFTP-Speicher „box1“ …“ bzw. ohne Namen „Der SFTP-Speicher …“
+  const z = ziel ? ` „${ziel}“` : ''
+  const ze = ziel ? ` “${ziel}”` : ''
   switch (code) {
     case 'OFFLINE':
-      return st(`Der SFTP-Speicher ${z} ist gerade nicht erreichbar.`, `The SFTP storage ${ze} is currently unreachable.`)
+      return st(`Der SFTP-Speicher${z} ist gerade nicht erreichbar.`, `The SFTP storage${ze} is currently unreachable.`)
     case 'TIMEOUT':
       return st(
-        `Der SFTP-Speicher ${z} antwortet nicht rechtzeitig.`,
-        `The SFTP storage ${ze} did not respond in time.`
+        `Der SFTP-Speicher${z} antwortet nicht rechtzeitig.`,
+        `The SFTP storage${ze} did not respond in time.`
       )
     case 'HOSTKEY':
       return st(
-        `Host-Schlüssel hat sich geändert: Die Verbindung zu ${z} wurde aus Sicherheitsgründen verweigert.`,
-        `Host key has changed: the connection to ${ze} was refused for security reasons.`
+        `Host-Schlüssel hat sich geändert: Die Verbindung zum SFTP-Speicher${z} wurde aus Sicherheitsgründen verweigert.`,
+        `Host key has changed: the connection to the SFTP storage${ze} was refused for security reasons.`
       )
     case 'AUTH':
       return st(
-        `Anmeldung am SFTP-Speicher ${z} fehlgeschlagen (Benutzer, Passwort oder Schlüssel prüfen).`,
-        `Login to the SFTP storage ${ze} failed (check user, password or key).`
+        `Anmeldung am SFTP-Speicher${z} fehlgeschlagen (Benutzer, Passwort oder Schlüssel prüfen).`,
+        `Login to the SFTP storage${ze} failed (check user, password or key).`
       )
     case 'AUSGELASTET':
       return st(
-        `Der SFTP-Speicher ${z} ist gerade ausgelastet. Bitte gleich noch einmal versuchen.`,
-        `The SFTP storage ${ze} is busy right now. Please try again shortly.`
+        `Der SFTP-Speicher${z} ist gerade ausgelastet. Bitte gleich noch einmal versuchen.`,
+        `The SFTP storage${ze} is busy right now. Please try again shortly.`
       )
     case 'DEAKTIVIERT':
       return st(
-        `Die Speicher-Erweiterung ${z} ist deaktiviert. Ein Admin muss sie wieder aktivieren.`,
-        `The storage add-on ${ze} is disabled. An admin has to enable it again.`
+        `Die Speicher-Erweiterung${z} ist deaktiviert. Ein Admin muss sie wieder aktivieren.`,
+        `The storage add-on${ze} is disabled. An admin has to enable it again.`
       )
     case 'GELOESCHT':
       return st(
@@ -111,13 +112,13 @@ export function sftpText(code: SftpCode, ziel = ''): string {
       )
     case 'SCHREIBGESCHUETZT':
       return st(
-        `Die Speicher-Erweiterung ${z} ist schreibgeschützt.`,
-        `The storage add-on ${ze} is write-protected.`
+        `Die Speicher-Erweiterung${z} ist schreibgeschützt.`,
+        `The storage add-on${ze} is write-protected.`
       )
     case 'RECHT':
       return st(
-        `Zugriff auf dem SFTP-Speicher ${z} verweigert (Rechte im Zielordner prüfen).`,
-        `Access denied on the SFTP storage ${ze} (check permissions of the target folder).`
+        `Zugriff auf dem SFTP-Speicher${z} verweigert (Rechte im Zielordner prüfen).`,
+        `Access denied on the SFTP storage${ze} (check permissions of the target folder).`
       )
     case 'NICHT_DA':
       return st('Die Datei fehlt auf dem SFTP-Speicher.', 'The file is missing on the SFTP storage.')
@@ -125,11 +126,11 @@ export function sftpText(code: SftpCode, ziel = ''): string {
       return st('Diese Serveradresse ist nicht erlaubt.', 'This server address is not allowed.')
     case 'GEHEIMNIS':
       return st(
-        `Die gespeicherten Zugangsdaten von ${z} lassen sich nicht entschlüsseln.`,
-        `The stored credentials of ${ze} cannot be decrypted.`
+        `Die gespeicherten Zugangsdaten des SFTP-Speichers${z} lassen sich nicht entschlüsseln.`,
+        `The stored credentials of the SFTP storage${ze} cannot be decrypted.`
       )
     default:
-      return st(`Fehler beim Zugriff auf den SFTP-Speicher ${z}.`, `Error accessing the SFTP storage ${ze}.`)
+      return st(`Fehler beim Zugriff auf den SFTP-Speicher${z}.`, `Error accessing the SFTP storage${ze}.`)
   }
 }
 export const alsHttpFehler = (e: any) =>
@@ -447,11 +448,11 @@ export async function statusSetzen(id: number, teil: ZielStatus, erzwingen = fal
 export async function zielBelegung(): Promise<Map<number, { dateien: number; bytes: number; korb: number }>> {
   const m = new Map<number, { dateien: number; bytes: number; korb: number }>()
   const d = await q<{ zid: string; n: string; b: string }>(
-    `SELECT substring(ablage from '^sftp([0-9]+):') AS zid, count(*) AS n, coalesce(sum(size), 0) AS b FROM files WHERE ablage LIKE 'sftp%:%' GROUP BY 1`
+    `SELECT substring(ablage from '^sftp([0-9]{1,9}):')::int AS zid, count(*) AS n, coalesce(sum(size), 0) AS b FROM files WHERE ablage LIKE 'sftp%:%' GROUP BY 1`
   )
   for (const r of d) if (r.zid) m.set(Number(r.zid), { dateien: Number(r.n), bytes: Number(r.b), korb: 0 })
   const k = await q<{ zid: string; n: string }>(
-    `SELECT substring(datei->>'ablage' from '^sftp([0-9]+):') AS zid, count(*) AS n FROM papierkorb WHERE datei->>'ablage' LIKE 'sftp%:%' GROUP BY 1`
+    `SELECT substring(datei->>'ablage' from '^sftp([0-9]{1,9}):')::int AS zid, count(*) AS n FROM papierkorb WHERE datei->>'ablage' LIKE 'sftp%:%' GROUP BY 1`
   )
   for (const r of k)
     if (r.zid) {

@@ -3,7 +3,8 @@ import { posix } from 'node:path'
 import { Readable, Writable } from 'node:stream'
 import { pipeline } from 'node:stream/promises'
 import ssh2, { type SFTPWrapper } from 'ssh2'
-import { getSetting, setSetting, st as st2 } from './settings'
+import { q, q1 } from './db'
+import { st as st2 } from './settings'
 import {
   adresseAufloesen,
   entschluesseln,
@@ -30,6 +31,7 @@ const VERBINDEN_MS = 15_000
 const KEEPALIVE_MS = 10_000
 const ANFRAGE_MS = 25_000 // einzelne SFTP-Anfrage (stat, mkdir, …)
 const STILLSTAND_MS = 45_000 // Datenstrom ohne Fortschritt
+const ABNEHMER_MS = 120_000 // Lesestrom, aus dem niemand mehr liest (Client weg, Tab zu): danach wird er abgebrochen
 const WARTE_MS = 20_000 // Warten auf einen freien Platz
 const LEERLAUF_MS = 90_000
 const FEHLER_MERKEN_MS = 4_000 // ein toter Server wird nicht von jeder Anfrage neu angewählt
@@ -91,13 +93,15 @@ class Wachhund {
 // ===== Verbindung =====
 export class Verb {
   tot = false
+  /** planmäßig beendet (Leerlauf, Pool ersetzt): kein Hinweis auf eine Störung des Ziels */
+  geplant = false
   ops = 0
   zuletzt = Date.now()
   private abbrueche = new Set<(e: any) => void>()
   constructor(
     public client: SshClient,
     public sftp: SFTPWrapper,
-    public info: { banner: string; fp: string; typ: string; ms: number }
+    public info: { banner: string; fp: string; typ: string; ms: number; name: string }
   ) {}
   beiAbbruch(fn: (e: any) => void): () => void {
     this.abbrueche.add(fn)
@@ -106,7 +110,7 @@ export class Verb {
   sterben(e?: any) {
     if (this.tot) return
     this.tot = true
-    const fa = e || new SftpFehler('OFFLINE')
+    const fa = e || new SftpFehler('OFFLINE', this.info.name)
     for (const f of [...this.abbrueche]) {
       try {
         f(fa)
@@ -165,7 +169,11 @@ export async function oeffnen(o: OeffnenOpt): Promise<Verb> {
     c.on('error', (e: any) => (bereit ? verb?.sterben(abbilden(e, o.name)) : ende(gruende(e))))
     c.on('close', () => (bereit ? verb?.sterben(new SftpFehler('OFFLINE', o.name)) : ende(gruende(new Error('closed')))))
     c.on('ready', () => {
+      // readyTimeout gilt nur bis zur Anmeldung: antwortet der Server nie auf die SFTP-Subsystem-Anfrage, wäre sonst alles blockiert
+      const subsystem = setTimeout(() => ende(new SftpFehler('TIMEOUT', o.name)), VERBINDEN_MS)
+      subsystem.unref?.()
       c.sftp((err, sftp) => {
+        clearTimeout(subsystem)
         if (err) return ende(abbilden(err, o.name))
         if (fertig) return
         fertig = true
@@ -176,7 +184,8 @@ export async function oeffnen(o: OeffnenOpt): Promise<Verb> {
           banner: String((c as any)._remoteVer || '').slice(0, 120),
           fp: gesehen?.fp || '',
           typ: gesehen?.typ || '',
-          ms: Date.now() - t0
+          ms: Date.now() - t0,
+          name: o.name
         })
         res(verb)
       })
@@ -277,7 +286,7 @@ class Pool {
         this.verbs.push(v)
         v.beiAbbruch((e) => {
           this.verbs = this.verbs.filter((x) => x !== v)
-          if (!v.ops && e) void statusSetzen(ziel.id, { online: false, fehler: e.message, fehlerCode: e.code }).catch(() => {})
+          if (!v.ops && e && !v.geplant) void statusSetzen(ziel.id, { online: false, fehler: e.message, fehlerCode: e.code }).catch(() => {})
         })
         void statusSetzen(ziel.id, { online: true, latenzMs: v.info.ms, banner: v.info.banner }).catch(() => {})
         return v
@@ -342,7 +351,10 @@ class Pool {
   }
 
   schliessen() {
-    for (const v of [...this.verbs]) v.sterben(new SftpFehler('OFFLINE'))
+    for (const v of [...this.verbs]) {
+      v.geplant = true
+      v.sterben(new SftpFehler('OFFLINE', v.info.name))
+    }
     this.verbs = []
     for (const w of this.wartend.splice(0)) {
       clearTimeout(w.t)
@@ -358,7 +370,11 @@ function putzerStarten() {
   putzer = setInterval(() => {
     const jetzt = Date.now()
     for (const [id, p] of pools) {
-      for (const v of p.verbs) if (!v.ops && jetzt - v.zuletzt > LEERLAUF_MS) v.sterben()
+      for (const v of p.verbs)
+        if (!v.ops && jetzt - v.zuletzt > LEERLAUF_MS) {
+          v.geplant = true // planmäßiger Abbau: das Ziel ist nicht „offline“
+          v.sterben()
+        }
       p.verbs = p.verbs.filter((v) => !v.tot)
       if (!p.verbs.length && !p.verbinden && !p.wartend.length && !p.slots && jetzt - (p.letzterFehler?.zeit || 0) > 60_000)
         pools.delete(id)
@@ -688,16 +704,27 @@ export function sftpLesen(zielId: number, rel: string, bereich?: { start: number
   let gestartet = false
   let abgebrochen = false
   let innen: Readable | null = null
+  let name = ''
+  // Liest niemand mehr (Client weg, Antwort nicht abgebrochen), bliebe der Strom pausiert und hielte Pool-Platz und Handle
+  // für immer. Darum läuft im pausierten Zustand ein Wachhund, der den Strom nach ABNEHMER_MS zerstört.
+  const abnehmer = new Wachhund(ABNEHMER_MS, () => aus.destroy(new SftpFehler('TIMEOUT', name)))
   const los = async () => {
     try {
       const l = await leihen(zielId)
       if (abgebrochen) return l.frei()
+      name = l.ziel.name
       const r = new SftpLeser(l, posix.join(l.ziel.basis_pfad, rel), bereich)
       innen = r
       r.on('data', (c) => {
-        if (!aus.push(c)) r.pause()
+        if (!aus.push(c)) {
+          r.pause()
+          abnehmer.schlagen()
+        }
       })
-      r.on('end', () => aus.push(null))
+      r.on('end', () => {
+        abnehmer.stopp()
+        aus.push(null)
+      })
       r.on('error', (e) => aus.destroy(abbilden(e, l.ziel.name)))
     } catch (e) {
       aus.destroy(e as Error)
@@ -709,10 +736,14 @@ export function sftpLesen(zielId: number, rel: string, bereich?: { start: number
       if (!gestartet) {
         gestartet = true
         void los()
-      } else innen?.resume()
+      } else {
+        abnehmer.stopp()
+        innen?.resume()
+      }
     },
     destroy(e, cb) {
       abgebrochen = true
+      abnehmer.stopp()
       innen?.destroy()
       cb(e)
     }
@@ -749,26 +780,37 @@ export async function sftpLoeschen(zielId: number, rels: string[]): Promise<void
 
 // ===== Löschliste: Dateien, die nicht entfernt werden konnten (Server offline), werden später erneut versucht =====
 const LISTE = 'sftp_loeschliste'
+const LISTE_MAX = 5000
+/** Hängt atomar an (ein Befehl in der Datenbank): gleichzeitige Löschungen überschreiben sich nicht, Doppelte werden ausgelassen. */
 export async function loeschenVormerken(ablage: string): Promise<void> {
-  const liste = await getSetting<string[]>(LISTE, [], true)
-  if (liste.includes(ablage) || liste.length >= 5000) return
-  await setSetting(LISTE, [...liste, ablage])
+  await q(
+    `INSERT INTO settings (key, value) VALUES ($1, jsonb_build_array($2::text))
+     ON CONFLICT (key) DO UPDATE SET value = CASE
+       WHEN settings.value @> jsonb_build_array($2::text) OR jsonb_array_length(settings.value) >= $3 THEN settings.value
+       ELSE settings.value || jsonb_build_array($2::text) END`,
+    [LISTE, ablage, LISTE_MAX]
+  )
 }
 export async function loeschlisteAbarbeiten(
   loeschen: (ablage: string) => Promise<void>
 ): Promise<{ offen: number; erledigt: number }> {
-  const liste = await getSetting<string[]>(LISTE, [], true)
+  const zeile = await q1<{ value: string[] }>('SELECT value FROM settings WHERE key = $1', [LISTE])
+  const liste = Array.isArray(zeile?.value) ? zeile.value : []
   if (!liste.length) return { offen: 0, erledigt: 0 }
-  const rest: string[] = []
+  const erledigt: string[] = []
   for (const a of liste) {
     try {
       await loeschen(a)
-    } catch {
-      rest.push(a)
-    }
+      erledigt.push(a)
+    } catch {}
   }
-  if (rest.length !== liste.length) await setSetting(LISTE, rest)
-  return { offen: rest.length, erledigt: liste.length - rest.length }
+  // nur die erledigten Einträge entfernen: während des Laufs neu vorgemerkte bleiben erhalten
+  if (erledigt.length)
+    await q(
+      `UPDATE settings SET value = coalesce((SELECT jsonb_agg(e) FROM jsonb_array_elements(value) e WHERE NOT ((e #>> '{}') = ANY($2::text[]))), '[]'::jsonb) WHERE key = $1`,
+      [LISTE, erledigt]
+    )
+  return { offen: liste.length - erledigt.length, erledigt: erledigt.length }
 }
 
 // ===== Platz (statvfs@openssh.com), Zustandsprüfung =====

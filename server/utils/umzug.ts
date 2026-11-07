@@ -17,6 +17,7 @@ import { arbeitBeginnt, arbeitEndet, melde, mitSperre, NUR_WEB } from './knoten'
 import { istPro } from './lizenz'
 import { pipeline } from 'node:stream/promises'
 import { createWriteStream } from 'node:fs'
+import { rm } from 'node:fs/promises'
 
 export interface UmzugStand {
   ziel: Ort
@@ -214,19 +215,28 @@ export async function eineVerschieben(
     live: !!f.live,
     livemp4: !!f.live_mp4
   }
-  for (const art of ['vorschau', 'streifen', 'ansicht', 'live', 'livemp4'] as const) {
-    if (!da[art]) continue
-    const n = await nebenLesen(f.ablage, art).catch(() => null)
-    if (!n) {
-      if (art === 'live') {
-        await loeschen(g.schluessel)
-        throw new Error(st('Live-Video fehlt', 'Live video missing'))
+  // Nebendateien: nur eine wirklich fehlende Datei (null) wird übersprungen. Jeder andere Fehler (Zeitüberschreitung,
+  // Verbindungsabbruch, Schreibfehler am Ziel) bricht den Umzug ab, räumt die Kopie auf und lässt die Datei am Ursprungsort.
+  try {
+    for (const art of ['vorschau', 'streifen', 'ansicht', 'live', 'livemp4'] as const) {
+      if (!da[art]) continue
+      const n = await nebenLesen(f.ablage, art)
+      if (!n) {
+        if (art === 'live') throw new Error(st('Live-Video fehlt', 'Live video missing'))
+        continue
       }
-      continue
+      const tmp = await arbeitsPfad()
+      try {
+        await pipeline(n.strom, createWriteStream(tmp))
+      } catch (e) {
+        await rm(tmp, { force: true }).catch(() => {})
+        throw e
+      }
+      await nebenSchreiben(g.schluessel, art, tmp)
     }
-    const tmp = await arbeitsPfad()
-    await pipeline(n.strom, createWriteStream(tmp))
-    await nebenSchreiben(g.schluessel, art, tmp)
+  } catch (e) {
+    await loeschen(g.schluessel).catch(() => {})
+    throw e
   }
   const r = await q('UPDATE files SET ablage = $2 WHERE id = $1 AND ablage = $3 RETURNING id', [
     f.id,
