@@ -253,6 +253,29 @@ CREATE TABLE IF NOT EXISTS lizenz_schluessel (
 CREATE TABLE IF NOT EXISTS lizenz_geraete (
   key_id int NOT NULL REFERENCES lizenz_schluessel(id) ON DELETE CASCADE, hwid text NOT NULL, name text NOT NULL DEFAULT '',
   aktiviert_at timestamptz NOT NULL DEFAULT now(), zuletzt_at timestamptz NOT NULL DEFAULT now(), PRIMARY KEY (key_id, hwid));
+
+-- [cloud:live] Live-Aktualisierung: Aenderungen an Dateien, Ordnern, Papierkorb und Anfragen melden sich per NOTIFY
+-- ("db|<Thema>|<Nutzer-ID>"); gleiche Meldungen innerhalb einer Transaktion werden von PostgreSQL zusammengefasst.
+-- Reine Zaehler-Aenderungen (Aufrufe) loesen nichts aus.
+CREATE OR REPLACE FUNCTION vd_live_melden() RETURNS trigger AS $$
+DECLARE uid bigint;
+BEGIN
+  IF TG_OP = 'UPDATE' AND TG_ARGV[0] = 'dateien'
+     AND (to_jsonb(OLD) - 'views' - 'last_view_at') = (to_jsonb(NEW) - 'views' - 'last_view_at') THEN
+    RETURN NULL;
+  END IF;
+  IF TG_OP = 'DELETE' THEN uid := OLD.user_id; ELSE uid := NEW.user_id; END IF;
+  PERFORM pg_notify('vd_live', 'db|' || TG_ARGV[0] || '|' || COALESCE(uid::text, '0'));
+  RETURN NULL;
+END $$ LANGUAGE plpgsql;
+DROP TRIGGER IF EXISTS vd_live_files ON files;
+CREATE TRIGGER vd_live_files AFTER INSERT OR UPDATE OR DELETE ON files FOR EACH ROW EXECUTE FUNCTION vd_live_melden('dateien');
+DROP TRIGGER IF EXISTS vd_live_folders ON folders;
+CREATE TRIGGER vd_live_folders AFTER INSERT OR UPDATE OR DELETE ON folders FOR EACH ROW EXECUTE FUNCTION vd_live_melden('ordner');
+DROP TRIGGER IF EXISTS vd_live_papierkorb ON papierkorb;
+CREATE TRIGGER vd_live_papierkorb AFTER INSERT OR UPDATE OR DELETE ON papierkorb FOR EACH ROW EXECUTE FUNCTION vd_live_melden('papierkorb');
+DROP TRIGGER IF EXISTS vd_live_anfragen ON anfragen;
+CREATE TRIGGER vd_live_anfragen AFTER INSERT OR UPDATE OR DELETE ON anfragen FOR EACH ROW EXECUTE FUNCTION vd_live_melden('anfragen');
 `
 
 export const TABELLEN = [
