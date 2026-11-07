@@ -273,6 +273,37 @@ class ProtokollTest {
         assertEquals(FehlerArt.KEIN_SERVER, fehlerArt { VylarisClient("http://192.168.1.1", html).verbinden() }.art)
     }
 
+    /** Nur mit VD_TEST_API_TOKEN (gewöhnliches API-Token mit Recht "upload"): prüft den multipart-Upload ohne App-Routen */
+    @Test fun uploadMitGewoehnlichemApiToken() {
+        val token = System.getenv("VD_TEST_API_TOKEN")
+        assumeTrue("VD_TEST_API_TOKEN nicht gesetzt", !token.isNullOrBlank())
+        val daten = zufall(1_234_567, 21)
+        val r = client().hochladen(token!!, Speicherquelle("Überprüfung (1).bin", "application/octet-stream", daten))
+        assertTrue(r.seite, r.seite.startsWith(basis))
+        assertEquals(daten.size.toLong(), r.groesse)
+        assertEquals(sha(daten), sha(holen(r.direkt)))
+    }
+
+    /**
+     * Stück-Verfahren gegen einen Server ohne App-Routen: /api/app/sitzung wird durch die Web-Anmeldung ersetzt
+     * (gleiches Ergebnis: ein Sitzungs-Cookie). Prüft /api/upload/start, PUT /<nr> und /fertig des echten Servers.
+     */
+    @Test fun stueckUploadMitWebSitzungAlsErsatz() {
+        assumeTrue("nur gegen den echten Server sinnvoll", echt)
+        val cookie = anmelden()
+        val ersatz = object : HttpTransport() {
+            override fun senden(methode: String, url: String, kopf: Map<String, String>, rumpf: Rumpf?, lesenMs: Int, fortschritt: ((Long) -> Unit)?): Antwort {
+                if (url.endsWith("/api/app/sitzung"))
+                    return Antwort(200, mapOf("Set-Cookie" to listOf("$cookie; Path=/; HttpOnly")), "{\"ok\":true,\"nutzer\":{\"id\":1,\"name\":\"x\",\"rolle\":\"owner\"}}")
+                return super.senden(methode, url, kopf, rumpf, lesenMs, fortschritt)
+            }
+        }
+        val daten = zufall(9 * 1024 * 1024 + 4321, 5)
+        val r = VylarisClient(basis, ersatz, grossAb = 100_000).hochladen("vd_app_" + "2".repeat(48), Speicherquelle("stuecke.bin", "application/octet-stream", daten))
+        assertEquals(daten.size.toLong(), r.groesse)
+        assertEquals(sha(daten), sha(holen(r.direkt)))
+    }
+
     @Test fun hashUnterscheidetDateien() {
         assertNotEquals(sha(zufall(10, 1)), sha(zufall(10, 2)))
     }

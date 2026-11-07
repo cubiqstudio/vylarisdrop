@@ -75,6 +75,8 @@ android {
             it.environment("VD_TEST_SERVER", System.getenv("VD_TEST_SERVER") ?: "")
             it.environment("VD_TEST_USER", System.getenv("VD_TEST_USER") ?: "")
             it.environment("VD_TEST_PASS", System.getenv("VD_TEST_PASS") ?: "")
+            it.environment("VD_TEST_API_TOKEN", System.getenv("VD_TEST_API_TOKEN") ?: "")
+            it.environment("VD_TEST_RATELIMIT", System.getenv("VD_TEST_RATELIMIT") ?: "")
         }
     }
 }
