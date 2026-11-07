@@ -223,6 +223,11 @@ function ortOeffnen(e: CloudEintrag) {
 
 // ---------- Umbenennen ----------
 const umbenennenKey = ref<string | null>(null)
+// Live-Aktualisierungen warten, solange ein Name getippt wird (sonst könnte die Zeile umsortiert werden und das Feld den Fokus verlieren)
+watch(umbenennenKey, (k) => (c.halten.value = !!k))
+watch(eintraege, (l) => {
+  if (umbenennenKey.value && !l.some((e) => eintragKey(e) === umbenennenKey.value)) umbenennenKey.value = null // woanders gelöscht/verschoben
+})
 function starteUmbenennen(e: CloudEintrag) {
   if (e.darf_aendern === false) return fehler(t('Das darfst du nicht umbenennen.', 'You may not rename this.'))
   c.auswaehlen([eintragKey(e)])

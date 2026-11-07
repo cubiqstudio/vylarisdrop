@@ -118,7 +118,17 @@ export function useCloud() {
   const ladeFehler = ref('')
   const seite = ref(1)
   const pro = ref(200)
-  let lauf = 0
+  let lauf = 0 // zählt Ortswechsel/Sortierwechsel: Antworten zu einem älteren Stand werden verworfen
+  let ladenPromise: Promise<void> | null = null
+  let neuPromise: Promise<void> | null = null
+  let mehrAktiv: Promise<void> | null = null
+  let neuNochmal = false
+  let letzterStart = 0
+  let letzteDauer = 0
+  let zerstoert = false
+  let ordnerGemeldet = false
+  let fehlVersuche = 0
+  let wiederholTimer: any = null
 
   const abfrage = (s: number, p: number) =>
     api('/api/cloud/liste', {
@@ -133,98 +143,254 @@ export function useCloud() {
       }
     })
 
-  async function laden() {
+  function laden(): Promise<void> {
     const n = ++lauf
     laedt.value = true
     ladeFehler.value = ''
-    try {
-      const r = await abfrage(1, 200)
-      if (n !== lauf) return
-      eintraege.value = r.eintraege
-      meta.value = r
-      seite.value = 1
-      pro.value = 200
-      auswahlBereinigen()
-    } catch (e: any) {
-      if (n !== lauf) return
-      ladeFehler.value = e.message
-      eintraege.value = []
-      meta.value = null
-    } finally {
-      if (n === lauf) laedt.value = false
-    }
+    const p: Promise<void> = (async () => {
+      try {
+        const r = await abfrage(1, 200)
+        if (n !== lauf) return
+        eintraege.value = r.eintraege
+        meta.value = r
+        seite.value = 1
+        pro.value = 200
+        auswahlBereinigen()
+      } catch (e: any) {
+        if (n !== lauf) return
+        ladeFehler.value = e.message
+        eintraege.value = []
+        meta.value = null
+      } finally {
+        if (n === lauf) laedt.value = false
+      }
+    })()
+    ladenPromise = p
+    void p.then(() => {
+      if (ladenPromise === p) ladenPromise = null
+    })
+    return p
   }
 
-  /** Lädt still neu und behält so viele Einträge, wie schon geladen waren. */
-  async function neuLaden() {
-    const n = ++lauf
+  const gleicheZeile = (a: CloudEintrag, b: CloudEintrag) => JSON.stringify(a) === JSON.stringify(b)
+
+  /**
+   * Lädt still neu und behält so viele Einträge, wie schon geladen waren (ohne Doppelte). Unveränderte Zeilen
+   * behalten ihr Objekt, damit die Oberfläche nichts neu zeichnet. `veraltet` sagt, ob schon eine neuere Anforderung
+   * wartet — dann wird dieses (vermutlich überholte) Ergebnis nicht mehr angezeigt.
+   */
+  async function neuLadenEinmal(veraltet: () => boolean) {
+    const start = Date.now()
+    letzterStart = start
+    const n = lauf
     const bisher = eintraege.value.length
     const p = bisher <= 200 ? 200 : 500
     const seiten = Math.max(1, Math.ceil(bisher / p))
     try {
-      let alle: CloudEintrag[] = []
+      const gesehen = new Set<string>()
+      const alle: CloudEintrag[] = []
       let letzte: any = null
       for (let s = 1; s <= seiten; s++) {
         letzte = await abfrage(s, p)
         if (n !== lauf) return
-        alle = alle.concat(letzte.eintraege)
+        for (const e of letzte.eintraege as CloudEintrag[]) {
+          const k = eintragKey(e)
+          if (gesehen.has(k)) continue // Verschiebung zwischen zwei Seitenabfragen
+          gesehen.add(k)
+          alle.push(e)
+        }
         if (!letzte.mehr) break
       }
-      eintraege.value = alle
+      if (n !== lauf || veraltet()) return
+      const alt = new Map(eintraege.value.map((e) => [eintragKey(e), e]))
+      let gleich = alle.length === eintraege.value.length
+      const neuListe = alle.map((e, i) => {
+        const o = alt.get(eintragKey(e))
+        if (o && gleicheZeile(o, e)) {
+          if (eintraege.value[i] !== o) gleich = false
+          return o
+        }
+        gleich = false
+        return e
+      })
+      fehlVersuche = 0
+      if (!gleich) eintraege.value = neuListe
+      else verarbeitungPlanen()
       meta.value = letzte
       pro.value = p
       seite.value = Math.max(1, Math.min(seiten, Math.ceil(alle.length / p)))
       ladeFehler.value = ''
       auswahlBereinigen()
+      if (zieht.value.length && !zieht.value.some((k) => gesehen.has(k))) {
+        zieht.value = []
+        ziel.value = null
+      }
+      await extraPruefen(n)
     } catch (e: any) {
-      if (n === lauf) fehler(e.message)
+      if (n !== lauf) return
+      // Der aktuelle Ordner wurde woanders gelöscht (oder die Freigabe ist weg): einmal sauber melden, zurück zur Wurzel
+      if (e?.status === 404 && ordnerId.value && meta.value?.ordner?.id === ordnerId.value) ordnerWeg()
+      // Alle anderen Fehler bleiben still (kein Toast); nach einer Pause wird es noch ein paarmal versucht
+      else wiederholenPlanen()
+    } finally {
+      letzteDauer = Date.now() - start
     }
+  }
+
+  /** Ein Aufruf ist höchstens einmal gleichzeitig unterwegs; Anforderungen währenddessen werden zu einem Nachlauf zusammengefasst. */
+  function neuLaden(): Promise<void> {
+    if (neuPromise) {
+      neuNochmal = true
+      return neuPromise
+    }
+    const p: Promise<void> = (async () => {
+      let verworfen = 0
+      do {
+        neuNochmal = false
+        while (ladenPromise) await ladenPromise
+        while (mehrAktiv) await mehrAktiv
+        if (zerstoert) return
+        await neuLadenEinmal(() => {
+          if (neuNochmal && verworfen < 2) {
+            verworfen++
+            return true
+          }
+          return false
+        })
+      } while (neuNochmal && !zerstoert)
+    })().finally(() => {
+      if (neuPromise === p) neuPromise = null
+    })
+    neuPromise = p
+    return p
+  }
+
+  /** Schlug ein stilles Neuladen fehl (Netz weg, Server kurz nicht erreichbar), nach 3 s, 6 s, 12 s … erneut versuchen */
+  function wiederholenPlanen() {
+    if (zerstoert || fehlVersuche >= 6) return
+    clearTimeout(wiederholTimer)
+    wiederholTimer = setTimeout(() => neuPlanen(), Math.min(30_000, 3000 * 2 ** fehlVersuche++))
+  }
+
+  function ordnerWeg() {
+    if (ordnerGemeldet) return
+    ordnerGemeldet = true
+    fehler(
+      t(
+        'Dieser Ordner wurde gelöscht oder ist für dich nicht mehr verfügbar — du bist wieder ganz oben.',
+        'This folder was deleted or is no longer available to you — you are back at the top.'
+      )
+    )
+    void zu({ ansicht: ansicht.value === 'team' ? 'team' : 'alle' })
+  }
+
+  /** "Alles auswählen" über mehrere Seiten: nicht geladene Elemente, die es nicht mehr gibt, aus der Auswahl nehmen (eine leichte Abfrage). */
+  async function extraPruefen(n: number) {
+    if (!extra.value.length) return
+    try {
+      const r = await api('/api/cloud/liste', {
+        query: { ansicht: ansicht.value, ordner: ordnerId.value || undefined, suche: suche.value || undefined, ids: '1' }
+      })
+      if (n !== lauf) return
+      const da = new Set<string>(r.ids.map((x: any) => (x.typ === 'ordner' ? 'o' : 'd') + x.id))
+      const weg = extra.value.filter((e) => !da.has(eintragKey(e))).map(eintragKey)
+      if (!weg.length) return
+      extra.value = extra.value.filter((e) => da.has(eintragKey(e)))
+      const s = new Set(auswahl.value)
+      for (const k of weg) s.delete(k)
+      auswahl.value = s
+    } catch {}
   }
 
   async function mehrLaden() {
+    while (neuPromise) await neuPromise // nie gleichzeitig mit einem Neuladen (sonst gemischte Seitengrößen)
     if (!meta.value?.mehr || ladeMehr.value || laedt.value) return
     const n = lauf
     ladeMehr.value = true
-    try {
-      const r = await abfrage(seite.value + 1, pro.value)
-      if (n !== lauf) return
-      const da = new Set(eintraege.value.map(eintragKey))
-      eintraege.value = [...eintraege.value, ...r.eintraege.filter((e: CloudEintrag) => !da.has(eintragKey(e)))]
-      seite.value++
-      meta.value = r
-    } catch (e: any) {
-      fehler(e.message)
-    } finally {
-      ladeMehr.value = false
-    }
+    const p: Promise<void> = (async () => {
+      try {
+        const r = await abfrage(seite.value + 1, pro.value)
+        if (n !== lauf) return
+        const da = new Set(eintraege.value.map(eintragKey))
+        eintraege.value = [...eintraege.value, ...r.eintraege.filter((e: CloudEintrag) => !da.has(eintragKey(e)))]
+        seite.value++
+        meta.value = r
+      } catch (e: any) {
+        fehler(e.message)
+      } finally {
+        ladeMehr.value = false
+      }
+    })()
+    mehrAktiv = p
+    await p
+    if (mehrAktiv === p) mehrAktiv = null
   }
   const alleLaden = ref(false)
 
-  let neuTimer: any = null
-  const neuLadenSpaeter = (ms = 600) => {
-    clearTimeout(neuTimer)
-    neuTimer = setTimeout(() => void neuLaden(), ms)
+  // Neuladen durch Live-Meldungen und eigene Uploads: höchstens alle paar Sekunden, nie während die Seite (z. B. beim
+  // Umbenennen) um Ruhe bittet. Bei sehr vielen Änderungen entstehen so nur wenige Abfragen.
+  const halten = ref(false)
+  let haltenNachholen = false
+  let planTimer: any = null
+  function neuPlanen() {
+    if (halten.value) {
+      haltenNachholen = true
+      return
+    }
+    if (planTimer) return
+    const abstand = Math.max(1200, letzteDauer * 3)
+    const warte = Math.max(0, letzterStart + abstand - Date.now())
+    planTimer = setTimeout(() => {
+      planTimer = null
+      if (halten.value) {
+        haltenNachholen = true
+        return
+      }
+      void neuLaden()
+    }, warte)
   }
-  watch(uploadNeu, () => neuLadenSpaeter())
+  watch(halten, (v) => {
+    if (!v && haltenNachholen) {
+      haltenNachholen = false
+      neuPlanen()
+    }
+  })
+  watch(uploadNeu, () => neuPlanen())
+  useLive(['dateien', 'ordner', 'papierkorb'], neuPlanen)
+  const wiederOnline = () => {
+    fehlVersuche = 0
+    neuPlanen()
+  }
+  onMounted(() => window.addEventListener('online', wiederOnline))
 
   // Medien-Verarbeitung (Vorschaubilder) nachladen, solange etwas läuft
   let verarbeitungTimer: any = null
   let verarbeitungVersuche = 0
-  watch(eintraege, (l) => {
+  function verarbeitungPlanen() {
     clearTimeout(verarbeitungTimer)
-    if (l.some((f) => f.typ === 'datei' && (f.verarbeitung === 'offen' || f.verarbeitung === 'laeuft')) && verarbeitungVersuche < 20)
+    if (
+      eintraege.value.some((f) => f.typ === 'datei' && (f.verarbeitung === 'offen' || f.verarbeitung === 'laeuft')) &&
+      verarbeitungVersuche < 20
+    )
       verarbeitungTimer = setTimeout(() => {
         verarbeitungVersuche++
         void neuLaden()
       }, 3000)
     else verarbeitungVersuche = 0
-  })
+  }
+  watch(eintraege, verarbeitungPlanen)
 
   watch([ordnerId, ansicht, suche], () => {
     auswahl.value = new Set()
     extra.value = []
     anker.value = null
     fokus.value = null
+    ordnerGemeldet = false
+    fehlVersuche = 0
+    clearTimeout(wiederholTimer)
+    clearTimeout(planTimer)
+    planTimer = null
+    haltenNachholen = false
     // Der alte Inhalt gehört nicht mehr zum neuen Ort (Brotkrumen!) — Gerüst zeigen, bis der neue da ist
     eintraege.value = []
     meta.value = null
@@ -232,7 +398,10 @@ export function useCloud() {
   })
   watch([() => wirksam.value.sort, () => wirksam.value.richtung], () => void laden())
   onBeforeUnmount(() => {
-    clearTimeout(neuTimer)
+    zerstoert = true
+    window.removeEventListener('online', wiederOnline)
+    clearTimeout(wiederholTimer)
+    clearTimeout(planTimer)
     clearTimeout(verarbeitungTimer)
   })
 
@@ -245,7 +414,8 @@ export function useCloud() {
   const ausgewaehlt = computed(() => {
     const l = eintraege.value.filter((e) => auswahl.value.has(eintragKey(e)))
     if (!extra.value.length) return l
-    return [...l, ...extra.value.filter((e) => auswahl.value.has(eintragKey(e)))]
+    const da = new Set(l.map(eintragKey)) // nachgeladene Elemente nicht doppelt zählen
+    return [...l, ...extra.value.filter((e) => auswahl.value.has(eintragKey(e)) && !da.has(eintragKey(e)))]
   })
   const indexVon = (k: string) => eintraege.value.findIndex((e) => eintragKey(e) === k)
   function auswahlBereinigen() {
@@ -586,7 +756,7 @@ export function useCloud() {
     // Darstellung
     darstellung, wirksam, sortieren,
     // Daten
-    eintraege, meta, laedt, ladeMehr, ladeFehler, laden, neuLaden, mehrLaden, alleLaden, aktuellerOrdner, kannHineinladen,
+    eintraege, meta, laedt, ladeMehr, ladeFehler, laden, neuLaden, mehrLaden, halten, alleLaden, aktuellerOrdner, kannHineinladen,
     // Auswahl
     auswahl, anker, fokus, ausgewaehlt, klick, umschalten, auswaehlen, alleWaehlen, alleWaehlenServer, auswahlLeeren, bereich, indexVon,
     // Öffnen
