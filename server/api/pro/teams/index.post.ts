@@ -4,19 +4,29 @@ import { clientIp, requireAdmin } from '../../../utils/auth'
 import { requirePro } from '../../../utils/lizenz'
 
 const Farbe = z.string().regex(/^#[0-9a-fA-F]{6}$/)
+// Team-Kontingent in Bytes (null = keins): begrenzt die Gesamtgröße aller Dateien in Ordnern des Teams, siehe utils/quota.ts
+const TeamQuota = z
+  .number()
+  .int()
+  .positive()
+  .max(1_000_000 * 1024 ** 3)
+  .nullable()
+  .optional()
 const Body = z.discriminatedUnion('aktion', [
   z.object({
     aktion: z.literal('anlegen'),
     name: z.string().trim().min(1).max(60),
     farbe: Farbe.optional(),
-    beschreibung: z.string().max(300).optional()
+    beschreibung: z.string().max(300).optional(),
+    quota_bytes: TeamQuota
   }),
   z.object({
     aktion: z.literal('aendern'),
     id: z.number().int().positive(),
     name: z.string().trim().min(1).max(60).optional(),
     farbe: Farbe.optional(),
-    beschreibung: z.string().max(300).optional()
+    beschreibung: z.string().max(300).optional(),
+    quota_bytes: TeamQuota
   }),
   z.object({ aktion: z.literal('loeschen'), id: z.number().int().positive() }),
   z.object({
@@ -38,8 +48,8 @@ export default defineEventHandler(async (event) => {
       const n = await q1<{ n: string }>('SELECT count(*) AS n FROM teams')
       if (Number(n?.n || 0) >= 500) throw fehler(400, 'Höchstens 500 Teams.', 'At most 500 teams.')
       const r = await q1<{ id: number }>(
-        'INSERT INTO teams (name, farbe, beschreibung) VALUES ($1, $2, $3) RETURNING id',
-        [b.name, (b.farbe || '#1e73be').toLowerCase(), b.beschreibung || '']
+        'INSERT INTO teams (name, farbe, beschreibung, quota_bytes) VALUES ($1, $2, $3, $4) RETURNING id',
+        [b.name, (b.farbe || '#1e73be').toLowerCase(), b.beschreibung || '', b.quota_bytes ?? null]
       )
       await ereignis('team_angelegt', ich.id, { name: b.name }, clientIp(event))
       return { ok: true, id: r!.id }
@@ -48,8 +58,9 @@ export default defineEventHandler(async (event) => {
       throw fehler(404, 'Team nicht gefunden.', 'Team not found.')
     if (b.aktion === 'aendern') {
       await q(
-        'UPDATE teams SET name = coalesce($2, name), farbe = coalesce($3, farbe), beschreibung = coalesce($4, beschreibung) WHERE id = $1',
-        [b.id, b.name ?? null, b.farbe?.toLowerCase() ?? null, b.beschreibung ?? null]
+        `UPDATE teams SET name = coalesce($2, name), farbe = coalesce($3, farbe), beschreibung = coalesce($4, beschreibung),
+          quota_bytes = CASE WHEN $5::boolean THEN $6::bigint ELSE quota_bytes END WHERE id = $1`,
+        [b.id, b.name ?? null, b.farbe?.toLowerCase() ?? null, b.beschreibung ?? null, b.quota_bytes !== undefined, b.quota_bytes ?? null]
       )
     } else if (b.aktion === 'loeschen') {
       await q('DELETE FROM teams WHERE id = $1', [b.id])

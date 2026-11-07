@@ -30,8 +30,8 @@ async function teamSpeichern() {
   const r = await senden(
     '/api/pro/teams',
     f.id
-      ? { aktion: 'aendern', id: f.id, name: f.name, farbe: f.farbe, beschreibung: f.beschreibung }
-      : { aktion: 'anlegen', name: f.name, farbe: f.farbe, beschreibung: f.beschreibung },
+      ? { aktion: 'aendern', id: f.id, name: f.name, farbe: f.farbe, beschreibung: f.beschreibung, quota_bytes: f.quota ?? null }
+      : { aktion: 'anlegen', name: f.name, farbe: f.farbe, beschreibung: f.beschreibung, quota_bytes: f.quota ?? null },
     t('Gespeichert', 'Saved')
   )
   if (r) {
@@ -144,18 +144,28 @@ const normale = computed(() => konten.value.filter((k) => k.role === 'user'))
     <Transition v-else name="wechsel" mode="out-in">
       <div v-if="reiter === 'teams'" key="t">
         <div class="reihe zw leiste"><p class="leise klein">{{ t('Team-Ordner entstehen unter „Ordner“: neu anlegen oder einen eigenen Ordner fürs Team freigeben.', 'Team folders are created under "Folders": create a new one or share one of your own with the team.') }}</p>
-          <button class="knopf rot" @click="teamForm = { name: '', farbe: FARBEN[teams.length % FARBEN.length], beschreibung: '' }"><Ico n="plus" /> {{ t('Team anlegen', 'Create team') }}</button></div>
+          <button class="knopf rot" @click="teamForm = { name: '', farbe: FARBEN[teams.length % FARBEN.length], beschreibung: '', quota: null }"><Ico n="plus" /> {{ t('Team anlegen', 'Create team') }}</button></div>
         <div v-if="!teams.length" class="leer-hinweis block"><h3>{{ t('Noch keine Teams', 'No teams yet') }}</h3><p>{{ t('Lege ein Team an und füge Mitglieder hinzu.', 'Create a team and add members.') }}</p></div>
         <div class="teams">
           <div v-for="(tm, i) in teams" :key="tm.id" :class="['team', { offen: offenesTeam === tm.id }]" :style="{ '--f': tm.farbe, animationDelay: Math.min(i, 10) * 50 + 'ms' }">
             <button class="team-kopf" :aria-expanded="offenesTeam === tm.id" @click="offenesTeam = offenesTeam === tm.id ? null : tm.id">
               <span class="farbe"></span>
               <span class="tn"><b>{{ tm.name }}</b><small>{{ tm.beschreibung || t(`${tm.mitglieder.length} ${tm.mitglieder.length === 1 ? 'Mitglied' : 'Mitglieder'} · ${tm.ordner} Ordner`, `${tm.mitglieder.length} ${tm.mitglieder.length === 1 ? 'member' : 'members'} · ${tm.ordner} ${tm.ordner === 1 ? 'folder' : 'folders'}`) }}</small></span>
+              <span v-if="tm.quota_bytes" class="tq">
+                <small :class="tm.quota_stufe">{{ groesse(tm.belegt) }} {{ t('von', 'of') }} {{ groesse(tm.quota_bytes) }}</small>
+                <VdQuotaBalken :used="tm.belegt" :limit="tm.quota_bytes" klein :beschriftung="tm.name" />
+              </span>
               <span class="stapel"><i v-for="m in tm.mitglieder.slice(0, 5)" :key="m.id" :title="m.username">{{ m.username.slice(0, 1).toUpperCase() }}</i><i v-if="tm.mitglieder.length > 5" class="mehr">+{{ tm.mitglieder.length - 5 }}</i></span>
               <Ico n="down" class="pfeil" />
             </button>
             <Transition name="aufklappen">
               <div v-if="offenesTeam === tm.id" class="team-inhalt">
+                <div class="tq-zeile">
+                  <span>{{ t('Speicher im Team', 'Team storage') }}</span>
+                  <b class="zahl">{{ groesse(tm.belegt) }}<template v-if="tm.quota_bytes"> {{ t('von', 'of') }} {{ groesse(tm.quota_bytes) }}</template><template v-else> · {{ t('kein Limit', 'no limit') }}</template></b>
+                  <VdQuotaBalken v-if="tm.quota_bytes" :used="tm.belegt" :limit="tm.quota_bytes" :beschriftung="tm.name" />
+                  <small class="sehrleise">{{ t('Zählt alle Dateien in den Team-Ordnern samt Unterordnern und Papierkorb. Uploads müssen zusätzlich in das Kontingent des Hochladenden passen.', 'Counts all files in the team folders including subfolders and trash. Uploads must also fit into the uploader\'s own quota.') }}</small>
+                </div>
                 <div v-for="m in tm.mitglieder" :key="m.id" class="mitglied">
                   <span class="av">{{ m.username.slice(0, 1).toUpperCase() }}</span><b>{{ m.username }}</b>
                   <VdAuswahl class="eingabe klein-sel" :model-value="m.rolle" @change="(e: any) => mitglied(tm, m.id, e)"><option value="mitglied">{{ t('Mitglied', 'Member') }}</option><option value="leitung">{{ t('Leitung', 'Lead') }}</option></VdAuswahl>
@@ -165,7 +175,7 @@ const normale = computed(() => konten.value.filter((k) => k.role === 'user'))
                   <VdAuswahl v-model="neuesMitglied[tm.id]" class="eingabe" style="flex:1"><option value="">{{ t('Konto hinzufügen …', 'Add account …') }}</option><option v-for="k in nichtImTeam(tm)" :key="k.id" :value="k.id">{{ k.username }}</option></VdAuswahl>
                   <button class="knopf" :disabled="!neuesMitglied[tm.id]"><Ico n="plus" /> {{ t('Hinzufügen', 'Add') }}</button>
                 </form>
-                <div class="reihe fuss"><button class="knopf klein" @click="teamForm = { ...tm }"><Ico n="edit" /> {{ t('Bearbeiten', 'Edit') }}</button><button class="knopf klein gefahr" @click="teamLoeschen(tm)"><Ico n="trash" /> {{ t('Löschen', 'Delete') }}</button></div>
+                <div class="reihe fuss"><button class="knopf klein" @click="teamForm = { ...tm, quota: tm.quota_bytes ?? null }"><Ico n="edit" /> {{ t('Bearbeiten', 'Edit') }}</button><button class="knopf klein gefahr" @click="teamLoeschen(tm)"><Ico n="trash" /> {{ t('Löschen', 'Delete') }}</button></div>
               </div>
             </Transition>
           </div>
@@ -196,7 +206,9 @@ const normale = computed(() => konten.value.filter((k) => k.role === 'user'))
         <label class="feld"><span>Name</span><input v-model="teamForm.name" class="eingabe" required maxlength="60" autofocus></label>
         <label class="feld"><span>{{ t('Beschreibung (optional)', 'Description (optional)') }}</span><input v-model="teamForm.beschreibung" class="eingabe" maxlength="300"></label>
         <div class="feld"><span>{{ t('Farbe', 'Colour') }}</span><div class="farben"><button v-for="c in FARBEN" :key="c" type="button" :class="{ an: teamForm.farbe === c }" :style="{ background: c }" :aria-label="c" @click="teamForm.farbe = c"></button></div></div>
-        <div class="modal-fuss"><button type="button" class="knopf" @click="teamForm = null">{{ t('Abbrechen', 'Cancel') }}</button><button class="knopf rot">{{ t('Speichern', 'Save') }}</button></div>
+        <div class="feld"><span>{{ t('Team-Kontingent', 'Team quota') }}</span><VdQuotaEingabe v-model="teamForm.quota" art="einfach" id-prefix="team" />
+          <small>{{ t('Begrenzt alle Dateien in Ordnern dieses Teams zusammen — egal, wer sie hochgeladen hat.', 'Limits all files in this team\'s folders together — no matter who uploaded them.') }}</small></div>
+        <div class="modal-fuss"><button type="button" class="knopf" @click="teamForm = null">{{ t('Abbrechen', 'Cancel') }}</button><button class="knopf rot" :disabled="teamForm.quota === undefined">{{ t('Speichern', 'Save') }}</button></div>
       </form>
     </VdModal>
     <VdModal v-if="rolleForm" :titel="rolleForm.id ? t('Rolle bearbeiten', 'Edit role') : t('Rolle anlegen', 'Create role')" @zu="rolleForm = null">
@@ -277,6 +289,43 @@ const normale = computed(() => konten.value.filter((k) => k.role === 'user'))
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+.tq {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  width: 140px;
+  flex-shrink: 0;
+}
+.tq small {
+  font-size: 11px;
+  color: var(--text3);
+  white-space: nowrap;
+}
+.tq small.warn {
+  color: var(--warn);
+}
+.tq small.kritisch,
+.tq small.voll {
+  color: var(--rot);
+}
+.tq-zeile {
+  display: grid;
+  gap: 6px;
+  background: var(--flaeche2);
+  border-radius: 12px;
+  padding: 10px 12px;
+  font-size: 13px;
+}
+.tq-zeile > span {
+  font-size: 12px;
+  color: var(--text3);
+  font-weight: 600;
+}
+@media (max-width: 640px) {
+  .tq {
+    display: none;
+  }
 }
 .stapel {
   display: flex;

@@ -3,6 +3,7 @@ import { clientIp, requireUser } from '../../utils/auth'
 import { ablaufAus } from '../../utils/dateien'
 import { aenderbareDateien, ordnerRecht } from '../../utils/teams'
 import { inPapierkorb } from '../../utils/papierkorb'
+import { teamVonOrdner, verschiebenPruefen } from '../../utils/quota'
 import { webhookAusloesen } from '../../utils/webhooks'
 
 export default defineEventHandler(async (event) => {
@@ -31,7 +32,19 @@ export default defineEventHandler(async (event) => {
       const o = b.wert == null ? null : Number(b.wert)
       if (o != null && !(await ordnerRecht(u.id, o))?.hineinladen)
         throw fehler(404, 'Ordner nicht gefunden.', 'Folder not found.')
-      await q('UPDATE files SET folder_id = $1 WHERE id = ANY($2::bigint[])', [o, e])
+      // Team-Kontingent: Dateien, die noch nicht im Ziel-Team liegen, zählen dort neu
+      const ziel = o == null ? null : await teamVonOrdner(o)
+      let zuwachs = 0
+      if (ziel) {
+        const gruppen = await q<{ folder_id: number | null; s: string }>(
+          'SELECT folder_id, coalesce(sum(size), 0) AS s FROM files WHERE id = ANY($1::bigint[]) GROUP BY folder_id',
+          [e]
+        )
+        for (const g of gruppen) if ((await teamVonOrdner(g.folder_id)) !== ziel) zuwachs += Number(g.s)
+      }
+      await verschiebenPruefen({ team: ziel }, zuwachs, null, (x) =>
+        x('UPDATE files SET folder_id = $1 WHERE id = ANY($2::bigint[])', [o, e])
+      )
       break
     }
     case 'ablauf':

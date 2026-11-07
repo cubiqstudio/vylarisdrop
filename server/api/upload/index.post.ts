@@ -3,7 +3,8 @@ import { ereignis } from '../../utils/db'
 import { clientIp, limit, userAusSitzungOderToken } from '../../utils/auth'
 import { schreiben } from '../../utils/speicher'
 import { basisUrl, dateiAnlegen, fuerPanel, type DateiZeile } from '../../utils/dateien'
-import { maxFuer, optionenAus } from '../../utils/hochladen'
+import { dateiGroesseMax, optionenAus } from '../../utils/hochladen'
+import { grenzFehler, istQuotaFehler, nutzlastSchaetzen, uploadGrenzen } from '../../utils/quota'
 import { requireRecht } from '../../utils/teams'
 import { nachUpload } from '../../utils/benachrichtigen'
 import { webhookAusloesen } from '../../utils/webhooks'
@@ -17,7 +18,11 @@ export default defineEventHandler(async (event) => {
   const typ = String(getRequestHeader(event, 'content-type') || '')
   if (!typ.startsWith('multipart/form-data'))
     throw fehler(415, 'Bitte als multipart/form-data senden.', 'Please send as multipart/form-data.')
-  const max = await maxFuer(u)
+  // engste Grenze (Kontingent von Konto/Team, Datei-Höchstgröße); verbindlich prüft dateiAnlegen() nach dem Schreiben
+  const grenzen = await uploadGrenzen(u, optionenAus(event).ordner ?? null, await dateiGroesseMax(u))
+  const max = grenzen.max
+  const geschaetzt = nutzlastSchaetzen(Number(getRequestHeader(event, 'content-length')) || undefined, typ)
+  let quotaFehler: any = null
   const felder: Record<string, string> = {}
   const erledigt: DateiZeile[] = []
   const fehlerListe: string[] = []
@@ -35,13 +40,7 @@ export default defineEventHandler(async (event) => {
       bb.removeAllListeners()
       req.resume()
       setResponseHeader(event, 'Connection', 'close')
-      reject(
-        fehler(
-          413,
-          'Die Datei ist zu groß oder dein Speicher ist voll.',
-          'The file is too large or your storage is full.'
-        )
-      )
+      reject(grenzFehler(grenzen, geschaetzt, true))
     }
     bb.on('field', (n, v) => {
       if (n.length < 40) felder[n.toLowerCase()] = v
@@ -62,6 +61,7 @@ export default defineEventHandler(async (event) => {
           } catch (e: any) {
             if (e?.code === 'ZU_GROSS') return zuGross()
             strom.resume()
+            if (istQuotaFehler(e)) quotaFehler ||= e
             fehlerListe.push(String(e?.message || e))
           }
         })()
@@ -85,12 +85,7 @@ export default defineEventHandler(async (event) => {
   })
 
   if (!erledigt.length) {
-    if (fehlerListe.includes('ZU_GROSS'))
-      throw fehler(
-        413,
-        'Die Datei ist zu groß oder dein Speicher ist voll.',
-        'The file is too large or your storage is full.'
-      )
+    if (quotaFehler) throw quotaFehler
     throw fehler(400, fehlerListe[0] || 'Keine Datei im Upload.', fehlerListe[0] || 'No file in the upload.')
   }
   await ereignis('upload', u.id, { anzahl: erledigt.length }, clientIp(event))

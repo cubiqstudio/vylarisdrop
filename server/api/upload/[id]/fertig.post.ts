@@ -6,8 +6,9 @@ import { q, q1, ereignis } from '../../../utils/db'
 import { clientIp, requireUser } from '../../../utils/auth'
 import { schreiben, teileLoeschen, teilLesen, type Ort } from '../../../utils/speicher'
 import { basisUrl, dateiAnlegen, fuerPanel } from '../../../utils/dateien'
-import { maxFuer } from '../../../utils/hochladen'
+import { dateiGroesseMax } from '../../../utils/hochladen'
 import { dateinameEindeutig } from '../../../utils/dateiNamen'
+import { grenzFehler, uploadGrenzen } from '../../../utils/quota'
 
 export default defineEventHandler(async (event) => {
   const u = await requireUser(event)
@@ -47,7 +48,17 @@ export default defineEventHandler(async (event) => {
       strom.destroy(e)
     }
   })()
-  const g = await schreiben(strom, await maxFuer(u), ort)
+  // Grenze: Kontingent des Kontos/Teams (jetzt frisch gerechnet) und Datei-Höchstgröße; endgültig prüft dateiAnlegen()
+  const ordner = Number(up.optionen?.ordner) > 0 ? Number(up.optionen.ordner) : null
+  const grenzen = await uploadGrenzen(u, ordner, await dateiGroesseMax(u))
+  let g
+  try {
+    g = await schreiben(strom, grenzen.max, ort)
+  } catch (e: any) {
+    strom.destroy()
+    if (e?.code === 'ZU_GROSS') throw grenzFehler(grenzen, Number(up.size))
+    throw e
+  }
   if (g.size !== Number(up.size))
     throw fehler(400, 'Die Datei ist nicht vollständig angekommen.', 'The file did not arrive completely.')
   const o = up.optionen || {}

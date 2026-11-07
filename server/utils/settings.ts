@@ -61,6 +61,15 @@ export const getTraffic = async (): Promise<Traffic> => ({
   ...(await getSetting<Partial<Traffic>>('traffic', {}))
 })
 
+// Standard-Kontingent für Konten ohne eigenes Limit und ohne Rollen-Kontingent (0/leer = keins), siehe quota.ts
+export interface QuotaEinst {
+  standardGb: number | null
+}
+export const getQuota = async (): Promise<QuotaEinst> => {
+  const g = Number((await getSetting<Partial<QuotaEinst>>('quota', {}))?.standardGb)
+  return { standardGb: Number.isFinite(g) && g > 0 ? g : null }
+}
+
 const cache = new Map<string, any>()
 
 export async function getSetting<T>(key: string, fallback: T, frisch = false): Promise<T> {

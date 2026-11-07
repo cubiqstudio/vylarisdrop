@@ -19,9 +19,22 @@ const ARTEN = [
   { k: 'text', c: '#22c55e', de: 'Text', en: 'Text' },
   { k: 'datei', c: 'var(--text3)', de: 'Sonst.', en: 'Other' }
 ]
-const grenze = computed(() => Number(stats.value?.kontingent || 0) || Math.max(1, Number(stats.value?.belegt || 0)))
-const anteil = (k: string) =>
-  Math.max(0, Math.min(100, (Number(stats.value?.proArt?.[k]?.bytes || 0) / grenze.value) * 100))
+// Kontingent: stats.quota = { limit, used, free, prozent, stufe, source, papierkorb } (siehe server/utils/quota.ts)
+const quota = computed(() => stats.value?.quota)
+const segmente = computed(() => [
+  ...ARTEN.map((a) => ({ bytes: Number(stats.value?.proArt?.[a.k]?.bytes || 0), farbe: a.c })),
+  { bytes: Number(stats.value?.papierkorb || 0), farbe: '', muster: true }
+])
+const speicherText = computed(() => {
+  const q = quota.value
+  if (!q?.limit || q.stufe === 'ok') return ''
+  const p = Math.floor(q.prozent || 0)
+  return q.stufe === 'voll'
+    ? t('Speicher voll — Uploads werden abgelehnt', 'Storage full — uploads are rejected')
+    : q.stufe === 'kritisch'
+      ? t(`Fast voll: ${p} % belegt`, `Almost full: ${p}% used`)
+      : t(`${p} % belegt`, `${p}% used`)
+})
 
 interface NavPunkt {
   zu: string
@@ -284,17 +297,21 @@ watch(
           <span>{{ t('Speicher', 'Storage') }}</span
           ><span
             ><b class="zahl">{{ groesse(belegt) }}</b
-            ><template v-if="stats?.kontingent"> {{ t('von', 'of') }} {{ groesse(stats.kontingent) }}</template></span
+            ><template v-if="stats?.kontingent">&nbsp;{{ t('von', 'of') }} {{ groesse(stats.kontingent) }}</template></span
           >
         </div>
-        <div class="balken">
-          <i v-for="a in ARTEN" :key="a.k" :style="{ width: anteil(a.k) + '%', background: a.c }"></i>
+        <VdQuotaBalken class="q-balken" :used="Number(stats?.belegt || 0)" :limit="stats?.kontingent || null" :segmente="segmente" klein />
+        <div v-if="speicherText" class="q-status" :class="quota?.stufe" role="status">
+          <Ico n="alert" /> {{ speicherText }}
         </div>
         <div class="legende">
           <span v-for="a in ARTEN.slice(0, 4)" :key="a.k" :style="{ '--c': a.c }">{{
             lang() === 'en' ? a.en : a.de
           }}</span>
         </div>
+        <NuxtLink v-if="Number(stats?.papierkorb) > 0" to="/papierkorb" class="q-korb">
+          {{ t('Papierkorb zählt mit:', 'Trash counts:') }} {{ groesse(stats.papierkorb) }}
+        </NuxtLink>
         <div v-if="stats?.platte && !stats?.kontingent" class="platte">
           {{ t('Frei auf dem Server:', 'Free on server:') }} {{ groesse(stats.platte.frei) }}
         </div>
@@ -357,7 +374,10 @@ watch(
           </div>
         </div>
       </header>
-      <main class="inhalt"><slot /></main>
+      <main class="inhalt">
+        <VdQuotaBanner :quota="quota" />
+        <slot />
+      </main>
     </div>
 
     <Transition name="ziehen">
@@ -609,21 +629,35 @@ watch(
   color: var(--text);
   font-weight: 600;
 }
-.speicher .balken {
-  display: flex;
-  height: 6px;
-  border-radius: 99px;
-  overflow: hidden;
-  background: var(--flaeche2);
+.speicher .q-balken {
   margin: 10px 0 8px;
-  gap: 2px;
 }
-.speicher .balken i {
+.q-status {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 11.5px;
+  font-weight: 600;
+  margin: 0 0 8px;
+  color: var(--warn);
+}
+.q-status.kritisch,
+.q-status.voll {
+  color: var(--rot);
+}
+.q-status svg {
+  width: 13px;
+  height: 13px;
+  flex-shrink: 0;
+}
+.q-korb {
   display: block;
-  height: 100%;
-  transform-origin: left;
-  animation: wachsen 1.1s 0.3s var(--kurve) both;
-  transition: width 0.6s var(--kurve);
+  margin-top: 8px;
+  font-size: 11px;
+  color: var(--text3);
+}
+.q-korb:hover {
+  color: var(--text);
 }
 .speicher .legende {
   display: flex;

@@ -12,7 +12,9 @@ const Body = z.object({
   email: z.string().trim().email().max(200).or(z.literal('')).optional().default(''),
   password: z.string().min(10).max(200),
   role: z.enum(['admin', 'user']).default('user'),
-  quota_gb: z.number().min(0).max(1_000_000).nullable().optional()
+  quota_gb: z.number().min(0).max(1_000_000).nullable().optional(),
+  // null = erbt von Rolle/Standard, -1 = unbegrenzt, > 0 = Bytes
+  quota_bytes: z.union([z.literal(-1), z.number().int().positive().max(1_000_000 * 1024 ** 3)]).nullable().optional()
 })
 
 export default defineEventHandler(async (event) => {
@@ -44,7 +46,7 @@ export default defineEventHandler(async (event) => {
     ])
   )
     throw fehler(409, 'Benutzername oder E-Mail ist schon vergeben.', 'Username or e-mail is already taken.')
-  const quota = b.quota_gb ? Math.round(b.quota_gb * 1024 ** 3) : null
+  const quota = b.quota_bytes ? b.quota_bytes : b.quota_gb ? Math.round(b.quota_gb * 1024 ** 3) : null
   const r = await q(
     'INSERT INTO users (username, email, password, role, quota_bytes) VALUES ($1,$2,$3,$4,$5) RETURNING id, username, email, role, quota_bytes, created_at',
     [b.username, b.email, await hashPw(b.password), b.role, quota]

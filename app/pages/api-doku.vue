@@ -171,7 +171,8 @@ const FEHLER = computed(() => [
   { c: 401, t: t('Kein oder ungültiges Token.', 'Missing or invalid token.') },
   { c: 403, t: t('Dem Token fehlt das nötige Recht.', 'The token lacks the required permission.') },
   { c: 404, t: t('Gibt es nicht oder gehört nicht dir.', 'Does not exist or is not yours.') },
-  { c: 413, t: t('Datei zu groß oder Speicher voll.', 'File too large or storage full.') },
+  { c: 413, t: t('Datei größer als erlaubt (Instanz- oder Rollen-Grenze).', 'File larger than allowed (instance or role limit).') },
+  { c: 507, t: t('Speicher voll: Kontingent des Kontos oder Team-Kontingent erreicht.', 'Storage full: account or team quota reached.') },
   {
     c: 429,
     t: t(

@@ -39,7 +39,8 @@ const Body = z.object({
           virus: z.boolean(),
           webhook: z.boolean(),
           system: z.boolean(),
-          traffic: z.boolean()
+          traffic: z.boolean(),
+          quota: z.boolean()
         })
         .partial()
         .optional()

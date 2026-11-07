@@ -1,5 +1,7 @@
 import { q, q1, ereignis } from '../../utils/db'
 import { clientIp, hashPw, requireAdmin } from '../../utils/auth'
+import { UNBEGRENZT } from '../../utils/quota'
+import { quotaWarnen } from '../../utils/benachrichtigen'
 
 export default defineEventHandler(async (event) => {
   const ich = await requireAdmin(event)
@@ -19,10 +21,24 @@ export default defineEventHandler(async (event) => {
     if (ich.role !== 'owner') throw fehler(403, 'Rollen vergibt nur der Inhaber.', 'Only the owner assigns roles.')
     await q('UPDATE users SET role = $1 WHERE id = $2', [b.role, id])
   }
-  if (b?.quota_gb !== undefined) {
-    const g = b.quota_gb == null || b.quota_gb === '' ? null : Number(b.quota_gb)
-    if (g != null && !(g >= 0 && g <= 1_000_000)) throw fehler(400, 'Ungültiges Kontingent.', 'Invalid quota.')
-    await q('UPDATE users SET quota_bytes = $1 WHERE id = $2', [g ? Math.round(g * 1024 ** 3) : null, id])
+  // Kontingent: quota_bytes (null = erbt von Rolle/Standard, -1 = unbegrenzt, > 0 = eigenes Limit) oder, wie bisher,
+  // quota_gb (null/leer/0 = erbt). Siehe server/utils/quota.ts.
+  if (b?.quota_bytes !== undefined || b?.quota_gb !== undefined) {
+    let bytes: number | null
+    if (b.quota_bytes !== undefined) {
+      if (b.quota_bytes === null || b.quota_bytes === 0) bytes = null
+      else if (b.quota_bytes === UNBEGRENZT) bytes = UNBEGRENZT
+      else if (Number.isSafeInteger(b.quota_bytes) && b.quota_bytes > 0 && b.quota_bytes <= 1_000_000 * 1024 ** 3)
+        bytes = b.quota_bytes
+      else throw fehler(400, 'Ungültiges Kontingent.', 'Invalid quota.')
+    } else {
+      const g = b.quota_gb == null || b.quota_gb === '' ? null : Number(b.quota_gb)
+      if (g != null && !(g >= 0 && g <= 1_000_000)) throw fehler(400, 'Ungültiges Kontingent.', 'Invalid quota.')
+      bytes = g ? Math.round(g * 1024 ** 3) : null
+    }
+    await q('UPDATE users SET quota_bytes = $1 WHERE id = $2', [bytes, id])
+    // Warnstufe neu bewerten (Limit geändert: Stufe fällt zurück oder wird beim nächsten Upload neu gesetzt)
+    void quotaWarnen(id).catch(() => {})
   }
   if (typeof b?.password === 'string' && b.password) {
     if (b.password.length < 10 || b.password.length > 200)

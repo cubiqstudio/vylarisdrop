@@ -4,6 +4,7 @@ import { clientIp, limit, type Nutzer } from '../../../../utils/auth'
 import { loeschen, schreiben } from '../../../../utils/speicher'
 import { basisUrl, dateiAnlegen, fuerPanel, links, type DateiZeile } from '../../../../utils/dateien'
 import { freierPlatz } from '../../../../utils/hochladen'
+import { istQuotaFehler } from '../../../../utils/quota'
 import { getUploads } from '../../../../utils/settings'
 import { imHintergrund, speicherPruefen } from '../../../../utils/benachrichtigen'
 import { webhookAusloesen } from '../../../../utils/webhooks'
@@ -31,13 +32,13 @@ export default defineEventHandler(async (event) => {
   ])
   if (!besitzer) throw fehler(404, 'Diese Anfrage gibt es nicht.', 'This request does not exist.')
   const cfg = await getUploads()
-  const grenzen = [
-    a.max_bytes != null ? Number(a.max_bytes) : Infinity,
-    cfg.maxBytes > 0 ? cfg.maxBytes : Infinity,
-    await freierPlatz(besitzer)
-  ]
+  const frei = await freierPlatz(besitzer, a.folder_id)
+  const grenzen = [a.max_bytes != null ? Number(a.max_bytes) : Infinity, cfg.maxBytes > 0 ? cfg.maxBytes : Infinity, frei]
   const max = Math.min(...grenzen)
-  if (max <= 0) throw fehler(413, 'Der Speicher des Empfängers ist voll.', 'The recipient’s storage is full.')
+  // Gäste sehen keine Zahlen zum Speicher des Empfängers, nur dass es nicht passt
+  const speicherVoll = () =>
+    fehler(507, 'Der Speicher des Empfängers ist voll.', 'The recipient’s storage is full.')
+  if (max <= 0) throw speicherVoll()
 
   const felder: Record<string, string> = {}
   const ergebnis = await new Promise<{ name: string; slug: string; datei: DateiZeile } | null>((resolve, reject) => {
@@ -74,14 +75,21 @@ export default defineEventHandler(async (event) => {
             )
             return
           }
-          const f = await dateiAnlegen(
-            a.user_id,
-            g,
-            info.filename || 'datei',
-            info.mimeType || '',
-            { ordner: a.folder_id },
-            besitzer.prefs?.lang === 'en' ? 'en' : 'de'
-          )
+          let f: DateiZeile
+          try {
+            f = await dateiAnlegen(
+              a.user_id,
+              g,
+              info.filename || 'datei',
+              info.mimeType || '',
+              { ordner: a.folder_id },
+              besitzer.prefs?.lang === 'en' ? 'en' : 'de'
+            )
+          } catch (e: any) {
+            // die Datei zählt nicht, wenn sie nicht angelegt werden konnte
+            await q('UPDATE anfragen SET anzahl = greatest(0, anzahl - 1) WHERE id = $1', [a.id]).catch(() => {})
+            throw istQuotaFehler(e) ? speicherVoll() : e
+          }
           const gast = String(felder.name || '')
             .replace(/[\u0000-\u001f]/g, '')
             .trim()
@@ -103,7 +111,9 @@ export default defineEventHandler(async (event) => {
             bb.removeAllListeners()
             req.resume()
             setResponseHeader(event, 'Connection', 'close')
-            return ende(() => reject(fehler(413, 'Die Datei ist zu groß.', 'The file is too large.')))
+            return ende(() =>
+              reject(frei <= Math.min(grenzen[0]!, grenzen[1]!) ? speicherVoll() : fehler(413, 'Die Datei ist zu groß.', 'The file is too large.'))
+            )
           }
           ende(() => reject(e))
         })

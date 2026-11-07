@@ -1,5 +1,14 @@
 import { requireAdmin } from '../../utils/auth'
-import { getAuslieferung, getDesign, getMedien, getNet, getTraffic, getUploads, sLang } from '../../utils/settings'
+import {
+  getAuslieferung,
+  getDesign,
+  getMedien,
+  getNet,
+  getQuota,
+  getTraffic,
+  getUploads,
+  sLang
+} from '../../utils/settings'
 import { ffmpegVorhanden } from '../../utils/medien'
 import { getMail } from '../../utils/benachrichtigen'
 
@@ -14,6 +23,7 @@ export default defineEventHandler(async (event) => {
     medien: await getMedien(),
     auslieferung: await getAuslieferung(),
     traffic: await getTraffic(),
+    quota: await getQuota(),
     ffmpeg: await ffmpegVorhanden(),
     net: await getNet(),
     lang: sLang()
