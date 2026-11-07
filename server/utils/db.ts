@@ -224,6 +224,13 @@ CREATE TABLE IF NOT EXISTS dav_zugaenge (
   prefix text NOT NULL, key_hash text NOT NULL UNIQUE, schreiben boolean NOT NULL DEFAULT true,
   created_at timestamptz NOT NULL DEFAULT now(), last_used_at timestamptz);
 CREATE INDEX IF NOT EXISTS dav_zugaenge_user_idx ON dav_zugaenge(user_id);
+-- WebDAV-Sperren (LOCK/UNLOCK, Klasse 2): res = f<Datei-id> | o<Ordner-id>, tiefe = 0 | infinity
+CREATE TABLE IF NOT EXISTS dav_sperren (
+  token text PRIMARY KEY, res text NOT NULL, user_id int NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  tiefe text NOT NULL DEFAULT '0', besitzer text NOT NULL DEFAULT '', timeout_s int NOT NULL DEFAULT 600,
+  ablauf_at timestamptz NOT NULL, created_at timestamptz NOT NULL DEFAULT now());
+CREATE INDEX IF NOT EXISTS dav_sperren_res_idx ON dav_sperren(res);
+CREATE INDEX IF NOT EXISTS dav_sperren_ablauf_idx ON dav_sperren(ablauf_at);
 
 -- [cloud:quota] Warnstufe je Konto (0 | 80 | 100) und Team-Kontingent
 ALTER TABLE users ADD COLUMN IF NOT EXISTS quota_gewarnt int NOT NULL DEFAULT 0;
