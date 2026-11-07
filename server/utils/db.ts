@@ -276,6 +276,31 @@ DROP TRIGGER IF EXISTS vd_live_papierkorb ON papierkorb;
 CREATE TRIGGER vd_live_papierkorb AFTER INSERT OR UPDATE OR DELETE ON papierkorb FOR EACH ROW EXECUTE FUNCTION vd_live_melden('papierkorb');
 DROP TRIGGER IF EXISTS vd_live_anfragen ON anfragen;
 CREATE TRIGGER vd_live_anfragen AFTER INSERT OR UPDATE OR DELETE ON anfragen FOR EACH ROW EXECUTE FUNCTION vd_live_melden('anfragen');
+-- Tags (Zuordnung und Name/Farbe) und Kontingent-/Rollenaenderungen eines Kontos aktualisieren dieselben Ansichten
+CREATE OR REPLACE FUNCTION vd_live_melden_tags() RETURNS trigger AS $$
+DECLARE uid bigint;
+BEGIN
+  IF TG_TABLE_NAME = 'file_tags' THEN
+    SELECT user_id INTO uid FROM files WHERE id = CASE WHEN TG_OP = 'DELETE' THEN OLD.file_id ELSE NEW.file_id END;
+  ELSIF TG_OP = 'DELETE' THEN uid := OLD.user_id;
+  ELSE uid := NEW.user_id;
+  END IF;
+  IF uid IS NOT NULL THEN PERFORM pg_notify('vd_live', 'db|dateien|' || uid::text); END IF;
+  RETURN NULL;
+END $$ LANGUAGE plpgsql;
+DROP TRIGGER IF EXISTS vd_live_file_tags ON file_tags;
+CREATE TRIGGER vd_live_file_tags AFTER INSERT OR DELETE ON file_tags FOR EACH ROW EXECUTE FUNCTION vd_live_melden_tags();
+DROP TRIGGER IF EXISTS vd_live_tags ON tags;
+CREATE TRIGGER vd_live_tags AFTER INSERT OR UPDATE OR DELETE ON tags FOR EACH ROW EXECUTE FUNCTION vd_live_melden_tags();
+CREATE OR REPLACE FUNCTION vd_live_melden_konto() RETURNS trigger AS $$
+BEGIN
+  IF NEW.quota_bytes IS DISTINCT FROM OLD.quota_bytes OR NEW.role IS DISTINCT FROM OLD.role THEN
+    PERFORM pg_notify('vd_live', 'db|dateien|' || NEW.id::text);
+  END IF;
+  RETURN NULL;
+END $$ LANGUAGE plpgsql;
+DROP TRIGGER IF EXISTS vd_live_konto ON users;
+CREATE TRIGGER vd_live_konto AFTER UPDATE ON users FOR EACH ROW EXECUTE FUNCTION vd_live_melden_konto();
 `
 
 export const TABELLEN = [

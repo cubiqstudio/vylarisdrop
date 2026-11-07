@@ -121,7 +121,8 @@ export function verbinden(event: H3Event, nutzer: number): Promise<void> {
       },
       schliessen: () => schliessen()
     }
-    const herz = setInterval(() => c.schreiben(': herz\n\n'), 20_000)
+    // Echte Nachricht statt Kommentar: nur so merkt der Browser (useLive-Wächter), dass die Verbindung noch lebt
+    const herz = setInterval(() => c.schreiben('data: {"t":"herz"}\n\n'), 20_000)
     function schliessen() {
       if (zu) return
       zu = true

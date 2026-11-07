@@ -14,6 +14,10 @@ let neuTimer: ReturnType<typeof setTimeout> | null = null
 let bündelTimer: ReturnType<typeof setTimeout> | null = null
 let schonVerbunden = false
 let sichtbarHaken = false
+let onlineHaken = false
+let zuletzt = Date.now() // letzte Nachricht (auch Herzschlag) vom Server
+let waechter: ReturnType<typeof setInterval> | null = null
+const STILL_MS = 65_000 // der Server sendet alle 20 s einen Herzschlag
 
 function ausfuehren() {
   bündelTimer = null
@@ -31,17 +35,30 @@ function vormerken(thema: string | null) {
   if (!bündelTimer) bündelTimer = setTimeout(ausfuehren, 300)
 }
 
+/** Verbindung verwerfen und neu aufbauen (nach Standby, WLAN-Wechsel, stiller Unterbrechung). */
+function neuVerbinden() {
+  quelle?.close()
+  quelle = null
+  verbinden()
+}
 function verbinden() {
   if (!import.meta.client || quelle || !abos.size) return
   const q = new EventSource('/api/live')
   quelle = q
+  zuletzt = Date.now()
+  // Eine still gestorbene Verbindung (kein TCP-Abbruch) meldet der Browser nicht: ohne Herzschlag neu aufbauen
+  waechter ??= setInterval(() => {
+    if (quelle && Date.now() - zuletzt > STILL_MS) neuVerbinden()
+  }, 15_000)
   q.onopen = () => {
+    zuletzt = Date.now()
     wartezeit = 1000
     // Nach einer Unterbrechung kann etwas verpasst worden sein: alles neu holen
     if (schonVerbunden) vormerken(null)
     schonVerbunden = true
   }
   q.onmessage = (e) => {
+    zuletzt = Date.now()
     try {
       const d = JSON.parse(e.data)
       if (d && typeof d.t === 'string') vormerken(d.t)
@@ -61,6 +78,8 @@ function verbinden() {
 function trennen() {
   if (neuTimer) clearTimeout(neuTimer)
   neuTimer = null
+  if (waechter) clearInterval(waechter)
+  waechter = null
   quelle?.close()
   quelle = null
   schonVerbunden = false
@@ -80,8 +99,18 @@ export function useLive(themen: LiveThema[], fn: () => void | Promise<void>) {
       document.addEventListener('visibilitychange', () => {
         if (document.visibilityState === 'visible') {
           if (!quelle && abos.size) verbinden()
+          else if (quelle && Date.now() - zuletzt > STILL_MS) neuVerbinden() // lange im Hintergrund: Verbindung prüfen
           if ([...abos].some((a) => a.faellig) && !bündelTimer) bündelTimer = setTimeout(ausfuehren, 100)
         }
+      })
+    }
+    if (!onlineHaken) {
+      onlineHaken = true
+      // Netz kommt zurück: Verbindung neu aufbauen und alles nachholen
+      window.addEventListener('online', () => {
+        if (!abos.size) return
+        neuVerbinden()
+        vormerken(null)
       })
     }
     verbinden()
