@@ -2,6 +2,7 @@ import { randomUUID } from 'node:crypto'
 import { q, q1 } from './db'
 import { davFehler, ifTokens, xmlEsc, type DavKontext } from './davKern'
 import { unterOrdner, type Knoten } from './davBaum'
+import { ordnerRecht } from './teams'
 
 // Klasse-2-Sperren: exklusive Schreibsperren (Datei oder Ordner, Tiefe 0/infinity) mit Timeout, in der Datenbank
 // (gelten damit auch bei mehreren Servern und ueberstehen einen Neustart). res = f<id> | o<id>.
@@ -16,6 +17,10 @@ export interface Sperre {
   ablauf_at: string
 }
 export const MAX_TIMEOUT = 3600
+/** Hoechstzahl gleichzeitig aktiver Sperren je Konto */
+export const MAX_SPERREN = 100
+/** Gesamtlaufzeit einer Sperre, auch wenn sie immer wieder verlaengert wird */
+export const MAX_LAUFZEIT_S = 24 * 3600
 export const STANDARD_TIMEOUT = 600
 
 export const resSchluessel = (k: Knoten): string | null =>
@@ -95,6 +100,9 @@ export async function sperreAnlegen(
   await q('DELETE FROM dav_sperren WHERE ablauf_at <= now()')
   const vorhanden = [...(await sperrenFuer(k)), ...(tiefe === 'infinity' ? await sperrenUnter(k) : [])]
   if (vorhanden.length) gesperrtFehler()
+  const n = await q1<{ n: string }>('SELECT count(*) AS n FROM dav_sperren WHERE user_id = $1 AND ablauf_at > now()', [c.u.id])
+  if (Number(n?.n || 0) >= MAX_SPERREN)
+    throw davFehler(403, 'Zu viele aktive Sperren.', 'Too many active locks.')
   const token = `opaquelocktoken:${randomUUID()}`
   const r = await q1<Sperre>(
     `INSERT INTO dav_sperren (token, res, user_id, tiefe, besitzer, timeout_s, ablauf_at)
@@ -108,17 +116,31 @@ export async function sperreErneuern(c: DavKontext, token: string, timeout: numb
   const s = await q1<Sperre>('SELECT * FROM dav_sperren WHERE token = $1 AND ablauf_at > now()', [token])
   if (!s) return null
   if (s.user_id !== c.u.id) throw davFehler(403, 'Diese Sperre gehört jemand anderem.', 'This lock belongs to someone else.')
-  return q1<Sperre>(
-    `UPDATE dav_sperren SET timeout_s = $2::int, ablauf_at = now() + $2::int * interval '1 second' WHERE token = $1 RETURNING *`,
-    [token, timeout]
+  // Verlaengern nur bis zur Gesamtlaufzeit seit dem Anlegen (danach laeuft die Sperre ab)
+  const r = await q1<Sperre>(
+    `UPDATE dav_sperren SET timeout_s = $2::int,
+      ablauf_at = least(now() + $2::int * interval '1 second', created_at + $3::int * interval '1 second')
+    WHERE token = $1 RETURNING *`,
+    [token, timeout, MAX_LAUFZEIT_S]
   )
+  return r && new Date(r.ablauf_at).getTime() > Date.now() ? r : null
+}
+/** Darf der Nutzer fremde Sperren auf dieser Ressource aufheben? Team-Leitung (im Team-Ordner) sowie Admins und Inhaber. */
+async function darfFremdeAufheben(c: DavKontext, k: Knoten): Promise<boolean> {
+  if (!c.schreiben) return false
+  if (c.u.role === 'owner' || c.u.role === 'admin') return true
+  const ordner = k.art === 'ordner' ? k.row.id : k.art === 'datei' ? k.row.folder_id : null
+  if (!ordner) return false
+  const r = await ordnerRecht(c.u.id, ordner)
+  return !!r?.team_id && r.leitung
 }
 export async function sperreAufheben(c: DavKontext, token: string, k: Knoten): Promise<boolean> {
   const s = await q1<Sperre>('SELECT * FROM dav_sperren WHERE token = $1', [token])
   if (!s) return false
   const gilt = (await sperrenFuer(k)).some((x) => x.token === token)
   if (!gilt) return false
-  if (s.user_id !== c.u.id) throw davFehler(403, 'Diese Sperre gehört jemand anderem.', 'This lock belongs to someone else.')
+  if (s.user_id !== c.u.id && !(await darfFremdeAufheben(c, k)))
+    throw davFehler(403, 'Diese Sperre gehört jemand anderem.', 'This lock belongs to someone else.')
   await q('DELETE FROM dav_sperren WHERE token = $1', [token])
   return true
 }
@@ -127,15 +149,20 @@ export async function sperrenEntfernen(res: string[]): Promise<void> {
   if (res.length) await q('DELETE FROM dav_sperren WHERE res = ANY($1::text[])', [res])
 }
 
-/** XML fuer lockdiscovery; das Token zeigen wir nur dem Besitzer der Sperre. */
-export function sperreXml(s: Sperre, c: DavKontext, hrefs: string): string {
+/** Das Token einer Sperre sehen nur ihr Besitzer und wer sie aufheben darf; Nur-Lesen-Zugaenge nie. */
+export async function tokenSichtbar(c: DavKontext, s: Sperre, k: Knoten): Promise<boolean> {
+  if (!c.schreiben) return false
+  return s.user_id === c.u.id || (await darfFremdeAufheben(c, k))
+}
+/** XML fuer lockdiscovery; das Token steht nur drin, wenn `mitToken` gesetzt ist (siehe tokenSichtbar). */
+export function sperreXml(s: Sperre, c: DavKontext, hrefs: string, mitToken: boolean = s.user_id === c.u.id && c.schreiben): string {
   const rest = Math.max(1, Math.round((new Date(s.ablauf_at).getTime() - Date.now()) / 1000))
   return (
     `<D:activelock><D:locktype><D:write/></D:locktype><D:lockscope><D:exclusive/></D:lockscope>` +
     `<D:depth>${s.tiefe === 'infinity' ? 'infinity' : '0'}</D:depth>` +
     (s.besitzer ? `<D:owner>${xmlEsc(s.besitzer)}</D:owner>` : '') +
     `<D:timeout>Second-${rest}</D:timeout>` +
-    (s.user_id === c.u.id ? `<D:locktoken><D:href>${xmlEsc(s.token)}</D:href></D:locktoken>` : '') +
+    (mitToken ? `<D:locktoken><D:href>${xmlEsc(s.token)}</D:href></D:locktoken>` : '') +
     `<D:lockroot><D:href>${xmlEsc(hrefs)}</D:href></D:lockroot></D:activelock>`
   )
 }
