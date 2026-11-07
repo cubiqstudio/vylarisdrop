@@ -69,7 +69,9 @@ export function xmlLesen(roh: string): XmlKnoten | null {
   const s = roh.replace(/<!--[\s\S]*?-->/g, '').replace(/<\?[\s\S]*?\?>/g, '')
   const wurzel: XmlKnoten = { ns: '', name: '#wurzel', text: '', kinder: [] }
   const stapel: Array<{ k: XmlKnoten; ns: Record<string, string> }> = [{ k: wurzel, ns: { '': '' } }]
-  const re = /<!\[CDATA\[([\s\S]*?)\]\]>|<(\/?)([A-Za-z_][\w.-]*(?::[A-Za-z_][\w.-]*)?)((?:\s+[^<>]*?)?)\s*(\/?)>|([^<]+)/g
+  // Tag ohne ueberlappende Quantoren ueber Leerraum (sonst kubisches Backtracking bei unvollstaendigen Tags, ReDoS):
+  // nach dem Namen genau ein Leerzeichen-Zeichen, dann lazy bis zum optionalen "/" vor ">"
+  const re = /<!\[CDATA\[([\s\S]*?)\]\]>|<(\/?)([A-Za-z_][\w.-]*(?::[A-Za-z_][\w.-]*)?)((?:\s[^<>]*?)?)(\/?)>|([^<]+)/g
   let m: RegExpExecArray | null
   let n = 0
   const entit = (t: string) =>
@@ -110,6 +112,8 @@ export const xmlFinde = (k: XmlKnoten | null | undefined, name: string): XmlKnot
   k?.kinder.find((x) => x.name === name)
 
 // ---------- Anfrage lesen ----------
+/** Obergrenze fuer XML-Anfragen (PROPFIND, PROPPATCH, LOCK): echte Anfragen sind wenige hundert Byte gross */
+export const MAX_XML = 64 * 1024
 export async function koerperLesen(event: H3Event, max = 1024 * 1024): Promise<string> {
   const req = event.node.req
   const teile: Buffer[] = []

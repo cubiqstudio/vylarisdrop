@@ -3,12 +3,23 @@ import { pipeline } from 'node:stream/promises'
 import { Readable } from 'node:stream'
 import type { H3Event } from 'h3'
 import { q, q1, ereignis } from './db'
-import { clientIp } from './auth'
+import { clientIp, type Nutzer } from './auth'
 import { getNet, getUploads, st } from './settings'
 import { lesen, loeschen, ortVon, pfadVon, platte, schreiben } from './speicher'
 import { artVon, basisUrl, dateiAnlegen, fuerPanel, typErkennen, type DateiZeile } from './dateien'
 import { dateiCsp } from './dateiCsp'
 import { freierPlatz } from './hochladen'
+import {
+  hatGrenze,
+  kontingentPruefen,
+  mitKontingentSperre,
+  ordnerBaumBytes,
+  quotaStand,
+  teamStand,
+  teamVonOrdner,
+  verschiebenPruefen,
+  type Ausf
+} from './quota'
 import { rechteVon, ordnerRecht } from './teams'
 import { inPapierkorb } from './papierkorb'
 import { webhookAusloesen } from './webhooks'
@@ -29,6 +40,7 @@ import {
   href as hrefVon,
   iso,
   koerperLesen,
+  MAX_XML,
   neuerNameOk,
   nameSchluessel,
   ordnerAnzahlOk,
@@ -63,6 +75,7 @@ import {
   sperreAufheben,
   sperreErneuern,
   sperreXml,
+  tokenSichtbar,
   sperrenEntfernen,
   sperrenFuer,
   sperrenMap,
@@ -96,6 +109,13 @@ function senden(event: H3Event, status: number, body: string | Buffer | null = n
 const xmlSenden = (event: H3Event, status: number, xml: string, kopf: Kopf = {}) =>
   senden(event, status, XML_KOPF + xml, { 'Content-Type': 'application/xml; charset=utf-8', ...kopf })
 
+/** HTTP-Status eines Fehlers (DavFehler, createError aus fehler()), sonst 500 */
+function statusVon(e: any): number {
+  if (e instanceof DavFehler) return e.status
+  const s = Number(e?.statusCode || e?.status)
+  return (s >= 400 && s < 500) || s === 507 ? s : 500
+}
+
 function fehlerSenden(event: H3Event, e: any) {
   const res = event.node.res
   if (res.headersSent) {
@@ -106,8 +126,9 @@ function fehlerSenden(event: H3Event, e: any) {
     if (e.xml) return xmlSenden(event, e.status, e.xml.replace(/^<\?xml[^>]*\?>/, ''), e.kopf)
     return senden(event, e.status, st(e.de, e.en), { 'Content-Type': 'text/plain; charset=utf-8', ...e.kopf })
   }
-  const status = Number(e?.statusCode || e?.status)
-  if (status >= 400 && status < 500 && e?.message)
+  const status = statusVon(e)
+  // 4xx und der Kontingent-Fehler 507 (aus quota.ts) gehen mit Klartext an den Client; alles andere ist ein Serverfehler
+  if (((status >= 400 && status < 500) || status === 507) && e?.message)
     return senden(event, status, String(e.message), { 'Content-Type': 'text/plain; charset=utf-8' })
   console.error('[vylariscloud] WebDAV-Fehler:', e?.message || e)
   senden(event, 500, st('Interner Fehler.', 'Internal error.'), { 'Content-Type': 'text/plain; charset=utf-8' })
@@ -150,9 +171,18 @@ function speicherWarnung(c: DavKontext) {
   void speicherPruefen(c.u).catch(() => {})
 }
 
-async function limiten(c: DavKontext, alt = 0) {
+/** Konto des Besitzers einer fremden Datei (Team-Ordner), fuer die Vorabpruefung beim Ueberschreiben */
+const nutzerVon = (id: number) =>
+  q1<Nutzer>('SELECT id, username, email, role, quota_bytes, prefs, rolle_id FROM users WHERE id = $1', [id])
+
+/**
+ * Vorab-Grenzen fuer einen Upload: freier Platz (Konto des Besitzers und, mit `ordner`, Team-Kontingent des Zielordners),
+ * Instanz- und Rollen-Dateigroesse. `alt` = Bytes der Datei, die ersetzt wird. Nicht verbindlich: die endgueltige Pruefung
+ * macht dateiAnlegen() bzw. der Ueberschreib-Zweig von putKern unter der Kontingent-Sperre.
+ */
+async function limiten(c: DavKontext, alt = 0, ordner: number | null = null, besitzer?: Nutzer) {
   const cfg = await getUploads()
-  const frei = (await freierPlatz(c.u)) + alt
+  const frei = (await freierPlatz(besitzer || c.u, ordner)) + alt
   const inst = cfg.maxBytes > 0 ? cfg.maxBytes : Infinity
   const rolle = (await rechteVon(c.u)).maxDateiMb
   const datei = Math.min(inst, rolle ? Math.round(rolle * 1024 ** 2) : Infinity)
@@ -214,11 +244,11 @@ interface PropfindStand {
 }
 async function quotaVon(c: DavKontext, s: PropfindStand) {
   if (s.quota) return s.quota
-  const frei = await freierPlatz(c.u)
-  const r = await q1<{ s: string }>('SELECT coalesce(sum(size), 0) AS s FROM files WHERE user_id = $1', [c.u.id])
-  let fr: number | null = Number.isFinite(frei) ? frei : null
+  // belegt und frei aus demselben Stand (Dateien plus Papierkorb), damit used + available das Kontingent ergibt
+  const stand = await quotaStand(c.u)
+  let fr: number | null = stand.free
   if (fr == null) fr = (await platte())?.frei ?? null
-  return (s.quota = { frei: fr, belegt: Number(r?.s || 0) })
+  return (s.quota = { frei: fr, belegt: stand.used })
 }
 const element = (ns: string, name: string, inhalt: string | null) => {
   const [pre, deklaration] = ns === DAVNS ? ['D', ''] : ['x', ` xmlns:x="${xmlEsc(ns)}"`]
@@ -269,7 +299,9 @@ async function eigenschaft(
       if (nurName) return leer(p.name)
       const r = resSchluessel(k)
       const liste = (r && s.sperren.get(r)) || []
-      return element(DAVNS, p.name, liste.map((x) => sperreXml(x, c, endpunkt(pfad, k))).join(''))
+      const eintraege: string[] = []
+      for (const x of liste) eintraege.push(sperreXml(x, c, endpunkt(pfad, k), await tokenSichtbar(c, x, k)))
+      return element(DAVNS, p.name, eintraege.join(''))
     }
     case 'quota-available-bytes': {
       if (!behaelter) return null
@@ -289,7 +321,7 @@ async function propfind(c: DavKontext, teile: string[]) {
   const ev = c.event
   const tiefeKopf = String(getRequestHeader(ev, 'depth') ?? 'infinity').trim().toLowerCase()
   if (!['0', '1', 'infinity'].includes(tiefeKopf)) throw davFehler(400, 'Ungültiger Depth-Header.', 'Invalid Depth header.')
-  const anfrage = propfindAnfrage(await koerperLesen(ev))
+  const anfrage = propfindAnfrage(await koerperLesen(ev, MAX_XML))
   const { k } = await zuNode(c, teile)
   if (tiefeKopf === 'infinity' && istBehaelter(k))
     throw davFehler(
@@ -333,7 +365,7 @@ const MS_NS = 'urn:schemas-microsoft-com:'
 async function proppatch(c: DavKontext, teile: string[]) {
   schreibenPruefen(c)
   const ev = c.event
-  const body = await koerperLesen(ev)
+  const body = await koerperLesen(ev, MAX_XML)
   const w = xmlLesen(body)
   if (!w || w.name !== 'propertyupdate') throw davFehler(400, 'Ungültige PROPPATCH-Anfrage.', 'Invalid PROPPATCH request.')
   const { k } = await zuNode(c, teile)
@@ -479,6 +511,13 @@ async function holen(c: DavKontext, teile: string[]) {
 async function putKern(c: DavKontext, teile: string[]) {
   schreibenPruefen(c)
   const ev = c.event
+  // RFC 7231, 4.3.4: Content-Range bei PUT darf nicht ignoriert werden (sonst ersetzt das Teilstueck die ganze Datei)
+  if (getRequestHeader(ev, 'content-range')) {
+    ev.node.req.resume()
+    throw davFehler(400, 'Content-Range wird bei PUT nicht unterstützt.', 'Content-Range is not supported for PUT.', {
+      Connection: 'close'
+    })
+  }
   if (!teile.length) throw davFehler(405, 'Die Wurzel lässt sich nicht überschreiben.', 'The root cannot be overwritten.')
   if (!(await rechteVon(c.u)).hochladen)
     throw davFehler(403, 'Deine Rolle erlaubt keine Uploads.', 'Your role does not allow uploads.')
@@ -503,8 +542,11 @@ async function putKern(c: DavKontext, teile: string[]) {
   }
   const frueh = await aufloesen(c, teile)
   await pruefen(frueh)
-  const alt = frueh.knoten && frueh.knoten.art === 'datei' && frueh.knoten.row.user_id === c.u.id ? Number(frueh.knoten.row.size) : 0
-  const lim = await limiten(c, alt)
+  // Vorabpruefung (nicht verbindlich): beim Ueberschreiben zaehlt das Konto des Dateibesitzers und das Team des Ordners
+  const vorhanden = frueh.knoten && frueh.knoten.art === 'datei' ? frueh.knoten.row : null
+  const zielOrdner = vorhanden ? vorhanden.folder_id : ordnerIdVon(frueh.eltern!)
+  const besitzer = vorhanden && vorhanden.user_id !== c.u.id ? await nutzerVon(vorhanden.user_id) : null
+  const lim = await limiten(c, vorhanden ? Number(vorhanden.size) : 0, zielOrdner, besitzer || undefined)
   const clRoh = getRequestHeader(ev, 'content-length')
   const cl = clRoh != null && /^\d+$/.test(String(clRoh)) ? Number(clRoh) : null
   if (cl != null && cl > lim.max) {
@@ -538,15 +580,31 @@ async function putKern(c: DavKontext, teile: string[]) {
       if (a.knoten && a.knoten.art === 'datei') {
         const f = a.knoten.row
         const mime = typErkennen(g.kopf, f.name, ctype)
-        const r = await q1<{ alte_ablage: string; geaendert_at: string; created_at: string }>(
-          `WITH alt AS (SELECT id, ablage FROM files WHERE id = $1 FOR UPDATE)
+        // verbindliche Pruefung unter der Kontingent-Sperre (Konto des Besitzers, Team des Ordners): nur die Differenz zur
+        // alten Datei zaehlt, die alte Groesse wird innerhalb der Sperre neu gelesen (wie /api/files/[id]/inhalt.put)
+        const grenze = await hatGrenze(f.user_id, f.folder_id)
+        const setzen = async (x: Ausf) => {
+          if (grenze.begrenzt) {
+            const jetzt = (await x('SELECT size, folder_id FROM files WHERE id = $1', [f.id]))[0]
+            await kontingentPruefen(grenze.nutzer, g.size, {
+              ordner: jetzt ? jetzt.folder_id : f.folder_id,
+              ersetzt: Number(jetzt?.size ?? f.size),
+              x
+            })
+          }
+          return (
+            await x(
+              `WITH alt AS (SELECT id, ablage FROM files WHERE id = $1 FOR UPDATE)
           UPDATE files f SET ablage = $2, size = $3, sha256 = $4, mime = $5, art = $6, geaendert_at = coalesce($7, now()),
             verarbeitung = 'offen', vorschau = false, streifen = 0, wellen = NULL, width = NULL, height = NULL, duration_ms = NULL,
             exif_entfernt = false, ansicht = false, live = false, live_mp4 = false, verschluesselt = false, scan = '', scan_info = '',
             verarbeitung_seit = NULL, verarbeitet_von = NULL
           FROM alt WHERE f.id = alt.id RETURNING alt.ablage AS alte_ablage, f.geaendert_at, f.created_at`,
-          [f.id, g.schluessel, g.size, g.sha256, mime, artVon(mime, f.name), mtime]
-        )
+              [f.id, g.schluessel, g.size, g.sha256, mime, artVon(mime, f.name), mtime]
+            )
+          )[0] as { alte_ablage: string; geaendert_at: string; created_at: string } | undefined
+        }
+        const r = grenze.begrenzt ? await mitKontingentSperre(f.user_id, grenze.team, setzen) : await setzen((sql, p = []) => q(sql, p))
         if (!r) throw davFehler(404, 'Die Datei wurde inzwischen gelöscht.', 'The file has since been deleted.')
         if (r.alte_ablage !== g.schluessel && !(await q1('SELECT 1 FROM files WHERE ablage = $1', [r.alte_ablage])))
           await loeschen(r.alte_ablage)
@@ -703,12 +761,21 @@ const gleicherKnoten = (a: Knoten, b: Knoten) =>
     a.art === 'wurzel' ||
     a.art === 'teams')
 
-async function teamSetzen(id: number, team: number | null) {
-  await q(
-    `WITH RECURSIVE unter(id) AS (SELECT $1::int UNION SELECT f.id FROM folders f JOIN unter ON f.parent_id = unter.id)
-    UPDATE folders SET team_id = $2 WHERE id IN (SELECT id FROM unter)`,
-    [id, team]
+/** Freier Platz am Ziel: beim Ablegen direkt im Team-Ordner-Wurzelknoten zaehlt zusaetzlich das Team-Kontingent */
+async function zielFrei(eltern: Knoten, frei: number): Promise<number> {
+  if (eltern.art !== 'team') return frei
+  const t = await teamStand(eltern.team.team_id)
+  return t?.free != null ? Math.min(frei, t.free) : frei
+}
+/** Besteht der Ordnerbaum nur aus Dateien und Ordnern des Nutzers? (sonst darf er das Team nicht mit ihnen verlassen) */
+async function teilbaumNurEigen(id: number, userId: number): Promise<boolean> {
+  const ids = await unterOrdner(id)
+  const fremd = await q1<{ n: string }>(
+    `SELECT (SELECT count(*) FROM files WHERE folder_id = ANY($1::int[]) AND user_id <> $2)
+      + (SELECT count(*) FROM folders WHERE id = ANY($1::int[]) AND user_id <> $2) AS n`,
+    [ids, userId]
   )
+  return Number(fremd?.n || 0) === 0
 }
 
 interface Teilfehler {
@@ -716,13 +783,27 @@ interface Teilfehler {
   status: number
 }
 
-async function dateiKopieren(c: DavKontext, f: DateiZeile2, ordner: number | null, name: string, lim: Awaited<ReturnType<typeof limiten>>) {
+/** `vorAnlegen` laeuft, nachdem der Inhalt kopiert ist und bevor die Datei angelegt wird (hier wird ein Ziel ersetzt) */
+async function dateiKopieren(
+  c: DavKontext,
+  f: DateiZeile2,
+  ordner: number | null,
+  name: string,
+  lim: Awaited<ReturnType<typeof limiten>>,
+  vorAnlegen?: () => Promise<void>
+) {
   const quelle = await q1<{ verschluesselt: boolean; mime: string }>('SELECT verschluesselt, mime FROM files WHERE id = $1', [f.id])
   let g
   try {
     g = await schreiben(lesen(f.ablage), lim.fuerSchreiben)
   } catch (e: any) {
     if (e?.code === 'ZU_GROSS') throw zuGrossFehler(lim)
+    throw e
+  }
+  try {
+    await vorAnlegen?.()
+  } catch (e) {
+    await loeschen(g.schluessel).catch(() => {})
     throw e
   }
   await dateiAnlegen(
@@ -765,8 +846,9 @@ async function ordnerKopieren(
       if (k.art === 'datei') await dateiKopieren(c, k.row, neu.id, k.anzeige, lim)
       else if (k.art === 'ordner') await ordnerKopieren(c, k, knotenNeu, k.anzeige, true, fehlerListe, p, lim)
     } catch (e: any) {
-      fehlerListe.push({ pfad: p, status: e instanceof DavFehler ? e.status : 500 })
-      if (!(e instanceof DavFehler)) console.error('[vylariscloud] WebDAV COPY:', e?.message || e)
+      const status = statusVon(e)
+      fehlerListe.push({ pfad: p, status })
+      if (status === 500) console.error('[vylariscloud] WebDAV COPY:', e?.message || e)
     }
   }
 }
@@ -798,7 +880,8 @@ async function verschiebenKopieren(c: DavKontext, teile: string[], kopie: boolea
     throw davFehler(403, 'Ein Ordner kann nicht in sich selbst liegen.', 'A folder cannot be inside itself.')
   if (quelle.art === 'ordner' && !ziel.knoten && ziel.eltern && gleicherKnoten(ziel.eltern, quelle))
     throw davFehler(403, 'Ein Ordner kann nicht in sich selbst liegen.', 'A folder cannot be inside itself.')
-  if (!ziel.knoten && ziel.kollision)
+  // Umbenennung nur der Gross-/Kleinschreibung (m1.txt -> M1.TXT): die "Kollision" ist die Quelle selbst, das ist erlaubt
+  if (!ziel.knoten && ziel.kollision && (kopie || !gleicherKnoten(ziel.kollision, quelle)))
     throw davFehler(409, 'Es gibt schon einen Eintrag mit diesem Namen (Groß-/Kleinschreibung).', 'An entry with this name already exists (case-insensitive).')
   const eltern = ziel.knoten ? ziel.kette[ziel.kette.length - 2]! : ziel.eltern!
   const zielName = ziel.name
@@ -826,24 +909,30 @@ async function verschiebenKopieren(c: DavKontext, teile: string[], kopie: boolea
   if (!kopie) await schreibzugriff(c, { ziele: [quelle], mitNachkommen: [quelle] })
   const status = ziel.knoten ? 204 : 201
   const locationKopf = { Location: hrefVon(zT, quelle.art === 'ordner'), 'Content-Length': 0 }
+  const zielOrdner = ordnerIdVon(eltern)
+  // Ein vorhandenes Ziel kommt erst in den Papierkorb, wenn alle Pruefungen bestanden sind (ein fehlgeschlagener Befehl
+  // darf das Ziel nicht veraendern). Der Papierkorb zaehlt weiter zum Kontingent, das Ziel bringt also keinen Platz zurueck.
+  const zielLoeschen = async () => {
+    if (ziel.knoten) await knotenLoeschen(c, ziel.knoten)
+  }
 
   return await seriell(`${behaelterId(eltern)}/${nameSchluessel(zielName)}`, async () => {
-    // Ziel (falls vorhanden) in den Papierkorb
-    if (ziel.knoten) await knotenLoeschen(c, ziel.knoten)
     if (kopie) {
       const fehlerListe: Teilfehler[] = []
       if (quelle.art === 'datei') {
-        const lim = await limiten(c)
-        if (Number(quelle.row.size) > lim.frei) throw zuGrossFehler({ frei: lim.frei, datei: Infinity })
-        await dateiKopieren(c, quelle.row, ordnerIdVon(eltern), zielName, lim)
+        const lim = await limiten(c, 0, zielOrdner)
+        if (Number(quelle.row.size) > (await zielFrei(eltern, lim.frei))) throw zuGrossFehler({ frei: lim.frei, datei: Infinity })
+        // das Ziel wird erst ersetzt, wenn der Inhalt kopiert ist
+        await dateiKopieren(c, quelle.row, zielOrdner, zielName, lim, zielLoeschen)
       } else {
         const tief = tiefKopf !== '0'
-        const lim = await limiten(c)
-        if (tief && Number(await ordnerGroesse(await unterOrdner(quelle.row.id))) > lim.frei)
+        const lim = await limiten(c, 0, zielOrdner)
+        if (tief && Number(await ordnerGroesse(await unterOrdner(quelle.row.id))) > (await zielFrei(eltern, lim.frei)))
           throw davFehler(507, 'Nicht genug Speicherplatz.', 'Insufficient storage.')
+        await zielLoeschen()
         await ordnerKopieren(c, quelle, eltern, zielName, tief, fehlerListe, zT, lim)
       }
-      await ordnerBeruehren(ordnerIdVon(eltern))
+      await ordnerBeruehren(zielOrdner)
       if (fehlerListe.length) {
         let xml = '<D:multistatus xmlns:D="DAV:">'
         for (const f of fehlerListe)
@@ -861,40 +950,83 @@ async function verschiebenKopieren(c: DavKontext, teile: string[], kopie: boolea
           ? quelle.row.mime
           : typErkennen(Buffer.alloc(0), zielName, quelle.row.mime)
       const art = (quelle.row as any).verschluesselt ? 'datei' : artVon(mime, zielName)
-      await q('UPDATE files SET name = $2, folder_id = $3, mime = $4, art = $5, geaendert_at = now() WHERE id = $1', [
-        quelle.row.id,
-        zielName,
-        ordnerIdVon(eltern),
-        mime,
-        art
-      ])
+      // Team-Kontingent des Ziels: die Datei zaehlt im Ziel-Team neu (ausser sie liegt dort schon)
+      const vonTeam = await teamVonOrdner(quelle.row.folder_id)
+      await verschiebenPruefen({ ordner: zielOrdner }, Number(quelle.row.size), vonTeam, async (x) => {
+        await zielLoeschen()
+        await x('UPDATE files SET name = $2, folder_id = $3, mime = $4, art = $5, geaendert_at = now() WHERE id = $1', [
+          quelle.row.id,
+          zielName,
+          zielOrdner,
+          mime,
+          art
+        ])
+      })
       await sperrenEntfernen([`f${quelle.row.id}`])
       await ordnerBeruehren(quelle.row.folder_id)
-      await ordnerBeruehren(ordnerIdVon(eltern))
+      await ordnerBeruehren(zielOrdner)
       return senden(ev, status, null, locationKopf)
     }
     // Ordner verschieben
     const id = quelle.row.id
     const r = await ordnerRecht(c.u.id, id)
+    const vonTeam = r?.team_id ?? null
+    let zielTeam: number | null = null
     if (eltern.art === 'teams') throw davFehler(403, 'Hier lassen sich keine Ordner ablegen.', 'Folders cannot be placed here.')
     if (eltern.art === 'team') {
-      await teamSetzen(id, eltern.team.team_id)
-      await q('UPDATE folders SET name = $2, parent_id = NULL, geaendert_at = now() WHERE id = $1', [id, zielName])
+      zielTeam = eltern.team.team_id
     } else if (eltern.art === 'wurzel') {
       if (r?.team_id && !r.eigen)
         throw davFehler(403, 'Ein Team-Ordner bleibt im Team.', 'A team folder stays in the team.')
-      if (r?.team_id) await teamSetzen(id, null)
-      await q('UPDATE folders SET name = $2, parent_id = NULL, geaendert_at = now() WHERE id = $1', [id, zielName])
     } else if (eltern.art === 'ordner') {
       const zr = await ordnerRecht(c.u.id, eltern.row.id)
       if (!zr?.hineinladen) throw davFehler(403, 'Im Ziel darfst du das nicht anlegen.', 'You cannot create this at the destination.')
       if (!zr.team_id && quelle.row.user_id !== c.u.id)
         throw davFehler(403, 'Fremde Ordner bleiben im Team.', "Other people's folders stay in the team.")
-      await teamSetzen(id, zr.team_id)
-      await q('UPDATE folders SET name = $2, parent_id = $3, geaendert_at = now() WHERE id = $1', [id, zielName, eltern.row.id])
+      zielTeam = zr.team_id
     }
+    let bytes = 0
+    if (zielTeam !== vonTeam) {
+      // Der Teilbaum wechselt das Team: Inhalte anderer Mitglieder wuerden sonst fuer ihre Besitzer unsichtbar (oder an ein
+      // anderes Team gehen) und der Zuwachs muss ins Team-Kontingent des Ziels passen
+      if (!(await teilbaumNurEigen(id, c.u.id)))
+        throw davFehler(
+          403,
+          'Der Ordner enthält Dateien oder Ordner anderer Mitglieder und bleibt im Team.',
+          "The folder contains other members' files or folders and stays in the team."
+        )
+      if (zielTeam) {
+        bytes = await ordnerBaumBytes(id)
+        await kontingentPruefen(null, bytes, { zielTeam, vonTeam, mehrere: true })
+      }
+    }
+    // Zyklenpruefung, Kontingent und Umhaengen gemeinsam unter einer Sperre (im Prozess und in der Datenbank): zwei
+    // gegenlaeufige Verschiebungen (A nach B/A und B nach A/B) duerfen sich nicht gegenseitig zum Zyklus machen
+    await seriell('ordner-umhaengen', () =>
+      mitKontingentSperre(null, zielTeam && zielTeam !== vonTeam ? zielTeam : null, async (x) => {
+        await x('SELECT pg_advisory_lock($1, $2)', [7103, 1])
+        if (eltern.art === 'ordner') {
+          const zyklus = await x(
+            `WITH RECURSIVE o(id, parent_id, n) AS (SELECT id, parent_id, 0 FROM folders WHERE id = $1
+              UNION ALL SELECT f.id, f.parent_id, o.n + 1 FROM folders f JOIN o ON f.id = o.parent_id WHERE o.n < 64)
+            SELECT 1 FROM o WHERE id = $2`,
+            [eltern.row.id, id]
+          )
+          if (zyklus.length)
+            throw davFehler(403, 'Ein Ordner kann nicht in sich selbst liegen.', 'A folder cannot be inside itself.')
+        }
+        if (zielTeam && zielTeam !== vonTeam) await kontingentPruefen(null, bytes, { zielTeam, vonTeam, mehrere: true, x })
+        await zielLoeschen()
+        await x(
+          `WITH RECURSIVE unter(id) AS (SELECT $1::int UNION SELECT f.id FROM folders f JOIN unter ON f.parent_id = unter.id)
+          UPDATE folders SET team_id = $2 WHERE id IN (SELECT id FROM unter)`,
+          [id, zielTeam]
+        )
+        await x('UPDATE folders SET name = $2, parent_id = $3, geaendert_at = now() WHERE id = $1', [id, zielName, zielOrdner])
+      })
+    )
     await ordnerBeruehren(quelle.row.parent_id)
-    await ordnerBeruehren(ordnerIdVon(eltern))
+    await ordnerBeruehren(zielOrdner)
     return senden(ev, status, null, locationKopf)
   })
 }
@@ -906,7 +1038,7 @@ async function lockMethode(c: DavKontext, teile: string[]) {
   schreibenPruefen(c)
   const ev = c.event
   const timeout = timeoutAus(ev)
-  const body = await koerperLesen(ev)
+  const body = await koerperLesen(ev, MAX_XML)
   const einmal = (s: any) => ({
     ok: true,
     xml: `<D:prop xmlns:D="DAV:"><D:lockdiscovery>${sperreXml(s, c, hrefVon(teile, false))}</D:lockdiscovery></D:prop>`
@@ -948,7 +1080,8 @@ async function lockMethode(c: DavKontext, teile: string[]) {
     a = await aufloesen(c, teile)
     if (!a.knoten) throw davFehler(409, 'Anlegen fehlgeschlagen.', 'Creation failed.')
   } else {
-    if (!(await darfAendern(c, a.knoten)) && !(a.knoten.art === 'ordner' && (await darfHinein(c, a.knoten)).datei))
+    // sperren darf, wer die Ressource auch aendern darf (Ordner: nur Besitzer und Team-Leitung, nicht jedes Mitglied)
+    if (!(await darfAendern(c, a.knoten)))
       throw davFehler(403, 'Dafür fehlt dir die Berechtigung.', 'You do not have permission for this.')
   }
   const k = a.knoten
@@ -960,6 +1093,7 @@ function collect(k: XmlKnoten): string {
 }
 
 async function unlockMethode(c: DavKontext, teile: string[]) {
+  schreibenPruefen(c)
   const ev = c.event
   const token = /^<?\s*(opaquelocktoken:[0-9a-fA-F-]{8,64})\s*>?$/.exec(String(getRequestHeader(ev, 'lock-token') || '').trim())?.[1]
   if (!token) throw davFehler(400, 'Lock-Token fehlt.', 'Lock-Token header is missing.')
