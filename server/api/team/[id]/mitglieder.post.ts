@@ -40,7 +40,7 @@ export default defineEventHandler(async (event) => {
         `A team can have at most ${MAX_MITGLIEDER} members.`
       )
     await c.query("INSERT INTO team_mitglieder (team_id, user_id, rolle) VALUES ($1, $2, 'mitglied')", [teamId, ziel.id])
-  })
+  }, { zugang: z, leitung: true })
   await ereignis(
     'team_mitglied_hinzugefuegt',
     ich.id,

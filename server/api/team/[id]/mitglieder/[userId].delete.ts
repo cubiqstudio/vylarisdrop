@@ -1,9 +1,10 @@
 import { clientIp, requireUser } from '../../../../utils/auth'
 import { ereignis } from '../../../../utils/db'
-import { idParam, imTeamSchreiben, tempo, teamZugang } from '../../../../utils/teamAnsicht'
+import { idParam, imTeamSchreiben, teamOrdnerUebergeben, tempo, teamZugang } from '../../../../utils/teamAnsicht'
 
 // Mitglied entfernen: die Leitung (oder ein Admin) jedes Mitglied, jedes Mitglied sich selbst ("Team verlassen").
-// Die letzte Leitung bleibt (409). Dateien des Entfernten bleiben im Team-Ordner (Besitz wie bisher, siehe ordnerRecht).
+// Die letzte Leitung bleibt (409). Dateien des Entfernten bleiben im Team-Ordner; seine Team-Ordner gehen an ein verbleibendes Mitglied (teamOrdnerUebergeben),
+// und ordnerRecht verweigert Nicht-Mitgliedern jeden Zugriff auf Team-Ordner.
 export default defineEventHandler(async (event) => {
   const ich = await requireUser(event)
   const teamId = idParam(event, 'id')
@@ -39,7 +40,9 @@ export default defineEventHandler(async (event) => {
         )
     }
     await c.query('DELETE FROM team_mitglieder WHERE team_id = $1 AND user_id = $2', [teamId, ziel])
-  })
+    // Wer nicht mehr im Team ist, behält keine Kontrolle über Team-Ordner: sie gehen an ein verbleibendes Mitglied
+    await teamOrdnerUebergeben(c, teamId, ziel, ich.id)
+  }, { zugang: z, leitung: !selbst })
   await ereignis(
     selbst ? 'team_verlassen' : 'team_mitglied_entfernt',
     ich.id,

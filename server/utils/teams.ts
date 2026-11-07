@@ -98,7 +98,11 @@ export async function ordnerRecht(userId: number, ordnerId: number): Promise<Ord
       const leitung = m.rolle === 'leitung'
       return { ...o, eigen, hineinladen: true, verwalten: eigen || leitung, leitung }
     }
+    // Team-Ordner: wer nicht (mehr) Mitglied ist, hat keinen Zugriff darauf – auch nicht als Ersteller.
+    // Sonst könnte ein entfernter Ersteller den Ordner aus dem Team lösen, umbenennen oder löschen.
+    return null
   }
+  // Kein Team-Ordner (oder Pro "teams" aus): nur der Ersteller
   return eigen ? { ...o, team_id: null, eigen, hineinladen: true, verwalten: true, leitung: false } : null
 }
 

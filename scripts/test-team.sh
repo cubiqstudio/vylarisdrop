@@ -78,13 +78,13 @@ echo "== Vorbereitung =="
 curl -sf "$BASE/api/public/health" >/dev/null || { echo "Instanz unter $BASE nicht erreichbar"; exit 2; }
 PSQL "DELETE FROM teams WHERE name LIKE 'TT-%'" >/dev/null
 PSQL "DELETE FROM users WHERE username LIKE 'tmt\_%' OR username LIKE 'zzpre\_%'" >/dev/null
-for n in lead m1 m2 m3 out lead2 rl lead4 neu lead5 lead6; do mk_user "tmt_$n"; login "tmt_$n"; done
+for n in lead m1 m2 m3 out lead2 rl lead4 neu lead5 lead6 k1 k2 k3 k4; do mk_user "tmt_$n"; login "tmt_$n"; done
 mk_user tmt_adm admin
 for n in $(seq 1 12); do mk_user "tmt_zq$n"; done
 mk_user zzpre_x; mk_user tmt_zzpre
-LEAD="$T/c-tmt_lead"; M1="$T/c-tmt_m1"; M2="$T/c-tmt_m2"; M3="$T/c-tmt_m3"; OUT="$T/c-tmt_out"; LEAD2="$T/c-tmt_lead2"; RL="$T/c-tmt_rl"; LEAD4="$T/c-tmt_lead4"; NEU="$T/c-tmt_neu"; LEAD5="$T/c-tmt_lead5"; LEAD6="$T/c-tmt_lead6"
+LEAD="$T/c-tmt_lead"; M1="$T/c-tmt_m1"; M2="$T/c-tmt_m2"; M3="$T/c-tmt_m3"; OUT="$T/c-tmt_out"; LEAD2="$T/c-tmt_lead2"; RL="$T/c-tmt_rl"; LEAD4="$T/c-tmt_lead4"; NEU="$T/c-tmt_neu"; LEAD5="$T/c-tmt_lead5"; LEAD6="$T/c-tmt_lead6"; K1="$T/c-tmt_k1"; K2="$T/c-tmt_k2"; K3="$T/c-tmt_k3"; K4="$T/c-tmt_k4"
 ULEAD=$(uid_of tmt_lead); UM1=$(uid_of tmt_m1); UM2=$(uid_of tmt_m2); UM3=$(uid_of tmt_m3); UOUT=$(uid_of tmt_out); ULEAD2=$(uid_of tmt_lead2)
-URL=$(uid_of tmt_rl); ULEAD4=$(uid_of tmt_lead4); UNEU=$(uid_of tmt_neu); ULEAD5=$(uid_of tmt_lead5); ULEAD6=$(uid_of tmt_lead6); UADM=$(uid_of tmt_adm); UADMIN=$(uid_of admin)
+URL=$(uid_of tmt_rl); ULEAD4=$(uid_of tmt_lead4); UNEU=$(uid_of tmt_neu); ULEAD5=$(uid_of tmt_lead5); ULEAD6=$(uid_of tmt_lead6); UK1=$(uid_of tmt_k1); UK2=$(uid_of tmt_k2); UK3=$(uid_of tmt_k3); UK4=$(uid_of tmt_k4); UADM=$(uid_of tmt_adm); UADMIN=$(uid_of admin)
 [ -n "$ULEAD" ] && [ -n "$UADM" ] && [ -n "$UNEU" ] || { echo "Konten konnten nicht angelegt werden"; exit 2; }
 
 echo "== Ohne Anmeldung =="
@@ -260,7 +260,7 @@ sleep 0.3
 team_sicht "$LEAD" "$TA"
 eq "Speicher nach Upload (m1, 700000 B) = 700000" "$(tj speicher.belegt)" 700000
 eq "Speicher: frei = Limit - belegt" "$(tj speicher.frei)" $((10485760 - 700000))
-eq "Speicher: Prozent 6.7" "$(tj speicher.prozent)" 6.7
+eq "Speicher: Prozent 6.6 (abgerundet)" "$(tj speicher.prozent)" 6.6
 eq "Anteil m1 = 700000" "$(py "[m['belegt'] for m in d['mitglieder'] if m['name']=='tmt_m1'][0]" <"$T/t.json")" 700000
 eq "Anteil lead = 0" "$(py "[m['belegt'] for m in d['mitglieder'] if m['name']=='tmt_lead'][0]" <"$T/t.json")" 0
 eq "Ordneranzahl Alpha = 1" "$(tj ordner)" 1
@@ -421,6 +421,99 @@ wait
 ERFOLG=$(cat "$T"/par20? 2>/dev/null | grep -c '^200$'); KONFLIKT=$(cat "$T"/par20? 2>/dev/null | grep -c '^409$')
 eq "parallel: Platz fuer $((200 - AKT)), erfolgreich $ERFOLG (Rest 409: $KONFLIKT)" "$ERFOLG/$KONFLIKT" "$((200 - AKT))/$((5 - (200 - AKT)))"
 eq "parallel: nie ueber 200" "$(zahl_mitglieder "$TD")" 200
+
+echo "== Korrekturen aus der Pruefung =="
+# Befund 1: entfernte Mitglieder behalten keine Kontrolle ueber Team-Ordner (Ersteller eingeschlossen)
+admin_team '{"aktion":"anlegen","name":"TT-Eps"}'; TE=$(j id <"$T/b")
+mitglied_admin "$TE" "$UK1" '"leitung"'; mitglied_admin "$TE" "$UK2" '"leitung"'; mitglied_admin "$TE" "$UK3"
+api "$K2" POST /api/folders "{\"name\":\"Proj2\",\"team_id\":$TE}"; EO=$(py "d['ordner']['id']" <"$T/b")
+api "$K3" POST /api/folders "{\"name\":\"Sub\",\"parent_id\":$EO}"; ES=$(py "d['ordner']['id']" <"$T/b")
+eq "Vorbereitung: Team-Ordner und Unterordner im Team" "$(PSQL "SELECT count(*) FROM folders WHERE id IN ($EO,$ES) AND team_id=$TE")" 2
+api "$K1" DELETE "/api/team/$TE/mitglieder/$UK2"; eq "Leitung entfernt andere Leitung (Ordner-Ersteller) -> 200" "$CODE" 200
+api "$K2" PATCH "/api/folders/$EO" '{"team_id":null}'; eq "Entfernter: Ordner aus Team loesen -> 404" "$CODE" 404
+api "$K2" PATCH "/api/folders/$EO" '{"name":"gekapert"}'; eq "Entfernter: umbenennen -> 404" "$CODE" 404
+api "$K2" PATCH "/api/folders/$EO" '{"public":true}'; eq "Entfernter: oeffentlich schalten -> 404" "$CODE" 404
+api "$K2" DELETE "/api/folders/$EO"; eq "Entfernter: Ordner loeschen -> 404" "$CODE" 404
+eq "Ordner und Unterordner blieben im Team, Name unveraendert, nicht oeffentlich" "$(PSQL "SELECT count(*) FROM folders WHERE id IN ($EO,$ES) AND team_id=$TE AND name IN ('Proj2','Sub') AND NOT public")" 2
+eq "Ordner des Entfernten ging an die entfernende Leitung" "$(PSQL "SELECT user_id FROM folders WHERE id=$EO")" "$UK1"
+eq "Ordner anderer Mitglieder blieben bei ihrem Ersteller" "$(PSQL "SELECT user_id FROM folders WHERE id=$ES")" "$UK3"
+api "$K3" PATCH "/api/folders/$ES" '{"name":"Sub-neu"}'; eq "Verbliebenes Mitglied verwaltet seinen Ordner weiter" "$CODE" 200
+api "$K2" GET /api/folders; hasnt "Entfernter sieht den Team-Ordner nicht mehr" "$(body)" '"Proj2"'
+# Admin entfernt Mitglied ueber die Admin-Seite
+api "$K3" POST /api/folders "{\"name\":\"K3dir\",\"parent_id\":$EO}"; E3=$(py "d['ordner']['id']" <"$T/b")
+mitglied_admin "$TE" "$UK3" null; eq "Admin entfernt Mitglied (Admin-Seite) -> 200" "$CODE" 200
+api "$K3" PATCH "/api/folders/$E3" '{"team_id":null}'; eq "Admin-Entfernter: Ordner loesen -> 404" "$CODE" 404
+api "$K3" DELETE "/api/folders/$E3"; eq "Admin-Entfernter: Ordner loeschen -> 404" "$CODE" 404
+eq "Team-Ordner des Admin-Entfernten gehen an ein Mitglied (Leitung)" "$(PSQL "SELECT user_id FROM folders WHERE id=$E3")" "$UK1"
+# Austritt
+mitglied_admin "$TE" "$UK2" '"leitung"'
+api "$K2" POST /api/folders "{\"name\":\"Proj3\",\"team_id\":$TE}"; E4=$(py "d['ordner']['id']" <"$T/b")
+api "$K2" DELETE "/api/team/$TE/mitglieder/$UK2"; eq "Leitung verlaesst das Team (andere Leitung da) -> 200" "$CODE" 200
+api "$K2" PATCH "/api/folders/$E4" '{"team_id":null}'; eq "Ausgetretener: Ordner loesen -> 404" "$CODE" 404
+eq "Ordner des Ausgetretenen ging an die verbleibende Leitung" "$(PSQL "SELECT user_id FROM folders WHERE id=$E4")" "$UK1"
+
+# Befund 2: Berechtigung wird nach dem Sperren erneut geprueft (Rennen mit Entfernen/Herabstufen der Leitung)
+mitglied_admin "$TE" "$UK2" '"leitung"'; mitglied_admin "$TE" "$UK4"
+sperre() { # <Sekunden> <SQL nach dem Sperren>: haelt das Team kurz gesperrt und fuehrt dann SQL aus (Hintergrund)
+  PSQL "BEGIN; SELECT id FROM teams WHERE id=$TE FOR UPDATE; SELECT pg_sleep($1); $2 COMMIT;" >/dev/null &
+}
+sperre 3 "DELETE FROM team_mitglieder WHERE team_id=$TE AND user_id=$UK2;"
+sleep 0.8
+api "$K2" POST "/api/team/$TE/mitglieder" '{"name":"tmt_k3"}'; eq "Rennen: gerade entfernte Leitung fuegt hinzu -> 404" "$CODE" 404
+wait
+eq "Rennen: kein neues Mitglied" "$(PSQL "SELECT count(*) FROM team_mitglieder WHERE team_id=$TE AND user_id=$UK3")" 0
+mitglied_admin "$TE" "$UK2" '"leitung"'
+sperre 3 "UPDATE team_mitglieder SET rolle='mitglied' WHERE team_id=$TE AND user_id=$UK2;"
+sleep 0.8
+api "$K2" PATCH "/api/team/$TE/mitglieder/$UK4" '{"rolle":"leitung"}'; eq "Rennen: herabgestufte Leitung befoerdert -> 403" "$CODE" 403
+wait
+eq "Rennen: k4 blieb Mitglied" "$(rolle_in "$TE" "$UK4")" mitglied
+mitglied_admin "$TE" "$UK2" '"leitung"'
+sperre 3 "UPDATE team_mitglieder SET rolle='mitglied' WHERE team_id=$TE AND user_id=$UK2;"
+sleep 0.8
+api "$K2" DELETE "/api/team/$TE/mitglieder/$UK4"; eq "Rennen: herabgestufte Leitung entfernt anderes Mitglied -> 403" "$CODE" 403
+wait
+eq "Rennen: k4 weiter im Team" "$(rolle_in "$TE" "$UK4")" mitglied
+mitglied_admin "$TE" "$UK2" '"mitglied"'
+sperre 2 "DELETE FROM team_mitglieder WHERE team_id=$TE AND user_id=$UK2;"
+sleep 0.6
+api "$K2" DELETE "/api/team/$TE/mitglieder/$UK2"; eq "Rennen: schon entferntes Mitglied verlaesst nochmal -> 404" "$CODE" 404
+wait
+
+# Befund 3: 200er-Grenze auch bei Admin-Seite und SSO-Aufnahme
+PSQL "DELETE FROM team_mitglieder WHERE team_id=$TE" >/dev/null
+PSQL "INSERT INTO team_mitglieder(team_id,user_id,rolle) VALUES ($TE,$UK1,'leitung')" >/dev/null
+PSQL "INSERT INTO team_mitglieder(team_id,user_id) SELECT $TE, id FROM users WHERE username LIKE 'tmt\_bulk%' ORDER BY id LIMIT 199" >/dev/null
+eq "Epsilon: 200 Mitglieder" "$(zahl_mitglieder "$TE")" 200
+mitglied_admin "$TE" "$UK3"; eq "Admin-Seite: 201. Mitglied -> 409" "$CODE" 409
+has "Admin-Seite: Meldung nennt die Grenze" "$(msg)" "200"
+eq "Admin-Seite: weiter 200" "$(zahl_mitglieder "$TE")" 200
+UB2=$(uid_of tmt_bulk2)
+mitglied_admin "$TE" "$UB2" '"leitung"'; eq "Admin-Seite: Rolle eines vorhandenen Mitglieds aendern bei 200 -> 200" "$CODE" 200
+eq "Admin-Seite: Rolle uebernommen" "$(rolle_in "$TE" "$UB2")" leitung
+api "$K1" GET /api/team; eq "Leitung sieht alle 200 und mitgliederZahl 200" "$(py "[len(t['mitglieder'])==t['mitgliederZahl']==200 for t in d['teams'] if t['id']==$TE][0]" <"$T/b")" True
+
+# Befund 5: Prozent nie 100 bei unvollem Team, Schwellen stimmen mit der Stufe ueberein
+PSQL "DELETE FROM team_mitglieder WHERE team_id=$TE" >/dev/null
+PSQL "INSERT INTO team_mitglieder(team_id,user_id,rolle) VALUES ($TE,$UK1,'leitung')" >/dev/null
+PSQL "UPDATE folders SET team_id=$TE WHERE id=$EO" >/dev/null
+BELEGT=$(PSQL "SELECT coalesce(sum(size),0) FROM files WHERE folder_id=$EO")
+if [ "$BELEGT" = 0 ]; then
+  head -c 700000 /dev/urandom >"$T/f9.bin"; up "$K1" "$T/f9.bin" "$EO" >/dev/null; BELEGT=$(PSQL "SELECT coalesce(sum(size),0) FROM files WHERE folder_id=$EO")
+fi
+PSQL "UPDATE teams SET quota_bytes=$((BELEGT + 1)) WHERE id=$TE" >/dev/null
+team_sicht "$K1" "$TE"
+eq "1 B frei: prozent 99.9 (nicht 100)" "$(tj speicher.prozent)" 99.9
+eq "1 B frei: Stufe kritisch, nicht ausgeschoepft" "$(tj speicher.stufe)/$(tj speicher.ausgeschoepft)" "kritisch/false"
+PSQL "UPDATE teams SET quota_bytes=$BELEGT WHERE id=$TE" >/dev/null
+team_sicht "$K1" "$TE"; eq "genau voll: prozent 100, Stufe voll" "$(tj speicher.prozent)/$(tj speicher.stufe)" "100/voll"
+PSQL "UPDATE teams SET quota_bytes=$(( BELEGT * 100000 / 79960 )) WHERE id=$TE" >/dev/null
+team_sicht "$K1" "$TE"; eq "79,96 %: prozent 79.9, Stufe ok" "$(tj speicher.prozent)/$(tj speicher.stufe)" "79.9/ok"
+PSQL "UPDATE teams SET quota_bytes=$(( BELEGT * 100000 / 94960 )) WHERE id=$TE" >/dev/null
+team_sicht "$K1" "$TE"; eq "94,96 %: prozent 94.9, Stufe warn" "$(tj speicher.prozent)/$(tj speicher.stufe)" "94.9/warn"
+PSQL "UPDATE teams SET quota_bytes=$(( BELEGT * 5 / 4 )) WHERE id=$TE" >/dev/null
+team_sicht "$K1" "$TE"; eq "genau 80 %: prozent 80, Stufe warn" "$(tj speicher.prozent)/$(tj speicher.stufe)" "80/warn"
+PSQL "UPDATE teams SET quota_bytes=NULL WHERE id=$TE" >/dev/null
 
 echo "== Rate-Limits =="
 # Hinzufuegen: 30 je Stunde und Nutzer (Fehlversuche zaehlen mit)

@@ -21,6 +21,7 @@ export default defineEventHandler(async (event) => {
   const z = await teamZugang(ich, teamId)
   nurVerwalten(z)
   tempo(`team-kand:${ich.id}`, 60, 60)
+  tempo(`team-kand-h:${ich.id}`, 400, 3600) // bremst systematisches Durchsuchen der Kontenliste
   const { q: suche } = teamEingabe(Frage, { q: getQuery(event).q })
   const muster = suche.toLowerCase().replace(/[\\%_]/g, '\\$&')
   const r = await q<{ username: string }>(

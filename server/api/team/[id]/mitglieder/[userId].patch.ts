@@ -39,7 +39,7 @@ export default defineEventHandler(async (event) => {
         )
     }
     await c.query('UPDATE team_mitglieder SET rolle = $3 WHERE team_id = $1 AND user_id = $2', [teamId, ziel, rolle])
-  })
+  }, { zugang: z, leitung: true })
   await ereignis('team_rolle_geaendert', ich.id, { team_id: teamId, konto_id: ziel, rolle }, clientIp(event))
   return { ok: true }
 })

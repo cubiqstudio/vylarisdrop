@@ -81,13 +81,32 @@ export function tempo(schluessel: string, max: number, fensterSek: number): void
     throw fehler(429, 'Zu viele Anfragen – bitte kurz warten.', 'Too many requests – please wait a moment.')
 }
 
-/** Schreibvorgang auf Mitglieder eines Teams: eine Transaktion, die das Team sperrt (verhindert Rennen bei 200er-Grenze und letzter Leitung). */
-export async function imTeamSchreiben<T>(teamId: number, fn: (c: pg.PoolClient) => Promise<T>): Promise<T> {
+/**
+ * Schreibvorgang auf Mitglieder eines Teams: eine Transaktion, die das Team sperrt (verhindert Rennen bei 200er-Grenze und
+ * letzter Leitung). Mit `pruef` wird die Berechtigung des Aufrufers NACH dem Sperren erneut aus der Datenbank gelesen: wer
+ * zwischen Prüfung und Sperre entfernt oder herabgestuft wurde, führt die Aktion nicht mehr aus (Admins ausgenommen).
+ */
+export async function imTeamSchreiben<T>(
+  teamId: number,
+  fn: (c: pg.PoolClient) => Promise<T>,
+  pruef?: { zugang: TeamZugang; leitung: boolean }
+): Promise<T> {
   const c = await db().connect()
   try {
     await c.query('BEGIN')
     const t = await c.query('SELECT id FROM teams WHERE id = $1 FOR UPDATE', [teamId])
     if (!t.rowCount) throw fehler(404, 'Team nicht gefunden.', 'Team not found.')
+    if (pruef && !pruef.zugang.admin) {
+      const m = (
+        await c.query('SELECT rolle FROM team_mitglieder WHERE team_id = $1 AND user_id = $2', [
+          teamId,
+          pruef.zugang.nutzer.id
+        ])
+      ).rows[0]
+      if (!m) throw fehler(404, 'Team nicht gefunden.', 'Team not found.')
+      if (pruef.leitung && m.rolle !== 'leitung')
+        throw fehler(403, 'Das darf nur die Team-Leitung.', 'Only the team lead may do this.')
+    }
     const r = await fn(c)
     await c.query('COMMIT')
     return r
@@ -97,6 +116,27 @@ export async function imTeamSchreiben<T>(teamId: number, fn: (c: pg.PoolClient) 
   } finally {
     c.release()
   }
+}
+
+/**
+ * Team-Ordner eines ausscheidenden Mitglieds an ein verbleibendes Mitglied übergeben (bevorzugt `bevorzugt`, dann die
+ * Leitung, dienstältestes Mitglied zuerst). Nur innerhalb von imTeamSchreiben aufrufen. Ohne anderes Mitglied bleibt alles
+ * wie es ist. Die Dateien bleiben bei ihren Besitzern.
+ */
+export async function teamOrdnerUebergeben(
+  c: pg.PoolClient,
+  teamId: number,
+  ausscheidend: number,
+  bevorzugt: number | null
+): Promise<void> {
+  const neu = (
+    await c.query(
+      `SELECT user_id FROM team_mitglieder WHERE team_id = $1 AND user_id <> $2
+       ORDER BY (user_id = $3) DESC, (rolle = 'leitung') DESC, created_at, user_id LIMIT 1`,
+      [teamId, ausscheidend, bevorzugt]
+    )
+  ).rows[0]
+  if (neu) await c.query('UPDATE folders SET user_id = $3 WHERE team_id = $1 AND user_id = $2', [teamId, ausscheidend, neu.user_id])
 }
 
 export interface TeamSpeicher {
@@ -199,7 +239,8 @@ export async function teamsAnsicht(nutzer: Nutzer): Promise<TeamAnsicht[]> {
         limit: lim,
         belegt: gesamt,
         frei: lim == null ? null : Math.max(0, lim - gesamt),
-        prozent: lim == null ? null : Math.round((gesamt / lim) * 1000) / 10,
+        // abrunden (ganzzahlig, ohne Gleitkomma-Fehler): 100 % zeigt nur ein volles Team, Schwellen stimmen mit stufeVon überein
+        prozent: lim == null ? null : Number((BigInt(gesamt) * 1000n) / BigInt(lim)) / 10,
         stufe: stufeVon(gesamt, lim),
         ausgeschoepft: lim != null && gesamt >= lim,
         sonstige: Math.max(0, gesamt - vonMitgliedern)
