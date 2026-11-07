@@ -3,7 +3,7 @@ import { getSetting, setSetting } from './settings'
 import { imHintergrund } from './benachrichtigen'
 import { boxLoeschen, boxMessen, boxNeuZaehlen, type Box } from './boxen'
 import { bucketLoeschen, bucketMessen, type Bucket } from './buckets'
-import { speicherKonfiguriert } from './speicherdienst'
+import { garageKapazitaetAbgleichen, speicherKonfiguriert } from './speicherdienst'
 
 async function warnen(
   art: 'box' | 'bucket',
@@ -66,6 +66,13 @@ export async function speicherMessen(): Promise<void> {
       console.error(`[vylariscloud] Speicher: Bucket ${b.id} nicht gemessen:`, e.message)
     }
   }
+  // Garage-Kapazität nur anheben (z. B. 1-GB-Notwert oder alte SSD-Größe nach dem Umzug auf eine größere Platte)
+  await garageKapazitaetAbgleichen(true).then(
+    (r) => {
+      if (r.geaendert) console.log(`[vylariscloud] Garage-Kapazität angepasst: ${r.alt ?? '?'} → ${r.neu} Byte`)
+    },
+    (e: any) => console.error('[vylariscloud] Garage-Kapazität nicht geprüft:', e?.message || e)
+  )
   await q("DELETE FROM speicher_verlauf WHERE zeit < now() - interval '100 days'")
   const l = await getSetting<{ zeit: number }>('speicher-zaehlen', { zeit: 0 }, true)
   if (Date.now() - l.zeit > 23 * 3600_000) {

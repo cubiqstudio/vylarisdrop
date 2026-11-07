@@ -1,6 +1,6 @@
 import { requireUser } from '../../utils/auth'
 import { getSpeicherEinst, speicherStand } from '../../utils/speicherdienst'
-import { darfAnlegen, speicherAdresse, speicherListen, speicherPlatte } from '../../utils/speicherAnsicht'
+import { darfAnlegen, speicherAdresse, speicherListen, speicherPlatte, speicherPlatten } from '../../utils/speicherAnsicht'
 
 export default defineEventHandler(async (event) => {
   const u = await requireUser(event)
@@ -16,6 +16,7 @@ export default defineEventHandler(async (event) => {
     darfAnlegen: await darfAnlegen(u),
     adresse: await speicherAdresse(event),
     platte: admin ? await speicherPlatte() : null,
+    platten: admin ? await speicherPlatten() : null,
     ...(stand.konfiguriert ? await speicherListen(u) : { boxen: [], buckets: [] })
   }
 })

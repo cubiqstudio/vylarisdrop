@@ -64,6 +64,35 @@ const vergeben = computed(() => alle.value.reduce((s, x) => s + x.kontingent, 0)
 const proz = (x: any) => (x.kontingent ? Math.min(100, (x.belegt / x.kontingent) * 100) : 0)
 const stufe = (x: any) => (proz(x) >= 99.5 ? 'voll' : proz(x) >= 80 ? 'warn' : '')
 
+const platten = computed<any>(() => d.value.platten || null)
+const freiProz = (x: any) => (x?.gesamt ? Math.round((x.frei / x.gesamt) * 100) : 0)
+const platteStufe = (x: any) => (100 - freiProz(x) >= 95 ? 'voll' : 100 - freiProz(x) >= 80 ? 'warn' : '')
+const plattenZeilen = computed(() => {
+  const p = platten.value
+  if (!p) return []
+  const gUnklar = !p.garage?.erreichbar
+  return [
+    { id: 'boxen', icon: 'box', name: t('Storage-Boxen', 'Storage boxes'), hinweis: t('SFTP, SCP und WebDAV — Ordner /speicher', 'SFTP, SCP and WebDAV — folder /speicher'), platz: p.boxen, grund: '' },
+    { id: 'garage-daten', icon: 'database', name: t('Buckets: Daten', 'Buckets: data'), hinweis: t('Objektdaten in Garage', 'Object data in Garage'), platz: p.garage?.daten, grund: gUnklar ? t('Garage antwortet nicht', 'Garage is not responding') : t('Garage meldet keinen Platz', 'Garage reports no space') },
+    { id: 'garage-meta', icon: 'gear', name: t('Buckets: Metadaten', 'Buckets: metadata'), hinweis: t('Garage-Datenbank — gehört auf die schnelle Platte (SSD)', 'Garage database — belongs on the fast disk (SSD)'), platz: p.garage?.meta, grund: gUnklar ? t('Garage antwortet nicht', 'Garage is not responding') : t('Garage meldet keinen Platz', 'Garage reports no space') }
+  ]
+})
+const plattenWarnt = computed(() => (platten.value?.warnungen?.length || 0) > 0)
+const kap = computed<any>(() => platten.value?.garage?.kapazitaet || null)
+const kapBusy = ref(false)
+async function kapazitaetAngleichen() {
+  kapBusy.value = true
+  try {
+    const r = await api('/api/speicher/garage-kapazitaet', { method: 'POST' })
+    ok(r.geaendert ? t('Kapazität angeglichen', 'Capacity adjusted') : t('Stimmt schon', 'Already correct'))
+    await refresh()
+  } catch (e: any) {
+    fehler(e.message)
+  } finally {
+    kapBusy.value = false
+  }
+}
+
 const einheit = (gb: number) => (gb >= 1024 && gb % 1024 === 0 ? { wert: gb / 1024, e: 'TB' } : { wert: gb, e: 'GB' })
 const neuBox = ref<any>(null)
 const neuBucket = ref<any>(null)
@@ -211,12 +240,47 @@ async function einstSpeichern() {
       </div>
       <div class="kennzahlen rein">
         <div class="kz"><small><Ico n="gauge" /> {{ t('Belegt', 'Used') }}</small><b>{{ groesse(belegt) }}</b><span>{{ t('von', 'of') }} {{ groesse(vergeben) }} {{ t('vergeben', 'allocated') }}</span></div>
-        <div v-if="d.platte" class="kz"><small><Ico n="server" /> {{ t('Frei auf dem Server', 'Free on the server') }}</small><b>{{ groesse(d.platte.frei) }}</b>
+        <div v-if="d.platte" class="kz"><small><Ico n="server" /> {{ t('Frei auf der Box-Platte', 'Free on the box disk') }}</small><b>{{ groesse(d.platte.frei) }}</b>
           <div class="meter" role="meter" :aria-valuenow="Math.round((1 - d.platte.frei / d.platte.gesamt) * 100)" aria-valuemin="0" aria-valuemax="100"><i :style="{ width: ((1 - d.platte.frei / d.platte.gesamt) * 100) + '%' }"></i></div>
           <span v-if="vergeben > d.platte.frei + belegt" class="warn-text">{{ t('Mehr vergeben als frei', 'More allocated than free') }}</span></div>
         <div class="kz"><small><Ico n="box" /> {{ t('Storage-Boxen', 'Storage boxes') }}</small><b>{{ d.boxen?.length || 0 }}</b><span>{{ (d.boxen || []).reduce((s: number, b: any) => s + b.unterkonten, 0) }} {{ t('Unterkonten', 'sub-accounts') }}</span></div>
         <div class="kz"><small><Ico n="database" /> Buckets</small><b>{{ d.buckets?.length || 0 }}</b><span>{{ (d.buckets || []).reduce((s: number, b: any) => s + b.schluessel, 0) }} {{ t('Zugangsschlüssel', 'access keys') }}</span></div>
       </div>
+
+      <section v-if="d.admin && platten" class="abschnitt rein">
+        <div class="abschnitt-kopf"><div><h2><Ico n="server" /> {{ t('Datenträger', 'Disks') }}</h2><p>{{ t('Auf welcher Platte liegen Boxen und Buckets — und wie viel ist dort noch frei?', 'Which disk holds boxes and buckets — and how much is still free there?') }}</p></div></div>
+        <div v-if="plattenWarnt" class="meldung meldung-warn" role="alert">
+          <b>{{ t('Boxen und Buckets liegen auf der Systemplatte, und dort wird der Platz knapp', 'Boxes and buckets live on the system disk, and space is running low there') }}</b>
+          — {{ t('frei sind nur noch', 'only') }} {{ Math.round(platten.warnungen[0].freiProzent) }} % ({{ groesse(platten.system.frei) }}) {{ t('— gewarnt wird unter', 'are free — warning below') }} {{ platten.mindestFreiProzent }} %.
+          {{ t('Wird sie voll, fallen auch Cloud und Datenbank aus. Lege die Daten auf eine andere Platte: deploy/README.md, Abschnitt „Daten auf eine andere Platte (HDD)“ (Skript daten-verschieben.sh).', 'If it fills up, the cloud and the database fail too. Move the data to another disk: deploy/README.md, section “Moving data to another disk (HDD)” (script daten-verschieben.sh).') }}
+        </div>
+        <div class="liste platten">
+          <div v-for="z in plattenZeilen" :key="z.id" class="platte">
+            <div class="name"><span class="sym"><Ico :n="z.icon" /></span><div><b>{{ z.name }}</b><small>{{ z.hinweis }}</small></div></div>
+            <div class="wo">
+              <span v-if="!z.platz" class="chip neutral"><Ico n="alert" /> {{ t('nicht ermittelbar', 'not available') }}</span>
+              <span v-else-if="z.platz.systemplatte" :class="['chip', plattenWarnt && platten.warnungen.some((w: any) => w.was === z.id) ? 'warn' : 'neutral']"><Ico n="monitor" /> {{ t('Systemplatte', 'System disk') }}</span>
+              <span v-else class="chip ok"><Ico n="check" /> {{ t('Eigene Platte', 'Separate disk') }}</span>
+            </div>
+            <div class="bel">
+              <template v-if="z.platz">
+                <small><span>{{ t('frei', 'free') }} {{ groesse(z.platz.frei) }} ({{ freiProz(z.platz) }} %)</span><span>{{ groesse(z.platz.gesamt) }}</span></small>
+                <div class="meter" role="meter" :aria-label="z.name" :aria-valuenow="100 - freiProz(z.platz)" aria-valuemin="0" aria-valuemax="100"><i :class="platteStufe(z.platz)" :style="{ width: (100 - freiProz(z.platz)) + '%' }"></i></div>
+              </template>
+              <small v-else><span>{{ z.grund }}</span></small>
+            </div>
+          </div>
+          <div v-if="kap" class="platte kap">
+            <div class="name"><span class="sym"><Ico n="gauge" /></span><div><b>{{ t('Garage-Kapazität', 'Garage capacity') }}</b><small>{{ t('Kapazität im Cluster-Layout — Garage legt sie beim ersten Start fest', 'Capacity in the cluster layout — Garage sets it on first start') }}</small></div></div>
+            <div class="wo"><span v-if="kap.soll == null" class="chip neutral"><Ico n="alert" /> {{ t('nicht prüfbar', 'cannot check') }}</span><span v-else :class="['chip', kap.abweichung ? 'warn' : 'ok']"><Ico :n="kap.abweichung ? 'alert' : 'check'" /> {{ kap.abweichung ? t('weicht ab', 'differs') : t('passt', 'matches') }}</span></div>
+            <div class="bel">
+              <small><span>{{ t('Layout', 'Layout') }}: {{ kap.layout != null ? groesse(kap.layout) : '—' }}</span><span>{{ t('Platte', 'Disk') }}: {{ kap.soll != null ? groesse(kap.soll) : '—' }}</span></small>
+              <button v-if="d.inhaber && kap.abweichung" type="button" class="knopf klein-knopf" :disabled="kapBusy" @click="kapazitaetAngleichen"><Ico :n="kapBusy ? 'loader' : 'check'" :class="{ spin: kapBusy }" /> {{ t('Angleichen', 'Adjust') }}</button>
+            </div>
+          </div>
+        </div>
+        <p class="sehrleise klein platten-hinweis">{{ t('Garage erzwingt die Kapazität nicht als Schreibgrenze; hart begrenzt wird je Bucket über das Kontingent. Metadaten gehören auf die SSD, nur die Daten auf die große HDD.', 'Garage does not enforce the capacity as a write limit; each bucket is limited by its quota. Metadata belongs on the SSD, only the data on the big HDD.') }}</p>
+      </section>
 
       <section class="abschnitt rein">
         <div class="abschnitt-kopf"><div><h2><Ico n="box" /> {{ t('Storage-Boxen', 'Storage boxes') }}</h2><p>{{ t('Ordner mit Zugang per SFTP, SCP und WebDAV — wie eine Festplatte im Netz.', 'Folders with SFTP, SCP and WebDAV access — like a disk on the network.') }}</p></div></div>
@@ -277,7 +341,7 @@ async function einstSpeichern() {
       <form @submit.prevent="boxAnlegen">
         <label class="feld"><span>{{ t('Name', 'Name') }}</span><input v-model="neuBox.name" class="eingabe" maxlength="60" required :placeholder="t('z. B. Backups Webserver', 'e.g. Web server backups')"></label>
         <label class="feld"><span>{{ t('Kontingent', 'Quota') }}</span><span class="einheit"><input v-model.number="neuBox.wert" class="eingabe mono" type="number" min="0.1" step="any" required><VdAuswahl v-model="neuBox.e" class="eingabe"><option>GB</option><option>TB</option></VdAuswahl></span>
-          <small v-if="d.platte">{{ t('Frei auf dem Server:', 'Free on the server:') }} {{ groesse(d.platte.frei) }}</small></label>
+          <small v-if="d.platte">{{ t('Frei auf der Platte der Boxen:', 'Free on the box disk:') }} {{ groesse(d.platte.frei) }}</small></label>
         <p class="sehrleise klein">{{ t('Benutzername und Passwort bekommst du gleich danach — das Passwort nur einmal.', 'You get the user name and password right afterwards — the password only once.') }}</p>
         <div class="modal-fuss"><button type="button" class="knopf" @click="neuBox = null">{{ t('Abbrechen', 'Cancel') }}</button><button class="knopf rot" :disabled="schickt || !neuBox.name"><Ico :n="schickt ? 'loader' : 'box'" :class="{ spin: schickt }" /> {{ t('Anlegen', 'Create') }}</button></div>
       </form>
@@ -604,6 +668,72 @@ async function einstSpeichern() {
   font-size: 13px;
   margin: 2px 0 6px;
   cursor: pointer;
+}
+.platten .platte {
+  display: grid;
+  grid-template-columns: minmax(0, 1.5fr) minmax(0, 0.9fr) minmax(0, 1.6fr);
+  gap: 18px;
+  align-items: center;
+  padding: 14px 18px;
+  border-top: 1px solid var(--linie);
+}
+.platten .platte:first-child {
+  border-top: 0;
+}
+.platten .platte .name {
+  display: flex;
+  gap: 12px;
+  align-items: center;
+  min-width: 0;
+}
+.platten .platte .name > div {
+  min-width: 0;
+}
+.platten .platte .sym {
+  width: 36px;
+  height: 36px;
+  border-radius: 10px;
+  background: rgba(var(--a-rgb), 0.1);
+  color: var(--a);
+  display: grid;
+  place-items: center;
+  flex-shrink: 0;
+}
+.platten .platte .sym svg {
+  width: 17px;
+  height: 17px;
+}
+.platten .platte b {
+  display: block;
+  font-weight: 600;
+}
+.platten .platte .name small {
+  color: var(--text3);
+  font-size: 11.5px;
+}
+.platten .platte .bel small {
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+  flex-wrap: wrap;
+  font-size: 11.5px;
+  color: var(--text2);
+  margin-bottom: 2px;
+  font-variant-numeric: tabular-nums;
+}
+.klein-knopf {
+  margin-top: 6px;
+  padding: 6px 12px;
+  font-size: 12.5px;
+}
+.platten-hinweis {
+  margin: 8px 2px 0;
+}
+@media (max-width: 820px) {
+  .platten .platte {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 10px;
+  }
 }
 @media (max-width: 980px) {
   .kennzahlen {

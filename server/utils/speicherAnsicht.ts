@@ -1,4 +1,4 @@
-import { statfs } from 'node:fs/promises'
+import { stat, statfs } from 'node:fs/promises'
 import type { H3Event } from 'h3'
 import { q } from './db'
 import type { Nutzer } from './auth'
@@ -6,7 +6,15 @@ import { basisUrl } from './dateien'
 import { platte } from './speicher'
 import type { Box, Unterkonto } from './boxen'
 import type { Bucket, Schluessel } from './buckets'
-import { BOXEN_APP, S3_REGION, getSpeicherEinst, sftpPort, speicherKonfiguriert } from './speicherdienst'
+import {
+  BOXEN_APP,
+  S3_REGION,
+  garageKapazitaetSoll,
+  garageKnoten,
+  getSpeicherEinst,
+  sftpPort,
+  speicherKonfiguriert
+} from './speicherdienst'
 
 export const boxAnsicht = (b: Box & { besitzer?: string }) => ({
   id: b.id,
@@ -69,6 +77,101 @@ export async function speicherPlatte(): Promise<{ frei: number; gesamt: number }
     return { frei: Number(s.bavail) * Number(s.bsize), gesamt: Number(s.blocks) * Number(s.bsize) }
   } catch {
     return platte()
+  }
+}
+
+export interface Platz {
+  frei: number
+  gesamt: number
+}
+export interface PlattenPosten extends Platz {
+  /** true = liegt (vermutlich) auf demselben Dateisystem wie das Betriebssystem/Docker, false = eigene Platte */
+  systemplatte: boolean
+}
+/** Wie viel Prozent der Systemplatte frei sein müssen, bevor die Oberfläche warnt. */
+export const SYSTEM_FREI_MIN = 20
+
+interface DsInfo extends Platz {
+  dev: number
+}
+async function dsInfo(pfad: string): Promise<DsInfo | null> {
+  try {
+    const [f, s] = await Promise.all([statfs(pfad), stat(pfad)])
+    return { frei: Number(f.bavail) * Number(f.bsize), gesamt: Number(f.blocks) * Number(f.bsize), dev: Number(s.dev) }
+  } catch {
+    return null
+  }
+}
+/**
+ * Dasselbe Dateisystem? Entweder dieselbe Geräte-Nummer oder (z. B. btrfs-Subvolumes, fremde Messung ohne Gerät)
+ * gleiche Gesamtgröße und fast gleicher freier Platz. Zwei verschiedene Platten mit auf 2 % gleicher Belegung UND
+ * exakt gleicher Größe sind unwahrscheinlich; im Zweifel warnt die Oberfläche eher zu viel als zu wenig.
+ */
+export function gleichesDateisystem(a: Platz & { dev?: number }, b: Platz & { dev?: number }): boolean {
+  if (a.dev != null && b.dev != null && a.dev === b.dev) return true
+  const tol = Math.max(1, a.gesamt) * 0.02
+  return Math.abs(a.gesamt - b.gesamt) <= Math.max(1, a.gesamt) * 0.005 && Math.abs(a.frei - b.frei) <= tol
+}
+/** Warnungen: Daten auf der Systemplatte UND dort weniger als SYSTEM_FREI_MIN % frei. */
+export function plattenWarnungen(
+  system: Platz | null,
+  posten: Record<string, PlattenPosten | null>
+): Array<{ was: string; freiProzent: number }> {
+  if (!system || system.gesamt <= 0) return []
+  const prozent = Math.round((system.frei / system.gesamt) * 1000) / 10
+  if (prozent >= SYSTEM_FREI_MIN) return []
+  return Object.entries(posten)
+    .filter(([, p]) => p?.systemplatte)
+    .map(([was]) => ({ was, freiProzent: prozent }))
+}
+
+/**
+ * Auf welcher Platte liegen Boxen und Buckets, und wie viel ist dort frei?
+ * Der app-Container sieht nur /speicher (Boxen). Garage-Daten und -Metadaten meldet die Garage-Admin-API
+ * (GetClusterStatus); antwortet sie nicht oder liefert sie keine Zahlen, gilt der Wert als nicht ermittelbar.
+ * Testhilfe: VD_SYSTEMPLATTE = Pfad, der als Systemplatte gilt (Standard: / bzw. /etc/hosts).
+ */
+export async function speicherPlatten() {
+  const sysPfad = process.env.VD_SYSTEMPLATTE || '/'
+  // Im Container liegt /etc/hosts auf dem Dateisystem von Docker (= Systemplatte); "/" ist dort ein Overlay mit eigener Geräte-Nummer.
+  const sys = await dsInfo(sysPfad)
+  const sysDev = (await dsInfo(process.env.VD_SYSTEMPLATTE || '/etc/hosts'))?.dev ?? sys?.dev
+  const system = sys ? { frei: sys.frei, gesamt: sys.gesamt, dev: sysDev } : null
+  const mit = (p: Platz & { dev?: number } | null): PlattenPosten | null =>
+    p && system ? { frei: p.frei, gesamt: p.gesamt, systemplatte: gleichesDateisystem(p, system) } : null
+
+  const boxen = mit(await dsInfo(BOXEN_APP))
+  let garage: {
+    erreichbar: boolean
+    daten: PlattenPosten | null
+    meta: PlattenPosten | null
+    kapazitaet: { layout: number | null; soll: number | null; abweichung: boolean } | null
+  } = { erreichbar: false, daten: null, meta: null, kapazitaet: null }
+  if (speicherKonfiguriert()) {
+    const g = await garageKnoten()
+    const k = g?.knoten.find((x) => x.rolle) || g?.knoten[0]
+    if (g && k) {
+      const daten = mit(k.daten),
+        meta = mit(k.meta)
+      const layout = k.rolle?.kapazitaet ?? null,
+        soll = garageKapazitaetSoll(k.daten?.gesamt ?? null)
+      garage = {
+        erreichbar: true,
+        daten,
+        meta,
+        kapazitaet: k.rolle
+          ? { layout, soll, abweichung: layout == null || soll == null ? false : Math.abs(layout - soll) > soll * 0.02 }
+          : null
+      }
+    }
+  }
+  const warnungen = plattenWarnungen(system, { boxen, 'garage-daten': garage.daten, 'garage-meta': garage.meta })
+  return {
+    system: system ? { frei: system.frei, gesamt: system.gesamt } : null,
+    boxen,
+    garage,
+    warnungen,
+    mindestFreiProzent: SYSTEM_FREI_MIN
   }
 }
 

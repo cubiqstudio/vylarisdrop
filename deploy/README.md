@@ -162,6 +162,55 @@ VylarisCloud kann selbst Speicher anbieten — wie eine Storage-Box bzw. ein Obj
 
 Beim Ausschalten bleiben alle Boxen, Buckets und Dateien erhalten (Volumes `speicher`, `sftpgo`, `garage-meta`, `garage-daten`). Hinweise: SFTP geht nicht über einen Cloudflare Tunnel (der leitet nur HTTP weiter) — WebDAV und S3 schon. Garage hält auf einem einzelnen Server keine zweite Kopie: für wichtige Daten eigene Backups machen. Der Schalter braucht den Update-Dienst auf dem Server (bei älteren Installationen einmal `update.sh` ausführen).
 
+### Daten auf eine andere Platte (HDD)
+
+Standardmäßig liegt alles in Docker-Volumes auf der Systemplatte (meist eine SSD). Für große Datenmengen lassen sich die Daten auf eine zweite Platte legen, z. B. eine HDD unter `/mnt/hdd`. Das betrifft die Volumes `dateien` (Cloud-Dateien), `speicher` (Storage-Boxen), `sftpgo`, `garage-daten` (Bucket-Daten) und auf Wunsch `garage-meta` und `db`. Die Seite **Speicher** zeigt unter **Datenträger**, auf welcher Platte Boxen und Buckets liegen und wie viel dort frei ist, und warnt, wenn sie auf der Systemplatte liegen und dort weniger als 20 % frei sind. (Das ist etwas anderes als der **Speicher-Pool** unter Speicher-Erweiterungen.)
+
+**1. Platte dauerhaft einhängen.** Die Platte muss bei jedem Start unter demselben Pfad eingehängt sein, sonst schreibt Docker still auf die Systemplatte weiter. Beispiel für `/etc/fstab` (UUID aus `blkid`):
+
+```bash
+UUID=…  /mnt/hdd  xfs  defaults,nofail,x-systemd.required-by=docker.service  0  2
+```
+
+`x-systemd.required-by=docker.service` startet Docker erst, wenn die Platte da ist. Prüfen mit `findmnt /mnt/hdd` und `df -h /mnt/hdd`.
+
+**2. Trockenlauf, dann umziehen.** Das Skript liegt neben `docker-compose.yml` (`update.sh` lädt es mit):
+
+```bash
+cd /opt/vylariscloud
+sudo bash daten-verschieben.sh --trocken /mnt/hdd/vylariscloud   # zeigt nur, was passieren würde
+sudo bash daten-verschieben.sh /mnt/hdd/vylariscloud             # macht es
+```
+
+Das Skript prüft root, Docker und den Zielordner (eingehängt? sonst Warnung mit Rückfrage; genug freier Platz?), hält die betroffenen Container an, kopiert jedes vorhandene Volume per `docker run alpine cp -a` in einen Unterordner des Zielordners und vergleicht danach Dateiliste, Größen und Anzahl per Prüfsumme (bei Abweichung wird nichts umgestellt und alles wieder gestartet). Danach setzt es die Besitzer, schreibt bzw. **erweitert** `compose.hdd.yml` (eine schon vorhandene wird nicht überschrieben; ihre Einträge bleiben, Kopie in `.sicherung/`), ergänzt `compose.hdd.yml` in `COMPOSE_FILE` der `.env`, startet neu und prüft per `df` im Container, dass die Ordner auf der Ziel-Platte liegen. Mehrfaches Ausführen ist unschädlich. Ohne das Speicher-Modul wird nur `dateien` behandelt; schaltest du es später ein, das Skript einfach noch einmal ausführen. Liegen die Cloud-Dateien schon direkt im Zielordner (eigene `compose.hdd.yml` mit `/data`), kommen die Ordner für Boxen und Buckets nach `<Zielordner>-speicher`.
+
+| Schalter | Wirkung |
+|---|---|
+| `--dir <Ordner>` | Installationsordner (Standard `/opt/vylariscloud`) |
+| `--trocken` | nur prüfen und anzeigen |
+| `--meta-auch` | auch `garage-meta` verschieben (Standard: bleibt auf der SSD) |
+| `--mit-db` | auch die Datenbank (Volume `db`) verschieben, nur auf schneller, zuverlässiger Platte; auf einer HDD wird alles spürbar langsamer |
+| `--speicher` | Bind-Mounts für SFTPGo/Garage schon vorbereiten, auch wenn das Modul noch aus ist |
+| `--weiter` | einen nicht leeren Zielunterordner trotzdem nehmen (nach abgebrochenem Lauf) |
+| `--reparieren` | Besitzer auch in schon eingebundenen Ordnern setzen (`chown -R`) |
+| `--ja` | Rückfragen mit Ja beantworten |
+
+**Garage:** Die Metadaten-Datenbank (`garage-meta`, SQLite) macht viele kleine Zugriffe und gehört auf die SSD. Nur die Objektdaten (`garage-daten`) gehören auf die große HDD, deshalb bleibt `garage-meta` ohne `--meta-auch` liegen. Garage braucht je Knoten eine „Kapazität“ im Cluster-Layout; mit `--single-node` legt Garage sie **einmal** beim ersten Start auf die Größe der Daten-Platte von damals fest (nicht ermittelbar: 1 GB) und ändert sie nie. VylarisCloud setzt selbst nichts davon: Es liest sie über die Garage-Admin-API, zeigt sie unter **Speicher → Datenträger**, hebt sie stündlich an, wenn sie zu klein ist (der Inhaber kann sie dort auch per Klick angleichen), oder nimmt `VD_GARAGE_KAPAZITAET_GB` aus der `.env`, wenn du einen festen Wert willst. Garage erzwingt die Kapazität nicht als Schreibgrenze; die harte Grenze ist das Kontingent je Bucket.
+
+**Neuinstallation direkt auf die Platte:** `sudo bash install.sh --daten-pfad /mnt/hdd/vylariscloud` legt die Ordner an und schreibt `compose.hdd.yml`, ohne etwas zu kopieren (nur bei einer Installation ohne vorhandene Volumes; sonst `daten-verschieben.sh` nehmen).
+
+**Updates:** `update.sh` ändert `compose.hdd.yml` nie; es lädt nur `daten-verschieben.sh` mit.
+
+**Rückweg:** Die alten Volumes werden nicht gelöscht. Das Skript druckt am Ende den Befehl; per Hand: `.env` und `compose.hdd.yml` aus `.sicherung/hdd-<Zeit>/` zurückkopieren (bzw. `compose.hdd.yml` entfernen, wenn es sie vorher nicht gab) und `docker compose up -d`. Was nach dem Umzug neu geschrieben wurde, fehlt dann in den alten Volumes. Erst wenn alles einige Tage sauber läuft und gesichert ist: `docker volume rm <Volume>` gibt den Platz frei.
+
+**Fehlerbilder**
+
+- **„Permission denied“** in `docker compose logs app` (oder `sftpgo`): Der Ordner gehört dem falschen Benutzer. App und SFTPGo laufen als `1000:1000`, Garage als root, Postgres als `70:70`: `sudo chown -R 1000:1000 /mnt/hdd/vylariscloud/dateien /mnt/hdd/vylariscloud/speicher /mnt/hdd/vylariscloud/sftpgo`, danach `docker compose restart`. Das Skript macht das mit `--reparieren` selbst.
+- **Daten landen nach einem Neustart doch auf der Systemplatte:** Die Platte war nicht eingehängt (siehe Schritt 1). Dann Docker stoppen, Platte einhängen, prüfen (`findmnt /mnt/hdd`), Docker starten; was inzwischen auf der Systemplatte im Ordner `/mnt/hdd/...` entstand, vorher wegsichern (unter dem Einhängepunkt liegt es versteckt weiter).
+- **`docker compose config` meldet einen Fehler:** `compose.hdd.yml` prüfen; Einrückung genau 2/4/6 Leerzeichen (`services:` → Dienst → `volumes:` → `- Quelle:Ziel`).
+- **Zu wenig Platz beim Kopieren:** Das Skript bricht vorher ab und ändert nichts.
+- **SFTP und Cloudflare Tunnel:** Der SFTP-Port (Standard `2222`) geht **nicht** durch den Cloudflare Tunnel, der leitet nur HTTP weiter; der Port muss direkt am Server in Firewall und Router offen sein. Umgekehrt begrenzt Cloudflare einzelne Anfragen über den Tunnel (Free/Pro: 100 MB). Größere Dateien per SFTP (direkt, ohne Tunnel) übertragen.
+
 ### Virenscan
 
 Der Installer fragt einmal, ob ClamAV mitlaufen soll (eigener Container, etwa 1,5 GB Arbeitsspeicher). Später schaltest du ihn unter **Einstellungen → Installation** an und aus; der Update-Dienst auf dem Server startet bzw. stoppt den Container dann selbst. Geprüft wird jede Datei bis 100 MB, beim Einschalten auch alle vorhandenen. Ende-zu-Ende-verschlüsselte Dateien kann kein Virenscanner lesen, sie werden übersprungen.
@@ -341,6 +390,7 @@ Die mitgelieferte `docker-compose.yml` (und `compose.node.yml`) reicht diese Var
 | `VD_LIZENZ_SERVER` | Basis-URL des Lizenzservers (Pro) |
 | `VD_LIZENZ_KEY` | Öffentlicher Ed25519-Schlüssel des Lizenzservers (PEM, Zeilenumbrüche als `\n` oder echte Zeilen) |
 | `VD_SFTP_SCHLUESSEL` | Optional: zusätzliches Geheimnis für die Verschlüsselung der SFTP-Zugangsdaten, siehe [Speicher-Erweiterungen](#speicher-erweiterungen-sftp) |
+| `VD_GARAGE_KAPAZITAET_GB` | Optional: feste Kapazität des Garage-Knotens in GB (sonst die Größe der Garage-Daten-Platte), siehe [Daten auf eine andere Platte](#daten-auf-eine-andere-platte-hdd) |
 
 **Ohne `VD_LIZENZ_SERVER` und `VD_LIZENZ_KEY` prüft die Installation ihre Schlüssel selbst** (eigener Aussteller, Seite **Verwaltung → Lizenzen**, nur für den Inhaber). Beide Variablen brauchst du nur, wenn diese Installation Schlüssel von einer *anderen* VylarisCloud nutzen soll; die Werte dafür stehen auf deren Lizenzen-Seite. Sie werden beim Start gelesen (nach dem Ändern `docker compose up -d`).
 
