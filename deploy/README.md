@@ -258,6 +258,95 @@ curl -u anna:vd_dav_… -X DELETE https://cloud.deinefirma.de/dav/Neu/b.pdf     
 - **Nur lesen:** Mit einem Nur-lesen-App-Passwort antwortet jede ändernde Anfrage mit 403.
 - **Reverse-Proxy:** Große Uploads brauchen im Webserver keine Größengrenze (nginx: `client_max_body_size 0;`, bei `install.sh` schon gesetzt). Der mitgelieferte Caddy reicht alle WebDAV-Methoden durch. Hinter einem Cloudflare-Proxy oder -Tunnel gilt das Anfrage-Limit deines Tarifs (bei Free/Pro 100 MB je Anfrage); ein WebDAV-PUT ist eine einzige Anfrage, größere Dateien dann besser über die Weboberfläche hochladen.
 
+## Große Dateien hinter Cloudflare
+
+<!-- Abschnitt "Große Dateien hinter Cloudflare" (Agent G) — bewusst in sich geschlossen -->
+
+**Das Problem:** Ein Windows-Netzlaufwerk (WebDAV, `https://deine-domain/dav/` oder `/webdav/`) schafft keine Dateien über etwa 50 bis 100 MB. Dafür gibt es **zwei voneinander unabhängige Grenzen**, die du beide beachten musst:
+
+| Grenze | Wert | Quelle |
+|---|---|---|
+| **Cloudflare** (Proxy und Tunnel-Hostname): Größe einer HTTP-Anfrage | Free und Pro **100 MB**, Business 200 MB, Enterprise bis 5 GB (Fehler 413). Ein WebDAV-Upload (`PUT`) ist eine einzige Anfrage. | [Cloudflare, Error 413](https://developers.cloudflare.com/support/troubleshooting/http-status-codes/4xx-client-error/error-413/) |
+| Cloudflare: Wartezeit auf den Server | Proxy-Lesezeit laut Cloudflare derzeit 125 s (ältere Angabe 100 s, dann Fehler 524), Schreibzeit 30 s | [Cloudflare, Connection limits](https://developers.cloudflare.com/fundamentals/reference/connection-limits/) |
+| **Windows** (WebClient-Dienst): Dateigröße | Standard **50.000.000 Byte** (`FileSizeLimitInBytes`), Höchstwert **4.294.967.295**; danach den Dienst neu starten. Der Explorer schafft über 4 GB grundsätzlich nichts. | [Microsoft KB 900900](https://support.microsoft.com/help/900900), [Druva](https://help.druva.com/en/articles/8807362-webdav-download-fails-with-file-size-exceeds-the-limit-error) |
+| Windows: Anmeldung | `BasicAuthLevel` 0 = aus, **1 = nur über HTTPS (Standard)**, 2 = auch über http:// | [Microsoft-Blog zu KB 841215](https://learn.microsoft.com/en-us/archive/blogs/saurabh_singh/some-info-around-webdav-content-access-issues) |
+| Windows: Dateien je Ordner | `FileAttributesLimitInBytes` Standard 1.000.000 (etwa 1.000 Dateien je Ordner im Explorer) | [Microsoft KB 912152](https://learn.microsoft.com/troubleshoot/windows-client/networking/cannot-access-webdav-web-folder) |
+
+Nicht selbst nachgeprüft, nur aus der Dokumentation: das Cloudflare-Limit gilt auch für Hostnamen, die über einen Tunnel laufen (sie laufen über denselben Proxy). Die Weboberfläche ist **nicht** betroffen: sie lädt in Stücken zu je **8 MiB** hoch (`server/api/upload/start.post.ts`, rohe Anfrage ohne Multipart-Rahmen), also weit unter 100 MB.
+
+### Entscheidungshilfe
+
+| Weg | Sicherheit | Aufwand | Komfort am Windows-PC | Dateigröße |
+|---|---|---|---|---|
+| **1. Direkter Hostname nur für WebDAV** (mitgeliefert: `dav-direkt.sh`) | mittel: Server-IP wird sichtbar, Port 443 offen; durch Beschränkung auf `/dav` und `/webdav`, HTTPS, App-Passwörter, Sperre nach Fehlversuchen, optional IP-Liste und fail2ban gut beherrschbar | klein: ein DNS-Eintrag, ein Skript | sehr gut: normales Netzlaufwerk | Explorer bis 4 GB, darüber rclone |
+| **2. Tailscale** (privates WireGuard-Netz) | hoch: kein öffentlicher Port | mittel: Tailscale auf Server und jedem PC | gut, solange Tailscale läuft; fremde Rechner brauchen Zugang | wie 1 |
+| **3. Cloudflare WARP / Zero Trust, Privatnetz** | hoch | hoch: Zero-Trust-Konto, Route im Tunnel, WARP-Client mit Anmeldung auf jedem PC | mittel | wie 1; ob das 100-MB-Limit dort entfällt, ist **nicht geprüft** |
+| **4. SFTP direkt** (Port 2222, nur Storage-Boxen) | mittel: offener Port, nur mit Schlüssel-Login sinnvoll | klein | gut mit WinSCP oder `rclone mount`; kein Explorer-Laufwerk ohne Zusatzprogramm | keine Grenze |
+| **5. rclone mit Nextcloud-Chunking** | hoch | **noch nicht gebaut**: Server bräuchte einen Chunk-Endpunkt (`/remote.php/dav/uploads/…`), geschätzt 300 bis 500 Zeilen plus Tests | nur rclone und Nextcloud-Clients, **nicht der Explorer** | keine Grenze |
+| **6. Weboberfläche** (Chunk-Upload) | hoch: bleibt hinter Cloudflare | keiner | einzelne Dateien, kein Laufwerk | mehrere GB; sehr große Dateien siehe unten |
+
+**Empfehlung:** Die Weboberfläche bleibt hinter dem Cloudflare Tunnel. Für große Dateien am PC nimmst du **Weg 1**, weil er der einzige ist, der ohne Zusatzsoftware am PC ein ganz normales Netzlaufwerk ergibt, und weil der Server dafür nur WebDAV nach außen zeigt. Die Anmeldung per App-Passwort (`vd_dav_` plus 32 Zufallszeichen) ist nicht zu erraten, und die App sperrt Fehlversuche je IP und Benutzer. Ergänze die IP-Liste (`--erlaubt`), wenn du von festen Adressen aus arbeitest, sonst `--fail2ban`. Wenn der Server hinter CGNAT oder ohne Portfreigabe steht, geht Weg 1 nicht: dann **Weg 2**. Wer maximale Sicherheit will und nur wenige feste Geräte hat, nimmt ebenfalls Weg 2. Für Dateien über 4 GB: rclone auf die direkte Adresse oder die Weboberfläche.
+
+### Weg 1: Direkter Hostname (Schritte)
+
+1. **DNS:** Lege einen **A-Eintrag** für einen *zweiten* Namen an, z. B. `dav.deinefirma.de`, auf die Server-IP, bei Cloudflare mit **grauer Wolke (nur DNS)**. Es darf *nicht* der Name des Tunnels sein.
+2. **Ports:** 443/tcp, 443/udp und 80/tcp müssen vom Internet zum Server kommen (Router-Portfreigabe, Firewall). Port 80 braucht Caddy zum Zertifikatsabruf und für die Weiterleitung auf https.
+3. **Einrichten** im Installationsordner (Caddy aus `compose.caddy.yml` muss laufen):
+   ```bash
+   sudo bash dav-direkt.sh --host dav.deinefirma.de --trocken     # nur anzeigen
+   sudo bash dav-direkt.sh --host dav.deinefirma.de --fail2ban    # einrichten
+   sudo bash dav-direkt.sh --host dav.deinefirma.de --erlaubt "203.0.113.7 198.51.100.0/24"   # nur diese Adressen
+   sudo bash dav-direkt.sh --status                               # prüfen
+   sudo bash dav-direkt.sh --entfernen [--fail2ban]               # wieder abbauen
+   ```
+   Das Skript prüft den DNS-Eintrag, sichert `.env` (und `Caddyfile`), trägt `VD_DAV_HOST` (und `VD_DAV_ERLAUBT`) in die `.env` ein, hängt `compose.dav-direkt.yml` an `COMPOSE_FILE` und startet `app` und `caddy` neu. Zwei Modi (`--modus`):
+   - **`nur-dav`** (Standard, sobald ein Cloudflare Tunnel erkannt wird): Caddy bedient **ausschließlich** den DAV-Namen (`Caddyfile.dav-nur` ersetzt die normale Caddyfile). Alles andere auf 80/443 ist 404 oder bekommt keine Antwort. Die Weboberfläche läuft weiter nur über den Tunnel; `cloudflared` spricht die App direkt an, nicht über Caddy. So kommt niemand mit der bekannten Server-IP an Cloudflare vorbei zur Weboberfläche.
+   - **`zusaetzlich`**: die normale Caddyfile bleibt (das Skript ergänzt eine `import`-Zeile), der DAV-Name kommt dazu. Wer dann die IP kennt, erreicht über Port 80/443 weiter auch die Weboberfläche. Nur sinnvoll, wenn Caddy die Weboberfläche ohnehin selbst ausliefert. Die Seite **Sync & WebDAV** zeigt danach beide Adressen („normal“ und „Große Dateien“), `/api/sync/info` liefert sie.
+4. **Windows:** `net use Y: https://dav.deinefirma.de/dav/ /user:BENUTZER APP-PASSWORT /persistent:yes` und das Skript unten für das Windows-Limit.
+
+**Was der Name kann:** nur `/dav` und `/webdav` (alles andere ist 404, in Caddy *und* zusätzlich in der App: `server/middleware/00.davhost.ts`), nur HTTPS, keine Größengrenze, großzügige Zeitlimits, Anfragen werden nicht zwischengespeichert. Das Zugriffsprotokoll (JSON) liegt unter `caddy-logs/dav-zugriff.log` (20 MiB je Datei, 30 Tage); es enthält IP-Adressen und Dateinamen, aber nie Kennwörter (Caddy schwärzt den `Authorization`-Kopf).
+
+**Sicherheitsfolgen, ehrlich:**
+- **Die Server-IP wird öffentlich sichtbar**, und Cloudflares DDoS-Filter und WAF schützen diesen Namen nicht. Die Weboberfläche ist über den neuen Namen **nicht** erreichbar (404, in Caddy und in der App); im Modus `nur-dav` antwortet Caddy auch über die nackte IP nicht mit der Weboberfläche.
+- Der Hostname steht über das Zertifikat in den öffentlichen Zertifikatsprotokollen (Certificate Transparency). Bots werden ihn finden und `/dav` abklopfen.
+- Brute-Force: die App sperrt je IP nach 40 und je IP und Benutzer nach 10 Fehlversuchen für 10 Minuten (HTTP 429). Ergänzend sperrt die mitgelieferte fail2ban-Jail (`deploy/fail2ban/`) eine Adresse nach 8 abgelehnten Anmeldungen für 1 Stunde. Gezählt werden nur Anfragen **mit** Anmeldekopf, denn Windows schickt jede neue Verbindung zuerst ohne Anmeldung (401) und meldet sich erst dann an.
+- Caddy hat ohne Zusatzmodul **kein Rate-Limit**. Es ist kein Plugin nötig; wer eines will, baut Caddy selbst mit `caddy-ratelimit` (xcaddy).
+- **ufw und Docker:** Von Docker veröffentlichte Ports umgehen ufw, `ufw deny 443` hilft nicht. fail2ban sperrt deshalb in der Kette `DOCKER-USER` (so steht es in der Jail). Erlaube in ufw 443, 80 und SSH, und prüfe nach Änderungen von außen mit einem Portscan.
+- Lege für den PC ein **eigenes App-Passwort** an (Seite Sync & WebDAV) und widerrufe es, wenn der PC weg ist. Für Backups reichen Nur-lesen-Passwörter.
+
+**Eigener Webserver statt Caddy** (nginx; nicht getestet): zweiter `server`-Block mit eigenem Zertifikat, in dem nur `location ~ ^/(dav|webdav)(/|$)` an die App geht, alles andere `return 404;`, mit `client_max_body_size 0; proxy_request_buffering off; proxy_read_timeout 1800s; proxy_send_timeout 1800s;` und `proxy_set_header X-Forwarded-For $remote_addr; proxy_set_header X-Forwarded-Proto https; proxy_set_header Host $host;` (X-Forwarded-For **überschreiben**, nicht anhängen). In der `.env` `VD_DAV_HOST=dav.deinefirma.de` setzen.
+
+### Weg 2 bis 6 (Kurzfassung)
+
+- **Tailscale** (nicht mitgeliefert, nicht getestet): Tailscale auf Server und PCs, in der Admin-Konsole MagicDNS und HTTPS einschalten. Die App auf `127.0.0.1` veröffentlichen (`compose.port.yml`, `VD_PORT`), dann `tailscale serve --bg --https=443 http://127.0.0.1:<VD_PORT>`. In der `.env` `VD_DAV_HOST=<rechner>.<tailnet>.ts.net` setzen, damit die App den Namen annimmt (nur `/dav`, `/webdav`; die Seite Sync & WebDAV zeigt ihn dann als „Große Dateien“). Unsicher: ob `tailscale serve` den Kopf `X-Forwarded-Proto: https` setzt; sonst verweigert die App die Anfrage („HTTPS erforderlich“). Quelle: [Tailscale Serve](https://tailscale.com/kb/1242/tailscale-serve).
+- **Cloudflare WARP / Privatnetz** (nicht getestet): `cloudflared` leitet per Private-Network-Route (IP oder Host) zum Server, die PCs laufen mit dem WARP-Client ([Cloudflare-Doku](https://developers.cloudflare.com/cloudflare-one/networks/connectors/cloudflare-tunnel/private-net/cloudflared/)). Dieser Verkehr geht nicht über den HTTP-Proxy deiner Domain; ob das Anfrage-Limit dort entfällt, steht in der Doku nicht und wurde hier nicht geprüft. Der Free-Plan von Zero Trust deckt laut Drittquellen bis 50 Benutzer ab, ob das Privatnetz darin enthalten ist, widersprechen sich die Quellen. In den Split-Tunnel-Einstellungen müssen private Bereiche (192.168/16, 10/8 usw.) einbezogen sein. Aufwand und Pflege sind für einen Heimserver mit wenigen PCs meist größer als bei Weg 1 oder 2.
+- **SFTP direkt:** Storage-Box mit SSH-Schlüssel statt Passwort anlegen, Port 2222 (oder dein gewählter) freigeben, mit WinSCP, `rclone mount` oder SSHFS-Win verbinden. Hat der Server einen offenen SSH-Port, gelten dieselben Vorsichtsregeln. SFTPGo bringt einen eigenen „Defender“ gegen Fehlversuche mit (`SFTPGO_COMMON__DEFENDER__ENABLED=1`, laut SFTPGo-Doku, hier nicht getestet). Das gilt nur für Storage-Boxen, nicht für die Cloud-Dateien.
+- **rclone mit Nextcloud-Chunking:** rclone (`vendor nextcloud`) lädt in Stücken über `/remote.php/dav/uploads/…` hoch ([rclone, WebDAV](https://rclone.org/webdav/)). Der Server hat die Bausteine (Upload-Sitzungen mit Stücken), aber keinen kompatiblen Endpunkt; Aufwand und Risiko (Kontingent, Aufräumen, ETags) sind für einen Nebenschauplatz zu hoch, deshalb **später möglich**. Der Windows-Explorer kann Chunking nicht.
+- **Weboberfläche:** lädt in 8-MiB-Stücken, 3 gleichzeitig. Gemessen: 2 GB in 256 Stücken, größte Anfrage 8,0 MiB; der abschließende Schritt „fertig“ setzt die Stücke wieder zusammen und brauchte für 2 GB auf SSD 8 s. Auf einer HDD dauert er länger: Dauert dieser eine Aufruf länger als Cloudflares Wartezeit (rund 100 bis 125 s), meldet Cloudflare 524, obwohl die Datei fertig wird. Das ist erst bei zweistelligen GB zu erwarten (nicht gemessen).
+
+### Windows-Einstellungen
+
+Das Skript `windows-webdav.ps1` (auch als Download auf der Seite **Sync & WebDAV**, Reiter Windows, mit Prüfsumme und „ansehen“) setzt `FileSizeLimitInBytes` auf 4294967295, hebt `BasicAuthLevel` nur von 0 auf 1 (nie höher), stellt den Dienst **WebClient** auf „Automatisch“ und startet ihn neu. Es zeigt die alten Werte, fragt vorher und sichert sie in `%ProgramData%\VylarisCloud\webclient-vorher.json`.
+
+```powershell
+# Als Administrator, im Ordner mit der Datei. Erst lesen, dann ausführen!
+powershell -ExecutionPolicy Bypass -File .\windows-webdav.ps1 -Trocken        # nur anzeigen, ohne Administrator
+powershell -ExecutionPolicy Bypass -File .\windows-webdav.ps1                 # ändern (mit Rückfrage)
+powershell -ExecutionPolicy Bypass -File .\windows-webdav.ps1 -Rueckgaengig   # alte Werte zurück
+```
+
+Von Hand dasselbe: `reg add HKLM\SYSTEM\CurrentControlSet\Services\WebClient\Parameters /v FileSizeLimitInBytes /t REG_DWORD /d 4294967295 /f`, danach `net stop webclient && net start webclient`. Den Wert im Registrierungs-Editor immer **dezimal** eingeben. Ordner mit über 1.000 Dateien öffnet der Explorer erst, wenn `FileAttributesLimitInBytes` größer ist (z. B. 20000000, gleicher Pfad).
+
+### Wie sich der Server bei großen Uploads verhält (gemessen)
+
+Testaufbau: gebaute Instanz, Caddy davor (HTTPS, HTTP/2), `curl -T` mit einer 2-GB-Datei.
+- 2 GB per `PUT`: über Caddy 7,0 s, direkt 6,0 s, ohne Content-Length (`Transfer-Encoding: chunked`) 7,9 s. Der Node-Prozess blieb bei **108 bis 139 MB** Arbeitsspeicher (vorher 116 MB), die Daten werden gestreamt, nicht gepuffert. `Expect: 100-continue` wird beantwortet. Download und Bereichsanfrage (Range) lieferten dieselbe Prüfsumme.
+- Abgebrochene Uploads hinterlassen nichts (Datei erscheint nicht, keine Reste im Datenordner).
+- **Gefunden und behoben:** Node beendet jede Anfrage, die nicht innerhalb von 300 s komplett angekommen ist (`requestTimeout`). Ein Upload von 1,1 GB mit 3 MB/s brach nach 313 s mit **408** ab; bei 40 MBit/s Upload wären schon etwa 1,5 GB zu viel. `server/plugins/anfrage-zeit.ts` hebt die Frist auf 12 Stunden an (`VD_ANFRAGE_TIMEOUT_S`, Sekunden, 0 = unbegrenzt); die Frist für die Kopfzeilen (60 s) bleibt. Nach der Änderung kam derselbe 1,1-GB-Upload in 349 s vollständig an (201).
+- Hinter Cloudflare bleibt es bei 100 MB je Anfrage, egal wie der Server eingestellt ist: die Meldung 413 kommt von Cloudflare selbst, nicht von der App.
+
+**Neue Umgebungsvariablen** (in der `.env`): `VD_DAV_HOST` (direkter DAV-Hostname, setzt `dav-direkt.sh`), `VD_DAV_ERLAUBT` (Freigabeliste für diesen Namen), `VD_DAV_CADDYFILE` (Modus, setzt das Skript), `VD_ANFRAGE_TIMEOUT_S` (Frist für eine Anfrage in Sekunden; wird von `compose.dav-direkt.yml` an die App durchgereicht).
+
 ## Speicherplatz und Kontingente
 
 Jedes Konto kann ein Speicher-Kontingent haben. Das **wirksame Kontingent** eines Kontos ergibt sich in dieser Reihenfolge, der erste Treffer gewinnt:
