@@ -58,7 +58,10 @@ class EinrichtungActivity : AppCompatActivity() {
         tiefenLink(intent)
     }
 
-    /** vylariscloud://koppeln?s=<Server-URL, kodiert>&c=<Code>: Felder füllen und direkt koppeln */
+    /**
+     * vylariscloud://koppeln?s=<Server-URL, kodiert>&c=<Code>: Felder füllen. Jede Webseite kann so einen Link auslösen, darum
+     * wird nie ohne Rückfrage gekoppelt: der Dialog nennt immer den Server (und ein bestehendes Konto, das ersetzt würde).
+     */
     private fun tiefenLink(i: Intent?) {
         val d: Uri = i?.data ?: return
         if (d.scheme != "vylariscloud" || d.host != "koppeln") return
@@ -67,18 +70,19 @@ class EinrichtungActivity : AppCompatActivity() {
         if (s.isNotBlank()) adresse.setText(s)
         if (c.isNotBlank()) code.setText(c)
         if (s.isBlank()) return
-        val ziel = ServerAdresse.normalisieren(s).url
+        val ziel = ServerAdresse.normalisieren(s).url ?: return // ungültige Adresse: Felder bleiben gefüllt, "Verbinden" zeigt den Fehler
         val vorhanden = einst.server
-        if (ziel != null && vorhanden != null && vorhanden.url != ziel) {
-            AlertDialog.Builder(this)
-                .setTitle(R.string.server_wechseln)
-                .setMessage(getString(R.string.deeplink_wechseln, vorhanden.url, ziel))
-                .setPositiveButton(R.string.verbinden) { _, _ -> start() }
-                .setNegativeButton(android.R.string.cancel, null)
-                .show()
-        } else {
-            start()
+        val text = when {
+            vorhanden == null -> getString(R.string.deeplink_neu, ziel)
+            vorhanden.url != ziel -> getString(R.string.deeplink_wechseln, vorhanden.url, ziel)
+            else -> getString(R.string.deeplink_gleich, ziel)
         }
+        AlertDialog.Builder(this)
+            .setTitle(R.string.deeplink_titel)
+            .setMessage(text)
+            .setPositiveButton(R.string.verbinden) { _, _ -> start() }
+            .setNegativeButton(android.R.string.cancel, null)
+            .show()
     }
 
     private fun fehler(text: String) {

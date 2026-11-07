@@ -1,5 +1,6 @@
 import { q, q1, ereignis } from '../../utils/db'
 import { clientIp, hashPw, requireAdmin } from '../../utils/auth'
+import { appGeraeteWiderrufen } from '../../utils/app'
 import { UNBEGRENZT } from '../../utils/quota'
 import { quotaWarnen } from '../../utils/benachrichtigen'
 
@@ -45,6 +46,7 @@ export default defineEventHandler(async (event) => {
       throw fehler(400, 'Das Passwort braucht mindestens 10 Zeichen.', 'The password needs at least 10 characters.')
     await q('UPDATE users SET password = $1 WHERE id = $2', [await hashPw(b.password), id])
     await q('DELETE FROM sessions WHERE user_id = $1', [id])
+    await appGeraeteWiderrufen(id)
   }
   await ereignis('user_updated', ich.id, { username: z.username }, clientIp(event))
   return { ok: true }

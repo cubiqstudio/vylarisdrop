@@ -5,7 +5,7 @@ import { appGeraetAntwort, appGeraetName } from '../../utils/app'
 // Hoechstens 10 App-Geraete je Nutzer; beim elften wird das am laengsten ungenutzte ersetzt.
 export default defineEventHandler(async (event) => {
   const u = await requireUser(event)
-  if (limit('app-token:' + u.id, 20, 600)) {
+  if (limit('app-token-user:' + u.id, 20, 600)) {
     setResponseHeader(event, 'Retry-After', 600)
     throw fehler(429, 'Zu viele Anfragen. Bitte warte kurz.', 'Too many requests. Please wait a moment.')
   }

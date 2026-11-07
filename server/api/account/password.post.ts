@@ -1,4 +1,5 @@
 import { q, q1, ereignis } from '../../utils/db'
+import { appGeraeteWiderrufen } from '../../utils/app'
 import { checkPw, clientIp, hashPw, limit, requireUser, sessionTokenHash } from '../../utils/auth'
 
 export default defineEventHandler(async (event) => {
@@ -18,6 +19,8 @@ export default defineEventHandler(async (event) => {
     throw fehler(403, 'Das aktuelle Passwort stimmt nicht.', 'The current password is not correct.')
   await q('UPDATE users SET password = $1 WHERE id = $2', [await hashPw(neu), a.id])
   await q('DELETE FROM sessions WHERE user_id = $1 AND token_hash <> $2', [a.id, sessionTokenHash(event)])
-  await ereignis('password_changed', a.id, {}, clientIp(event))
+  // App-Geraete (Token) wuerden sonst per /api/app/sitzung sofort wieder eine Sitzung erzeugen
+  const geraete = await appGeraeteWiderrufen(a.id, sessionTokenHash(event))
+  await ereignis('password_changed', a.id, { app_geraete: geraete }, clientIp(event))
   return { ok: true }
 })
