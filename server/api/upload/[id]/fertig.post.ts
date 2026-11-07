@@ -4,7 +4,7 @@ import { alsApi } from '../../../utils/api'
 import { PassThrough } from 'node:stream'
 import { q, q1, ereignis } from '../../../utils/db'
 import { clientIp, requireUser } from '../../../utils/auth'
-import { schreiben, teileLoeschen, teilLesen, type Ort } from '../../../utils/speicher'
+import { ortGueltig, schreiben, teileLoeschen, teilLesen, type Ort } from '../../../utils/speicher'
 import { basisUrl, dateiAnlegen, fuerPanel } from '../../../utils/dateien'
 import { maxFuer } from '../../../utils/hochladen'
 
@@ -29,7 +29,9 @@ export default defineEventHandler(async (event) => {
   if (fehlt.length)
     throw fehler(409, `Es fehlen noch ${fehlt.length} Stück(e).`, `${fehlt.length} chunk(s) still missing.`)
 
+  // Teile liegen lokal bzw. bei S3; die fertige Datei kommt an den beim Start gewählten Ort (auch SFTP-Erweiterung)
   const ort: Ort = up.speicher === 's3' ? 's3' : 'lokal'
+  const ziel: Ort = ortGueltig(up.speicher) || ort
   const strom = new PassThrough()
   void (async () => {
     try {
@@ -46,7 +48,7 @@ export default defineEventHandler(async (event) => {
       strom.destroy(e)
     }
   })()
-  const g = await schreiben(strom, await maxFuer(u), ort)
+  const g = await schreiben(strom, await maxFuer(u), ziel)
   if (g.size !== Number(up.size))
     throw fehler(400, 'Die Datei ist nicht vollständig angekommen.', 'The file did not arrive completely.')
   const o = up.optionen || {}

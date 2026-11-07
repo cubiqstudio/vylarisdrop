@@ -226,9 +226,16 @@ async function composeKopieren() {
     <div class="block verteilung">
       <div class="reihe zw">
         <h3>{{ t('Ablage', 'Storage') }}</h3>
-        <span :class="['chip', data?.ziel === 's3' ? 'info' : 'neutral']"
-          ><Ico :n="data?.ziel === 's3' ? 'wolke' : 'database'" /> {{ t('Neue Dateien:', 'New files:') }}
-          {{ data?.ziel === 's3' ? 'S3' : t('dieser Server', 'this server') }}</span
+        <span :class="['chip', data?.ziel === 's3' || data?.ziel?.startsWith('sftp') ? 'info' : 'neutral']"
+          ><Ico :n="data?.ziel === 's3' ? 'wolke' : data?.ziel?.startsWith('sftp') ? 'knoten' : 'database'" />
+          {{ t('Neue Dateien:', 'New files:') }}
+          {{
+            data?.ziel === 's3'
+              ? 'S3'
+              : data?.ziel?.startsWith('sftp')
+                ? t('SFTP-Erweiterung', 'SFTP add-on')
+                : t('dieser Server', 'this server')
+          }}</span
         >
       </div>
       <div class="vt-balken">
@@ -244,11 +251,20 @@ async function composeKopieren() {
           <span class="punkt s"></span><b>S3</b> {{ zahl(s3.anzahl) }} {{ t('Dateien', 'files') }} ·
           {{ groesse(s3.bytes) }}<small v-if="data?.s3?.bucket" class="mono">{{ data.s3.bucket }}</small>
         </div>
+        <div v-if="data?.verteilung?.sftp?.anzahl">
+          <span class="punkt s"></span><b>SFTP</b> {{ zahl(data.verteilung.sftp.anzahl) }} {{ t('Dateien', 'files') }} ·
+          {{ groesse(data.verteilung.sftp.bytes) }}
+          <small><NuxtLink to="/speicher/ziele">{{ t('Speicher-Erweiterungen', 'Storage add-ons') }}</NuxtLink></small>
+        </div>
       </div>
       <div v-if="umzug" class="umzug">
         <div class="reihe zw">
           <b>{{
-            umzug.ziel === 's3' ? t('Umzug nach S3', 'Moving to S3') : t('Umzug auf den Server', 'Moving to the server')
+            umzug.ziel === 's3'
+              ? t('Umzug nach S3', 'Moving to S3')
+              : umzug.ziel?.startsWith('sftp')
+                ? t('Umzug auf eine SFTP-Erweiterung', 'Moving to an SFTP add-on')
+                : t('Umzug auf den Server', 'Moving to the server')
           }}</b>
           <span
             :class="['chip', { laeuft: 'info', fertig: 'ok', pausiert: 'warn', fehler: 'rot' }[umzug.status as string]]"

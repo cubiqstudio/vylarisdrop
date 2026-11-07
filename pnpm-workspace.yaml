@@ -5,6 +5,9 @@ enablePrePostScripts: true
 allowBuilds:
   '@parcel/watcher': true
   esbuild: true
+  # ssh2 (SFTP-Erweiterungen) läuft auch ohne die optionalen nativen Beschleuniger; kein Compiler im Build nötig
+  cpu-features: false
+  ssh2: false
 overrides:
   '@vue/shared': 3.5.42
   '@vue/reactivity': 3.5.42

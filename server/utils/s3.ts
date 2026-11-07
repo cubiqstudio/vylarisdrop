@@ -22,8 +22,10 @@ export interface S3Ziel {
   praefix: string
 }
 export interface SpeicherWahl {
-  art: 'lokal' | 's3'
+  art: 'lokal' | 's3' | 'sftp'
   s3: S3Ziel | null
+  /** Speicher-Erweiterung (SFTP), die für neue Uploads gilt, wenn `art` = 'sftp' */
+  sftpZiel?: number | null
 }
 
 const LEER: SpeicherWahl = { art: 'lokal', s3: null }

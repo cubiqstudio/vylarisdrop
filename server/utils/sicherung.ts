@@ -7,7 +7,17 @@ import { createInterface } from 'node:readline'
 import yazl from 'yazl'
 import yauzl from 'yauzl'
 import { db, q, q1 } from './db'
-import { arbeitsPfad, datenordner, lesen, loeschen, nebenLesen, nebenSchreiben, schreiben, zielOrt } from './speicher'
+import {
+  ablagenBereit,
+  arbeitsPfad,
+  datenordner,
+  lesen,
+  loeschen,
+  nebenLesen,
+  nebenSchreiben,
+  schreiben,
+  zielOrt
+} from './speicher'
 import { melde, VERSION } from './knoten'
 import { settingsCacheLeeren } from './settings'
 
@@ -101,6 +111,9 @@ export async function sicherungErstellen(): Promise<{ strom: Readable; name: str
   const objekte = await q<{ ablage: string; size: string }>(
     `SELECT ablage, size FROM files UNION SELECT datei->>'ablage', (datei->>'size')::bigint FROM papierkorb`
   )
+  // Dateien auf SFTP-Erweiterungen werden wie lokale und S3-Dateien mitgesichert (gelesen und ins ZIP gepackt) —
+  // ist eine Erweiterung nicht erreichbar, scheitert die Sicherung gleich mit klarer Meldung statt mittendrin.
+  await ablagenBereit(objekte.map((o) => o.ablage).filter(Boolean))
   const zahlen: Record<string, number> = {}
   for (const x of t) zahlen[x.name] = Number((await q1<{ n: string }>(`SELECT count(*) AS n FROM ${x.name}`))?.n || 0)
   const kopf = {
