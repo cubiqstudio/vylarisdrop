@@ -3,12 +3,13 @@ import { q, q1, ereignis } from '../../../../utils/db'
 import { clientIp, limit, type Nutzer } from '../../../../utils/auth'
 import { loeschen, schreiben } from '../../../../utils/speicher'
 import { basisUrl, dateiAnlegen, fuerPanel, links, type DateiZeile } from '../../../../utils/dateien'
-import { freierPlatz } from '../../../../utils/hochladen'
+import { dateiGroesseMax, freierPlatz } from '../../../../utils/hochladen'
 import { istQuotaFehler } from '../../../../utils/quota'
 import { getUploads } from '../../../../utils/settings'
 import { imHintergrund, speicherPruefen } from '../../../../utils/benachrichtigen'
 import { webhookAusloesen } from '../../../../utils/webhooks'
 import { alsApi } from '../../../../utils/api'
+import { rechteVon } from '../../../../utils/teams'
 import { anfrageFreigegeben, anfrageOffen, anfragePerToken } from '../../../../utils/anfragen'
 
 export default defineEventHandler(async (event) => {
@@ -27,13 +28,18 @@ export default defineEventHandler(async (event) => {
       o.grund === 'voll' ? 'No more files can be uploaded here.' : 'This request is closed.'
     )
   if (!(await anfrageFreigegeben(event, a))) throw fehler(403, 'Passwort erforderlich.', 'Password required.')
-  const besitzer = await q1<Nutzer>('SELECT id, username, email, role, quota_bytes, prefs FROM users WHERE id = $1', [
+  const besitzer = await q1<Nutzer>('SELECT id, username, email, role, rolle_id, quota_bytes, prefs FROM users WHERE id = $1', [
     a.user_id
   ])
   if (!besitzer) throw fehler(404, 'Diese Anfrage gibt es nicht.', 'This request does not exist.')
+  // Verliert der Besitzer das Recht auf Datei-Anfragen, nimmt eine bestehende Anfrage keine Uploads mehr an
+  if (!(await rechteVon(besitzer)).anfragen)
+    throw fehler(410, 'Diese Anfrage ist geschlossen.', 'This request is closed.')
   const cfg = await getUploads()
   const frei = await freierPlatz(besitzer, a.folder_id)
-  const grenzen = [a.max_bytes != null ? Number(a.max_bytes) : Infinity, cfg.maxBytes > 0 ? cfg.maxBytes : Infinity, frei]
+  // Die Rollengrenze „Dateigröße“ des Empfängers gilt auch für Gast-Uploads (wie bei Web-Upload, API und WebDAV)
+  const dateiMax = await dateiGroesseMax(besitzer)
+  const grenzen = [a.max_bytes != null ? Number(a.max_bytes) : Infinity, cfg.maxBytes > 0 ? cfg.maxBytes : Infinity, dateiMax, frei]
   const max = Math.min(...grenzen)
   // Gäste sehen keine Zahlen zum Speicher des Empfängers, nur dass es nicht passt
   const speicherVoll = () =>
@@ -112,7 +118,7 @@ export default defineEventHandler(async (event) => {
             req.resume()
             setResponseHeader(event, 'Connection', 'close')
             return ende(() =>
-              reject(frei <= Math.min(grenzen[0]!, grenzen[1]!) ? speicherVoll() : fehler(413, 'Die Datei ist zu groß.', 'The file is too large.'))
+              reject(frei <= Math.min(grenzen[0]!, grenzen[1]!, dateiMax) ? speicherVoll() : fehler(413, 'Die Datei ist zu groß.', 'The file is too large.'))
             )
           }
           ende(() => reject(e))

@@ -1,6 +1,7 @@
 import { z } from 'zod'
 import { q } from '../../../utils/db'
 import { requireUser } from '../../../utils/auth'
+import { requireRecht } from '../../../utils/teams'
 import { analyseAnstossen, meinImport } from '../../../utils/importKern'
 import { importAnalysieren } from '../../../utils/importQuellen'
 
@@ -28,6 +29,7 @@ const Zugang = z
 
 export default defineEventHandler(async (event) => {
   const u = await requireUser(event)
+  await requireRecht(u, 'import')
   const imp = await meinImport(event, u)
   if (imp.status !== 'entwurf' && imp.status !== 'bereit')
     throw fehler(409, 'Dieser Import wurde schon gestartet.', 'This import has already been started.')

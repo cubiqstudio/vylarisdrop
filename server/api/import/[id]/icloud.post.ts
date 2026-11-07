@@ -1,6 +1,7 @@
 import { z } from 'zod'
 import { q } from '../../../utils/db'
 import { limit, requireUser } from '../../../utils/auth'
+import { requireRecht } from '../../../utils/teams'
 import { importAnsicht, ladeImport, meinImport } from '../../../utils/importKern'
 import { icloudAnmelden, icloudCode, icloudSms, icloudTelefone, type Sitzung } from '../../../utils/icloud'
 
@@ -18,6 +19,7 @@ const Body = z.discriminatedUnion('aktion', [
 
 export default defineEventHandler(async (event) => {
   const u = await requireUser(event)
+  await requireRecht(u, 'import')
   const imp = await meinImport(event, u)
   if (imp.quelle !== 'icloud' || imp.weg !== 'konto')
     throw fehler(400, 'Dieser Import nutzt keine Apple-ID.', 'This import does not use an Apple ID.')

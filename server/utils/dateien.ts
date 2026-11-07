@@ -1,5 +1,5 @@
 import { dateiCsp } from './dateiCsp'
-import { createHmac, timingSafeEqual } from 'node:crypto'
+import { createHash, createHmac, timingSafeEqual } from 'node:crypto'
 import type { H3Event } from 'h3'
 import { q, q1 } from './db'
 import { checkPw, hashPw, istHttps } from './auth'
@@ -372,14 +372,17 @@ export function erloschen(f: DateiZeile): boolean {
 }
 
 const freigabeName = (id: string) => `vd_f${id}`
-async function freigabeWert(id: string, bis: number) {
+// Bindung an das aktuelle Passwort: ändert oder entfernt der Besitzer das Passwort, verlieren alte Freigaben und Vorschau-Token ihre Wirkung
+const pwBindung = (hash?: string | null) =>
+  hash ? createHash('sha256').update(String(hash)).digest('hex').slice(0, 16) : ''
+async function freigabeWert(id: string, bis: number, hash?: string | null) {
   const s = (await getInstance()).secret
-  return `${bis}.${createHmac('sha256', s).update(`datei:${id}:${bis}`).digest('base64url')}`
+  return `${bis}.${createHmac('sha256', s).update(`datei:${id}:${bis}:${pwBindung(hash)}`).digest('base64url')}`
 }
 export async function freigeben(event: H3Event, f: DateiZeile, pw: string): Promise<boolean> {
   if (!f.password_hash || !(await checkPw(String(pw || '').slice(0, 200), f.password_hash))) return false
   const bis = Date.now() + 12 * 3600_000
-  setCookie(event, freigabeName(String(f.id)), await freigabeWert(String(f.id), bis), {
+  setCookie(event, freigabeName(String(f.id)), await freigabeWert(String(f.id), bis, f.password_hash), {
     httpOnly: true,
     sameSite: 'lax',
     secure: istHttps(event),
@@ -394,7 +397,7 @@ export async function freigegeben(event: H3Event, f: DateiZeile, betrachterId?: 
   const roh = getCookie(event, freigabeName(String(f.id))) || ''
   const bis = Number(roh.split('.')[0])
   if (!bis || bis < Date.now()) return false
-  const soll = Buffer.from(await freigabeWert(String(f.id), bis)),
+  const soll = Buffer.from(await freigabeWert(String(f.id), bis, f.password_hash)),
     ist = Buffer.from(roh)
   return soll.length === ist.length && timingSafeEqual(soll, ist)
 }
@@ -407,18 +410,19 @@ export async function aufrufZaehlen(f: DateiZeile): Promise<boolean> {
   return !!r
 }
 
-export async function vorschauToken(f: Pick<DateiZeile, 'id'>): Promise<string> {
+type TokenDatei = Pick<DateiZeile, 'id'> & { password_hash?: string | null }
+export async function vorschauToken(f: TokenDatei): Promise<string> {
   const bis = Math.floor(Date.now() / 1000) + 1800
   const s = (await getInstance()).secret
-  return `${bis}.${createHmac('sha256', s).update(`vorschau:${f.id}:${bis}`).digest('base64url').slice(0, 22)}`
+  return `${bis}.${createHmac('sha256', s).update(`vorschau:${f.id}:${bis}:${pwBindung(f.password_hash)}`).digest('base64url').slice(0, 22)}`
 }
-export async function vorschauTokenOk(f: Pick<DateiZeile, 'id'>, t: unknown): Promise<boolean> {
+export async function vorschauTokenOk(f: TokenDatei, t: unknown): Promise<boolean> {
   const roh = String(t || '')
   const bis = Number(roh.split('.')[0])
   if (!bis || bis < Date.now() / 1000) return false
   const s = (await getInstance()).secret
   const soll = Buffer.from(
-    `${bis}.${createHmac('sha256', s).update(`vorschau:${f.id}:${bis}`).digest('base64url').slice(0, 22)}`
+    `${bis}.${createHmac('sha256', s).update(`vorschau:${f.id}:${bis}:${pwBindung(f.password_hash)}`).digest('base64url').slice(0, 22)}`
   )
   const ist = Buffer.from(roh)
   return soll.length === ist.length && timingSafeEqual(soll, ist)
@@ -472,6 +476,35 @@ export function istErsterAbruf(event: H3Event): boolean {
   if (event.method === 'HEAD') return false
   const r = String(getRequestHeader(event, 'range') || '')
   return !r || /^bytes=0-/.test(r)
+}
+
+// Dateien mit Aufruf-Grenze: Ein Abruf mit Range-Kopf ab einer späteren Stelle (Video-Spulen, abgebrochener Download) zählt nur dann
+// nicht neu, wenn derselbe Client vorher einen GEZÄHLTEN Abruf gemacht hat. Den Nachweis trägt ein kurzlebiges, signiertes Cookie.
+// Ohne dieses Cookie zählt jeder Abruf, auch mit Range-Kopf (bytes=1-, bytes=00-, bytes=-N), und erloschene Dateien bleiben gesperrt.
+const FORTSETZUNG_SEK = 600
+const fortsetzungName = (id: string) => `vd_z${id}`
+async function fortsetzungWert(id: string, bis: number) {
+  const s = (await getInstance()).secret
+  return `${bis}.${createHmac('sha256', s).update(`fortsetzung:${id}:${bis}`).digest('base64url').slice(0, 22)}`
+}
+export async function fortsetzungSetzen(event: H3Event, f: Pick<DateiZeile, 'id'>): Promise<void> {
+  const bis = Date.now() + FORTSETZUNG_SEK * 1000
+  setCookie(event, fortsetzungName(String(f.id)), await fortsetzungWert(String(f.id), bis), {
+    httpOnly: true,
+    sameSite: 'lax',
+    secure: istHttps(event),
+    path: '/',
+    maxAge: FORTSETZUNG_SEK
+  })
+}
+export async function fortsetzungOk(event: H3Event, f: Pick<DateiZeile, 'id'>): Promise<boolean> {
+  if (!getRequestHeader(event, 'range')) return false
+  const roh = getCookie(event, fortsetzungName(String(f.id))) || ''
+  const bis = Number(roh.split('.')[0])
+  if (!bis || bis < Date.now()) return false
+  const soll = Buffer.from(await fortsetzungWert(String(f.id), bis)),
+    ist = Buffer.from(roh)
+  return soll.length === ist.length && timingSafeEqual(soll, ist)
 }
 
 export async function dateiLoeschen(f: Pick<DateiZeile, 'id' | 'ablage'>): Promise<void> {

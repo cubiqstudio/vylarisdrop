@@ -860,6 +860,9 @@ async function ordnerGroesse(ids: number[]): Promise<number> {
 
 async function verschiebenKopieren(c: DavKontext, teile: string[], kopie: boolean) {
   schreibenPruefen(c)
+  // Kopieren legt neue Dateien an: dieselbe Rollenregel wie bei PUT und beim Kopieren im Dateimanager
+  if (kopie && !(await rechteVon(c.u)).hochladen)
+    throw davFehler(403, 'Deine Rolle erlaubt keine Uploads.', 'Your role does not allow uploads.')
   const ev = c.event
   const { a: quelleA, k: quelle } = await zuNode(c, teile)
   if (quelle.art !== 'datei' && quelle.art !== 'ordner')

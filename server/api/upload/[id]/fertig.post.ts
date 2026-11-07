@@ -8,10 +8,13 @@ import { ortGueltig, schreiben, teileLoeschen, teilLesen, type Ort } from '../..
 import { basisUrl, dateiAnlegen, fuerPanel } from '../../../utils/dateien'
 import { dateiGroesseMax } from '../../../utils/hochladen'
 import { dateinameEindeutig } from '../../../utils/dateiNamen'
+import { requireRecht } from '../../../utils/teams'
 import { grenzFehler, uploadGrenzen } from '../../../utils/quota'
 
 export default defineEventHandler(async (event) => {
   const u = await requireUser(event)
+  // Das Recht kann nach dem Start des Uploads entzogen worden sein: auch das Abschließen prüft es
+  await requireRecht(u, 'hochladen')
   const id = String(getRouterParam(event, 'id') || '')
   const upZeile = await q1<{
     teile: number

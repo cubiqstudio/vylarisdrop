@@ -1,5 +1,6 @@
 import { q1 } from '../../../../utils/db'
 import { currentUser } from '../../../../utils/auth'
+import { slugParam } from '../../../../utils/abruf'
 import { statZaehlen } from '../../../../utils/statistik'
 import { inQuarantaene } from '../../../../utils/virenscan'
 import {
@@ -15,7 +16,7 @@ import {
 
 export default defineEventHandler(async (event) => {
   setResponseHeader(event, 'Cache-Control', 'no-store')
-  const f = await dateiPerSlug(decodeURIComponent(String(getRouterParam(event, 'slug') || '')))
+  const f = await dateiPerSlug(slugParam(event))
   if (!f || abgelaufen(f)) throw fehler(404, 'Diese Datei gibt es nicht (mehr).', 'This file does not exist (anymore).')
   if (inQuarantaene(f))
     throw fehler(451, 'Diese Datei wurde vom Virenscan gesperrt.', 'This file was blocked by the virus scan.')
@@ -28,7 +29,9 @@ export default defineEventHandler(async (event) => {
       /discordbot|telegrambot|whatsapp|twitterbot|slackbot|facebookexternalhit|linkedinbot|skypeuripreview|mastodon|matrix|embedly|redditbot/i.test(
         String(getRequestHeader(event, 'user-agent') || '')
       )
-    const zaehlen = getQuery(event).zaehlen !== '0' && !bot
+    // Link-Vorschau-Bots und zaehlen=0 zählen nur bei Dateien OHNE Aufruf-Grenze nicht (beides steuert der Aufrufer selbst). Die Antwort
+    // enthält ein Vorschau-Token (= Abruf ohne Zählung): bei Dateien mit Aufruf-Grenze gibt es das darum nur zusammen mit einem gezählten Aufruf.
+    const zaehlen = (getQuery(event).zaehlen !== '0' && !bot) || f.max_views != null
     if (erloschen(f) || (zaehlen && !(await aufrufZaehlen(f))))
       throw fehler(404, 'Diese Datei gibt es nicht (mehr).', 'This file does not exist (anymore).')
     if (zaehlen) statZaehlen(event, f.id)
