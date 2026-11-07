@@ -5,6 +5,9 @@ services:
     environment:
       NUXT_DB_URL: ${DB_URL:?Bitte DB_URL in .env setzen}
       VD_NODE_NAME: ${VD_NODE_NAME:-}
+      VD_LIZENZ_SERVER: ${VD_LIZENZ_SERVER:-}
+      VD_LIZENZ_KEY: ${VD_LIZENZ_KEY:-}
+      VD_SFTP_SCHLUESSEL: ${VD_SFTP_SCHLUESSEL:-}
       TZ: ${TZ:-Europe/Berlin}
       VD_NODE_ROLE: ${VD_NODE_ROLE:-}
     volumes:

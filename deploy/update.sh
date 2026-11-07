@@ -307,7 +307,7 @@ weg_retten() {
     ip=$(docker inspect -f '{{with index .HostConfig.PortBindings "3000/tcp"}}{{(index . 0).HostIp}}{{end}}' "$c" 2>/dev/null || true)
   fi
   if [ -n "$port" ]; then
-    printf 'COMPOSE_FILE=docker-compose.yml:compose.port.yml\nRD_PORT=%s\nRD_BIND=%s\n' "$port" "${ip:-0.0.0.0}" >> .env
+    printf 'COMPOSE_FILE=docker-compose.yml:compose.port.yml\nVD_PORT=%s\nVD_BIND=%s\n' "$port" "${ip:-0.0.0.0}" >> .env
     WEG_GERETTET="Port ${ip:-0.0.0.0}:$port"; return 0
   fi
   for alt in $(ls -1d .sicherung/*/ 2>/dev/null | sort -r); do

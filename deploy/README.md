@@ -334,7 +334,7 @@ Bei Hetzner: Storage Box mit SSH-Unterstützung und externer Erreichbarkeit, **P
 
 ## Umgebungsvariablen
 
-Die mitgelieferte `docker-compose.yml` reicht nur einen Teil der `VD_*`-Variablen an den Container weiter (u. a. `VD_LANG`, `VD_NODE_NAME`, `VD_S3_*`, `VD_RESET_2FA`, `VD_CLAMAV`). Die folgenden drei fehlen dort und müssen von dir ergänzt werden:
+Die mitgelieferte `docker-compose.yml` (und `compose.node.yml`) reicht diese Variablen aus der `.env` an den Container weiter:
 
 | Variable | Bedeutung |
 |---|---|
@@ -344,27 +344,15 @@ Die mitgelieferte `docker-compose.yml` reicht nur einen Teil der `VD_*`-Variable
 
 **Ohne `VD_LIZENZ_SERVER` und `VD_LIZENZ_KEY` gibt es keine Lizenzprüfung, und alle Pro-Funktionen bleiben gesperrt**, auch eine eingetragene Lizenz oder eine Offline-Lizenzdatei wirkt dann nicht. Beide werden beim Start gelesen (nach dem Ändern `docker compose up -d`). Den Lizenzserver und den Schlüssel bekommst du von VylarisGroupEurope.
 
-So reichst du sie durch, ohne dass ein Update es überschreibt (`update.sh` ersetzt `docker-compose.yml`, kennt aber eine eigene Datei nicht): Lege neben `docker-compose.yml` die Datei `compose.eigen.yml` an
-
-```yaml
-services:
-  app:
-    environment:
-      VD_LIZENZ_SERVER: ${VD_LIZENZ_SERVER:-}
-      VD_LIZENZ_KEY: ${VD_LIZENZ_KEY:-}
-      VD_SFTP_SCHLUESSEL: ${VD_SFTP_SCHLUESSEL:-}
-```
-
-hänge sie in der `.env` an `COMPOSE_FILE` an und trage die Werte ein:
+Beispiel für die `.env`:
 
 ```bash
-COMPOSE_FILE=docker-compose.yml:compose.caddy.yml:compose.eigen.yml   # deine bestehenden Dateien + compose.eigen.yml
 VD_LIZENZ_SERVER=https://lizenz.example.org
 VD_LIZENZ_KEY="-----BEGIN PUBLIC KEY-----\n…\n-----END PUBLIC KEY-----"
 VD_SFTP_SCHLUESSEL=ein-langer-zufaelliger-wert
 ```
 
-Danach `docker compose up -d`. Mit `docker compose config | grep VD_` siehst du, was ankommt. Hinweis: Die automatische Suche von `update.sh` nach der Installation überspringt Ordner mit einer eigenen Compose-Datei; bei mehreren Installationen auf dem Rechner deshalb `update.sh --dir /opt/vylariscloud` mit dem richtigen Ordner aufrufen.
+Danach `docker compose up -d`. Mit `docker compose config | grep VD_` siehst du, was ankommt.
 
 ## Upload-Werkzeuge
 
