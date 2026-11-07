@@ -22,10 +22,14 @@ export interface S3Ziel {
   praefix: string
 }
 export interface SpeicherWahl {
-  art: 'lokal' | 's3' | 'sftp'
+  art: 'lokal' | 's3' | 'sftp' | 'pool'
   s3: S3Ziel | null
   /** Speicher-Erweiterung (SFTP), die für neue Uploads gilt, wenn `art` = 'sftp' */
   sftpZiel?: number | null
+  /** Speicher-Pool (art = 'pool'): Mitglieder `lokal` und `sftp<ID>` */
+  mitglieder?: string[]
+  /** Verteilung neuer Dateien im Pool: `frei` = Mitglied mit dem meisten freien Platz, `abwechselnd` = reihum */
+  strategie?: 'frei' | 'abwechselnd'
 }
 
 const LEER: SpeicherWahl = { art: 'lokal', s3: null }

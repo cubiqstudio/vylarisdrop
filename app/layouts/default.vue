@@ -313,7 +313,10 @@ watch(
         <NuxtLink v-if="Number(stats?.papierkorb) > 0" to="/papierkorb" class="q-korb">
           {{ t('Papierkorb zählt mit:', 'Trash counts:') }} {{ groesse(stats.papierkorb) }}
         </NuxtLink>
-        <div v-if="stats?.platte && !stats?.kontingent" class="platte">
+        <div v-if="stats?.pool?.summe?.bekannt && !stats?.kontingent" class="platte">
+          {{ t('Frei im Pool:', 'Free in pool:') }} {{ groesse(stats.pool.summe.frei) }} {{ t('von', 'of') }} {{ groesse(stats.pool.summe.gesamt) }}<template v-if="stats.pool.unbekannt"> {{ t(`(+ ${stats.pool.unbekannt} ohne Angabe)`, `(+ ${stats.pool.unbekannt} unknown)`) }}</template>
+        </div>
+        <div v-else-if="stats?.platte && !stats?.kontingent" class="platte">
           {{ t('Frei auf dem Server:', 'Free on server:') }} {{ groesse(stats.platte.frei) }}
         </div>
       </div>
