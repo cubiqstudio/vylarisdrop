@@ -2,7 +2,7 @@ import { q1 } from '../utils/db'
 import { altesZiel } from '../utils/importKern'
 
 const EIGEN =
-  /^\/(api|_nuxt|__nuxt|_ipx|v|r|d|raw|t|s|a|login|setup|ordner|werkzeuge|einstellungen|nutzer|embed|anfragen|import|pro|server|teams|sso|marke|papierkorb|protokoll|statistik|sicherung|webhooks|api-doku|regeln|system|metrics|paste|g|favicon\.ico|robots\.txt)(\/|$)/
+  /^\/(api|_nuxt|__nuxt|_ipx|v|r|d|raw|t|s|a|app|login|setup|ordner|werkzeuge|einstellungen|nutzer|embed|anfragen|import|pro|server|teams|sso|marke|papierkorb|protokoll|statistik|sicherung|webhooks|api-doku|regeln|system|metrics|paste|g|favicon\.ico|robots\.txt)(\/|$)/
 let gibtEs: { wert: boolean; bis: number } = { wert: false, bis: 0 }
 
 export default defineEventHandler(async (event) => {

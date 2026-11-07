@@ -24,7 +24,7 @@ export async function apiNutzer(event: H3Event, recht: TokenRecht): Promise<Nutz
       'Too many requests (at most 600 per minute and token).'
     )
   }
-  const { tokenRechte: _r, tokenId: _i, ...u } = t
+  const { tokenRechte: _r, tokenId: _i, tokenArt: _a, tokenName: _n, ...u } = t
   event.context.nutzer = u
   return u
 }

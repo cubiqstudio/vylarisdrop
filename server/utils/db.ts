@@ -276,6 +276,18 @@ DROP TRIGGER IF EXISTS vd_live_papierkorb ON papierkorb;
 CREATE TRIGGER vd_live_papierkorb AFTER INSERT OR UPDATE OR DELETE ON papierkorb FOR EACH ROW EXECUTE FUNCTION vd_live_melden('papierkorb');
 DROP TRIGGER IF EXISTS vd_live_anfragen ON anfragen;
 CREATE TRIGGER vd_live_anfragen AFTER INSERT OR UPDATE OR DELETE ON anfragen FOR EACH ROW EXECUTE FUNCTION vd_live_melden('anfragen');
+
+-- [cloud:app] Android-App: ein "App-Geraet" ist ein Token in upload_tokens mit art = 'app' (Format vd_app_<48 Hex>, nur als Hash gespeichert).
+-- Die Sitzung, die /api/app/sitzung daraus anlegt, merkt sich das Geraet (sessions.app_geraet): Widerruf beendet sie sofort.
+-- Kopplungscodes (je 8 Zeichen, nur als Hash, 5 Minuten, einmal verwendbar) verbinden ein Handy ueber einen QR-Code oder Link.
+ALTER TABLE upload_tokens ADD COLUMN IF NOT EXISTS art text NOT NULL DEFAULT 'api';
+CREATE INDEX IF NOT EXISTS upload_tokens_app_idx ON upload_tokens(user_id) WHERE art = 'app';
+ALTER TABLE sessions ADD COLUMN IF NOT EXISTS app_geraet int REFERENCES upload_tokens(id) ON DELETE CASCADE;
+CREATE INDEX IF NOT EXISTS sessions_app_idx ON sessions(app_geraet) WHERE app_geraet IS NOT NULL;
+CREATE TABLE IF NOT EXISTS app_koppelcodes (
+  id serial PRIMARY KEY, user_id int NOT NULL REFERENCES users(id) ON DELETE CASCADE, code_hash text NOT NULL UNIQUE,
+  ablauf_at timestamptz NOT NULL, benutzt_at timestamptz, created_at timestamptz NOT NULL DEFAULT now());
+CREATE INDEX IF NOT EXISTS app_koppelcodes_user_idx ON app_koppelcodes(user_id, created_at DESC);
 `
 
 export const TABELLEN = [
