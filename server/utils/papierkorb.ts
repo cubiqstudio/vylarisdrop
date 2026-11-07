@@ -1,3 +1,4 @@
+import type { PoolClient } from 'pg'
 import { db, q, q1 } from './db'
 import { loeschen } from './speicher'
 import { istSlug, neuerName } from './namen'
@@ -13,14 +14,26 @@ export const TAGE = 30
  * Legt eine Datei in den Papierkorb. Läuft in einer Transaktion unter einer Zeilensperre auf der Datei: Gleichzeitige
  * Aufrufe (Doppelklick, Retry, Sammelaktion plus Einzelaufruf, WebDAV) warten aufeinander, und nur der erste findet die
  * Zeile noch vor. Alle anderen liefern false, es entsteht genau eine Papierkorb-Zeile je Datei.
+ * Jedes Löschen sperrt zusätzlich die Duplikat-Gruppe (sha256 + Größe) bis zum Ende der Transaktion. Mit `bedingung` (z. B. "es
+ * bleibt eine andere Kopie") prüft die Aufräum-Funktion unter dieser Sperre, ob gelöscht werden darf: Gleichzeitiges Löschen
+ * zweier Kopien (verschiedene Konten, Dateimanager, WebDAV) sieht damit immer den Stand nach dem Löschen der anderen.
  */
-export async function inPapierkorb(f: Pick<DateiZeile, 'id'>, von: number | null): Promise<boolean> {
+export async function inPapierkorb(
+  f: Pick<DateiZeile, 'id'>,
+  von: number | null,
+  bedingung?: (z: DateiZeile, c: PoolClient) => Promise<boolean>
+): Promise<boolean> {
   const c = await db().connect()
   let defekt: any = null
   try {
     await c.query('BEGIN')
     const z = (await c.query('SELECT * FROM files WHERE id = $1 FOR UPDATE', [f.id])).rows[0] as DateiZeile | undefined
     if (!z) {
+      await c.query('ROLLBACK')
+      return false
+    }
+    if (z.sha256 && Number(z.size) > 0) await c.query('SELECT pg_advisory_xact_lock(hashtextextended($1, 0))', ['dup:' + z.sha256 + '|' + z.size])
+    if (bedingung && !(await bedingung(z, c))) {
       await c.query('ROLLBACK')
       return false
     }

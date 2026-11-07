@@ -258,6 +258,9 @@ CREATE TABLE IF NOT EXISTS lizenz_geraete (
 -- alle Dateien zu laufen: 100.000 Dateien, 25 Gruppen 433 ms -> 25 ms). Teilindex: leere Pruefsummen und leere Dateien zaehlen nicht.
 -- Mehrkosten beim Anlegen einer Datei etwa 8 Mikrosekunden, Platz etwa 13 MB je 100.000 Dateien.
 CREATE INDEX IF NOT EXISTS files_sha256_idx ON files(sha256, size) WHERE sha256 <> '' AND size > 0;
+-- Namenspruefung beim Wiederherstellen/Anlegen auf der obersten Ebene (lower(name) LIKE 'stamm%'): ohne Index liest jede Pruefung alle
+-- Dateien des Kontos (5000 Dateien rueckgaengig: Minuten bei 300.000 Dateien). Teilindex nur fuer die Wurzel (folder_id IS NULL).
+CREATE INDEX IF NOT EXISTS files_wurzel_name_idx ON files(user_id, lower(name) text_pattern_ops) WHERE folder_id IS NULL;
 
 -- [cloud:live] Live-Aktualisierung: Aenderungen an Dateien, Ordnern, Papierkorb und Anfragen melden sich per NOTIFY
 -- ("db|<Thema>|<Nutzer-ID>"); gleiche Meldungen innerhalb einer Transaktion werden von PostgreSQL zusammengefasst.
