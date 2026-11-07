@@ -4,6 +4,8 @@ import { istSlug, neuerName } from './namen'
 import type { DateiZeile } from './dateien'
 import { variantenLoeschen } from './bildvarianten'
 import { quotaWarnen } from './benachrichtigen'
+import { ordnerRecht } from './teams'
+import { eindeutigerName, mitNamenssperre, sperrSchluessel } from './dateiNamen'
 
 export const TAGE = 30
 
@@ -27,10 +29,27 @@ export async function wiederherstellen(id: string, userId: number, admin: boolea
     datei: DateiZeile
     tags: number[]
     alte_pfade: Array<{ pfad: string; ziel: string }>
+    geloescht_von: number | null
   }>('SELECT * FROM papierkorb WHERE id = $1', [id])
-  if (!p || (p.user_id !== userId && !admin)) return null
+  // Wiederherstellen dürfen der Besitzer, wer die Datei gelöscht hat (z. B. die Team-Leitung mit "Rückgängig") und Admins
+  if (!p || (p.user_id !== userId && p.geloescht_von !== userId && !admin)) return null
   const d = p.datei
-  const ordner = d.folder_id && (await q1('SELECT 1 FROM folders WHERE id = $1', [d.folder_id])) ? d.folder_id : null
+  // Zurück in den alten Ordner nur, wenn er noch existiert und der Besitzer dort noch hineinladen darf (sonst in die Wurzel).
+  // Ein Kontingent-Zuwachs entsteht dabei nicht: Papierkorb-Einträge zählen schon zum Konto und zum Team des Ordners.
+  const ordner = d.folder_id && (await ordnerRecht(d.user_id, d.folder_id))?.hineinladen ? d.folder_id : null
+  return mitNamenssperre(sperrSchluessel(d.user_id, ordner), async () => {
+    // Namen im Ordner eindeutig halten ("name (2).ext"), auch bei Dateien aus einem gelöschten Ordner (landen in der Wurzel)
+    const name = await eindeutigerName({ ordnerId: ordner, userId: d.user_id, name: d.name, art: 'datei' })
+    return einsetzen(p, id, { ...d, name }, ordner)
+  })
+}
+
+async function einsetzen(
+  p: { tags: number[]; alte_pfade: Array<{ pfad: string; ziel: string }> },
+  id: string,
+  d: DateiZeile,
+  ordner: number | null
+): Promise<DateiZeile | null> {
   let neu: DateiZeile | null = null
   for (let versuch = 0; versuch < 6 && !neu; versuch++) {
     const slug = versuch === 0 && istSlug(d.slug) ? d.slug : neuerName('zufall', { laenge: 8 + versuch })

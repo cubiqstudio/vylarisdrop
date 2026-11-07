@@ -1023,6 +1023,13 @@ button.krume:hover {
 .aktionen .knopf {
   flex: 0 0 auto;
 }
+/* "Löschen" bleibt am rechten Rand sichtbar, auch wenn die übrigen Aktionen scrollen müssen */
+.aktionen .knopf.gefahr {
+  position: sticky;
+  right: 0;
+  background: var(--flaeche);
+  box-shadow: -10px 0 8px -4px var(--flaeche);
+}
 .trennlinie {
   width: 1px;
   height: 22px;
