@@ -54,8 +54,10 @@ const NAV = computed<Array<{ gruppe: string; punkte: NavPunkt[] }>>(() => [
     punkte: [
       { zu: '/', ic: 'cloud', text: t('Meine Dateien', 'My files'), zahl: stats.value?.dateien },
       { zu: '/sync', ic: 'umzug', text: t('Sync & WebDAV', 'Sync & WebDAV') },
+      { zu: '/geraete', ic: 'laptop', text: t('Verbundene Geräte', 'Connected devices') },
       { zu: '/speicher', ic: 'box', text: t('Speicher', 'Storage') },
       { zu: '/statistik', ic: 'chart', text: t('Statistik', 'Statistics') },
+      { zu: '/aufraeumen', ic: 'gauge', text: t('Aufräumen', 'Clean up') },
       { zu: '/papierkorb', ic: 'trash', text: t('Papierkorb', 'Trash') }
     ]
   },
