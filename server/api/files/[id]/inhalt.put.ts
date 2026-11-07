@@ -31,7 +31,7 @@ export default defineEventHandler(async (event) => {
   const ext = mime.split('/')[1]!.replace('jpeg', 'jpg')
   const name = f.name.replace(/\.[a-z0-9]{2,5}$/i, '') + '.' + ext
   await q(
-    "UPDATE files SET ablage = $2, size = $3, sha256 = $4, mime = $5, name = $6, verarbeitung = 'offen', vorschau = false, streifen = 0, exif_entfernt = false, ansicht = false, live = false, live_mp4 = false WHERE id = $1",
+    "UPDATE files SET ablage = $2, size = $3, sha256 = $4, mime = $5, name = $6, verarbeitung = 'offen', vorschau = false, streifen = 0, exif_entfernt = false, ansicht = false, live = false, live_mp4 = false, geaendert_at = now() WHERE id = $1",
     [id, g.schluessel, g.size, g.sha256, mime, name]
   )
   await loeschen(f.ablage)

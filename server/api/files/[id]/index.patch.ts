@@ -3,6 +3,7 @@ import { hashPw, requireUser } from '../../../utils/auth'
 import { ablaufAus, basisUrl, fuerPanel, type DateiZeile } from '../../../utils/dateien'
 import { istSlug } from '../../../utils/namen'
 import { dateiRecht, ordnerRecht } from '../../../utils/teams'
+import { eindeutigerName, mitNamenssperre, sperrSchluessel } from '../../../utils/dateiNamen'
 
 export default defineEventHandler(async (event) => {
   const u = await requireUser(event)
@@ -52,7 +53,21 @@ export default defineEventHandler(async (event) => {
   }
   if (typeof b?.passwort === 'string') neu('password_hash', b.passwort ? await hashPw(b.passwort.slice(0, 200)) : '')
   if (typeof b?.favorit === 'boolean') neu('favorite', b.favorit)
-  if (set.length) await q(`UPDATE files SET ${set.join(', ')} WHERE id = $1`, w)
+  // Namen im Zielordner eindeutig halten, wenn Name oder Ordner wechseln (Cloud-Dateimanager)
+  const neuerOrdner = 'ordner' in (b || {}) ? (b.ordner == null ? null : Number(b.ordner)) : f.folder_id
+  const nameIdx = set.findIndex((x) => x.startsWith('name ='))
+  const wunsch = nameIdx >= 0 ? String(w[nameIdx + 1]) : f.name
+  if (wunsch !== f.name || neuerOrdner !== f.folder_id) {
+    await mitNamenssperre(sperrSchluessel(f.user_id, neuerOrdner), async () => {
+      const n = await eindeutigerName({ ordnerId: neuerOrdner, userId: f.user_id, name: wunsch, art: 'datei', ausser: f.id })
+      if (nameIdx >= 0) w[nameIdx + 1] = n
+      else if (n !== f.name) neu('name', n)
+    })
+  }
+  if (set.length) {
+    if (set.some((x) => /^(name|folder_id) =/.test(x))) set.push('geaendert_at = now()')
+    await q(`UPDATE files SET ${set.join(', ')} WHERE id = $1`, w)
+  }
 
   if (Array.isArray(b?.tags)) {
     const ids = [...new Set(b.tags.map(Number).filter((n: number) => Number.isInteger(n) && n > 0))].slice(0, 30)

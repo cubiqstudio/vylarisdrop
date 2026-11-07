@@ -2,6 +2,7 @@ import { q, q1 } from '../../utils/db'
 import { requireUser } from '../../utils/auth'
 import { meineTeams, ordnerRecht } from '../../utils/teams'
 import { neuesGalerieToken } from '../../utils/galerie'
+import { eindeutigerName, namenSaeubern } from '../../utils/dateiNamen'
 
 export default defineEventHandler(async (event) => {
   const u = await requireUser(event)
@@ -15,7 +16,14 @@ export default defineEventHandler(async (event) => {
       .trim()
       .slice(0, 80)
     if (!name) throw fehler(400, 'Bitte einen Namen eingeben.', 'Please enter a name.')
-    await q('UPDATE folders SET name = $1 WHERE id = $2', [name, id])
+    // Namen im Ordner eindeutig halten (Cloud-Dateimanager): bei Umbenennen im Ziel-Elternordner
+    const alt = (await q1<{ parent_id: number | null; name: string }>('SELECT parent_id, name FROM folders WHERE id = $1', [id]))!
+    const ziel = 'parent_id' in (b || {}) ? (b.parent_id == null ? null : Number(b.parent_id)) : alt.parent_id
+    const endName =
+      name === alt.name && ziel === alt.parent_id
+        ? name
+        : await eindeutigerName({ ordnerId: ziel, userId: o.user_id, teamId: o.team_id, name: namenSaeubern(name, 'ordner') || name, art: 'ordner', ausser: id })
+    await q('UPDATE folders SET name = $1, geaendert_at = now() WHERE id = $2', [endName, id])
   }
   if ('parent_id' in (b || {})) {
     const p = b.parent_id == null ? null : Number(b.parent_id)
@@ -30,7 +38,12 @@ export default defineEventHandler(async (event) => {
       await teamSetzen(id, ziel.team_id)
     } else if (o.team_id && !o.eigen)
       throw fehler(400, 'Ein Team-Ordner bleibt im Team.', 'A team folder stays in the team.')
-    await q('UPDATE folders SET parent_id = $1 WHERE id = $2', [p, id])
+    const alt = (await q1<{ parent_id: number | null; name: string }>('SELECT parent_id, name FROM folders WHERE id = $1', [id]))!
+    if (alt.parent_id !== p) {
+      // Wird nur verschoben: Namen im Zielordner eindeutig halten
+      const endName = await eindeutigerName({ ordnerId: p, userId: o.user_id, teamId: p == null ? o.team_id : null, name: alt.name, art: 'ordner', ausser: id })
+      await q('UPDATE folders SET parent_id = $1, name = $3, geaendert_at = now() WHERE id = $2', [p, id, endName])
+    }
   }
   if ('team_id' in (b || {})) {
     const t = b.team_id == null ? null : Number(b.team_id)

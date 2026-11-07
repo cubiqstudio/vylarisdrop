@@ -17,6 +17,10 @@ export interface UploadOpt {
   passwort?: string
   stil?: string
   verschluesseln?: boolean
+  /** Cloud-Dateimanager: Namen im Ordner eindeutig machen ("name (2).ext"). Standard: an, solange die Startseite offen ist */
+  eindeutig?: boolean
+  /** Ohne Link-Kopie, Spritzer und Einzel-Toasts (der Aufrufer meldet selbst) */
+  still?: boolean
 }
 
 const PARALLEL = 3
@@ -30,14 +34,15 @@ export function useUploads() {
     liste.value = liste.value.map((z) => (z.id === id ? { ...z, ...patch } : z))
   }
 
-  async function eineDatei(datei: File, opt: UploadOpt) {
+  async function eineDatei(datei: File, opt: UploadOpt): Promise<boolean> {
     const id = Math.random().toString(36).slice(2)
     liste.value = [
       { id, name: datei.name || 'einfuegen.png', size: datei.size, teile: 1, fertig: 0, laeuft: [], status: 'warte' },
       ...liste.value
     ]
     try {
-      const { verschluesseln: e2e, ...serverOpt } = opt
+      const { verschluesseln: e2e, still, eindeutig, ...serverOpt } = opt
+      const eindeutigWert = eindeutig ?? (import.meta.client && location.pathname === '/')
       const v = e2e ? await verschluesseln(datei) : null
       const quelle = v ? v.blob : { size: datei.size, slice: async (a: number, b: number) => datei.slice(a, b) }
       const s = await api('/api/upload/start', {
@@ -46,7 +51,7 @@ export function useUploads() {
           name: datei.name || 'einfuegen.png',
           size: quelle.size,
           mime: v ? 'application/octet-stream' : datei.type,
-          optionen: { ...serverOpt, ...(v ? { verschluesselt: true } : {}) }
+          optionen: { ...serverOpt, ...(eindeutigWert ? { eindeutig: true } : {}), ...(v ? { verschluesselt: true } : {}) }
         }
       })
       aendern(id, { teile: s.teile, status: 'laeuft', serverId: s.id })
@@ -80,25 +85,33 @@ export function useUploads() {
       const link = v ? `${r.file.links.seite}#k=${v.schluessel}` : r.file.links.seite
       if (v) e2eMerken(r.file.slug, v.schluessel)
       aendern(id, { status: 'fertig', link })
-      const kopiert = await kopieren(link)
-      ok(
-        kopiert
-          ? t(`${datei.name || 'Datei'} hochgeladen — Link kopiert`, `${datei.name || 'File'} uploaded — link copied`)
-          : t(`${datei.name || 'Datei'} hochgeladen`, `${datei.name || 'File'} uploaded`)
-      )
-      feiern(document.querySelector(`[data-upload="${id}"] .hl-status`), link)
+      if (!still) {
+        const kopiert = await kopieren(link)
+        ok(
+          kopiert
+            ? t(`${datei.name || 'Datei'} hochgeladen — Link kopiert`, `${datei.name || 'File'} uploaded — link copied`)
+            : t(`${datei.name || 'Datei'} hochgeladen`, `${datei.name || 'File'} uploaded`)
+        )
+        feiern(document.querySelector(`[data-upload="${id}"] .hl-status`), link)
+      }
       neu.value++
       setTimeout(() => {
         liste.value = liste.value.filter((z) => z.id !== id)
       }, 5000)
+      return true
     } catch (e: any) {
       aendern(id, { status: 'fehler', fehler: e.message })
-      fehler(`${datei.name}: ${e.message}`)
+      if (!opt.still) fehler(`${datei.name}: ${e.message}`)
+      return false
     }
   }
 
-  function hochladen(dateien: FileList | File[], opt: UploadOpt = {}) {
-    for (const d of Array.from(dateien)) void eineDatei(d, opt)
+  /** Startet alle Uploads; das Ergebnis meldet, wie viele geklappt haben (alter Code darf es ignorieren). */
+  function hochladen(dateien: FileList | File[], opt: UploadOpt = {}): Promise<{ ok: number; fehler: number }> {
+    return Promise.all(Array.from(dateien).map((d) => eineDatei(d, opt))).then((r) => ({
+      ok: r.filter(Boolean).length,
+      fehler: r.filter((x) => !x).length
+    }))
   }
   const wartend = useState<{ dateien: File[]; opt: UploadOpt } | null>('uploads-wartend', () => null)
   function vorbereiten(dateien: FileList | File[], opt: UploadOpt = {}) {

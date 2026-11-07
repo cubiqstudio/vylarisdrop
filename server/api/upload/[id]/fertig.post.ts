@@ -7,6 +7,7 @@ import { clientIp, requireUser } from '../../../utils/auth'
 import { schreiben, teileLoeschen, teilLesen, type Ort } from '../../../utils/speicher'
 import { basisUrl, dateiAnlegen, fuerPanel } from '../../../utils/dateien'
 import { maxFuer } from '../../../utils/hochladen'
+import { dateinameEindeutig } from '../../../utils/dateiNamen'
 
 export default defineEventHandler(async (event) => {
   const u = await requireUser(event)
@@ -65,6 +66,8 @@ export default defineEventHandler(async (event) => {
     },
     u.prefs?.lang === 'en' ? 'en' : 'de'
   )
+  // Cloud-Dateimanager: im Ordner freien Namen wählen ("name (2).ext")
+  if (o.eindeutig === true) f.name = await dateinameEindeutig(f)
   await q('DELETE FROM uploads WHERE id = $1', [id])
   await teileLoeschen(id, ort)
   await ereignis('upload', u.id, { anzahl: 1, teile: up.teile }, clientIp(event))
