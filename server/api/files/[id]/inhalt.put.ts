@@ -39,25 +39,34 @@ export default defineEventHandler(async (event) => {
   }
   const ext = mime.split('/')[1]!.replace('jpeg', 'jpg')
   const name = f.name.replace(/\.[a-z0-9]{2,5}$/i, '') + '.' + ext
-  // verbindliche Prüfung unter der Kontingent-Sperre: nur die Differenz zur alten Datei zählt
+  // verbindliche Prüfung unter der Kontingent-Sperre: nur die Differenz zur alten Datei zählt. Die alte Größe und der alte
+  // Speicherschlüssel werden erst hier gelesen (nicht schon oben), denn eine parallele Ersetzung kann sie inzwischen geändert haben.
   const grenze = await hatGrenze(u.id, f.folder_id)
+  let alteAblage = f.ablage
   const setzen = async (x: (sql: string, p?: unknown[]) => Promise<any[]>) => {
+    const jetzt = (await x('SELECT size FROM files WHERE id = $1', [id]))[0]
+    if (!jetzt) {
+      await loeschen(g.schluessel)
+      throw fehler(404, 'Datei nicht gefunden.', 'File not found.')
+    }
     if (grenze.begrenzt) {
       try {
-        await kontingentPruefen(grenze.nutzer, g.size, { ordner: f.folder_id, ersetzt: Number(f.size), x })
+        await kontingentPruefen(grenze.nutzer, g.size, { ordner: f.folder_id, ersetzt: Number(jetzt.size), x })
       } catch (e) {
         await loeschen(g.schluessel)
         throw e
       }
     }
-    await x(
-      "UPDATE files SET ablage = $2, size = $3, sha256 = $4, mime = $5, name = $6, verarbeitung = 'offen', vorschau = false, streifen = 0, exif_entfernt = false, ansicht = false, live = false, live_mp4 = false, geaendert_at = now() WHERE id = $1",
+    const r = await x(
+      `UPDATE files SET ablage = $2, size = $3, sha256 = $4, mime = $5, name = $6, verarbeitung = 'offen', vorschau = false, streifen = 0, exif_entfernt = false, ansicht = false, live = false, live_mp4 = false, geaendert_at = now()
+        FROM (SELECT ablage FROM files WHERE id = $1 FOR UPDATE) alt WHERE files.id = $1 RETURNING alt.ablage AS alte_ablage`,
       [id, g.schluessel, g.size, g.sha256, mime, name]
     )
+    if (r[0]?.alte_ablage) alteAblage = String(r[0].alte_ablage)
   }
   if (grenze.begrenzt) await mitKontingentSperre(u.id, grenze.team, setzen)
   else await setzen((s, p = []) => q(s, p))
-  await loeschen(f.ablage)
+  await loeschen(alteAblage)
   await variantenLoeschen(f.id)
   verarbeiten(id)
   void quotaWarnen(u.id).catch(() => {})

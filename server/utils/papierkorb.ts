@@ -1,4 +1,4 @@
-import { q, q1 } from './db'
+import { db, q, q1 } from './db'
 import { loeschen } from './speicher'
 import { istSlug, neuerName } from './namen'
 import type { DateiZeile } from './dateien'
@@ -7,17 +7,39 @@ import { quotaWarnen } from './benachrichtigen'
 
 export const TAGE = 30
 
+/**
+ * Legt eine Datei in den Papierkorb. Läuft in einer Transaktion unter einer Zeilensperre auf der Datei: Gleichzeitige
+ * Aufrufe (Doppelklick, Retry, Sammelaktion plus Einzelaufruf, WebDAV) warten aufeinander, und nur der erste findet die
+ * Zeile noch vor. Alle anderen liefern false, es entsteht genau eine Papierkorb-Zeile je Datei.
+ */
 export async function inPapierkorb(f: Pick<DateiZeile, 'id'>, von: number | null): Promise<boolean> {
-  const z = await q1<DateiZeile>('SELECT * FROM files WHERE id = $1', [f.id])
-  if (!z) return false
-  const tags = await q<{ tag_id: number }>('SELECT tag_id FROM file_tags WHERE file_id = $1', [f.id])
-  const alt = await q<{ pfad: string; ziel: string }>('SELECT pfad, ziel FROM alte_pfade WHERE file_id = $1', [f.id])
-  await q(
-    'INSERT INTO papierkorb (user_id, datei, tags, alte_pfade, geloescht_von) VALUES ($1, $2::jsonb, $3::jsonb, $4::jsonb, $5)',
-    [z.user_id, JSON.stringify(z), JSON.stringify(tags.map((t) => t.tag_id)), JSON.stringify(alt), von]
-  )
-  await q('DELETE FROM files WHERE id = $1', [f.id])
-  return true
+  const c = await db().connect()
+  let defekt: any = null
+  try {
+    await c.query('BEGIN')
+    const z = (await c.query('SELECT * FROM files WHERE id = $1 FOR UPDATE', [f.id])).rows[0] as DateiZeile | undefined
+    if (!z) {
+      await c.query('ROLLBACK')
+      return false
+    }
+    const tags = (await c.query('SELECT tag_id FROM file_tags WHERE file_id = $1', [f.id])).rows as Array<{ tag_id: number }>
+    const alt = (await c.query('SELECT pfad, ziel FROM alte_pfade WHERE file_id = $1', [f.id])).rows
+    await c.query(
+      'INSERT INTO papierkorb (user_id, datei, tags, alte_pfade, geloescht_von) VALUES ($1, $2::jsonb, $3::jsonb, $4::jsonb, $5)',
+      [z.user_id, JSON.stringify(z), JSON.stringify(tags.map((t) => t.tag_id)), JSON.stringify(alt), von]
+    )
+    await c.query('DELETE FROM files WHERE id = $1', [f.id])
+    await c.query('COMMIT')
+    return true
+  } catch (e) {
+    defekt = e
+    try {
+      await c.query('ROLLBACK')
+    } catch {}
+    throw e
+  } finally {
+    c.release(defekt || undefined)
+  }
 }
 
 export async function wiederherstellen(id: string, userId: number, admin: boolean): Promise<DateiZeile | null> {
@@ -118,7 +140,12 @@ export async function endgueltig(where: { id?: string; userId?: number; aelterAl
     w
   )
   for (const x of weg) {
-    if (x.ablage && !(await q1('SELECT 1 FROM files WHERE ablage = $1', [x.ablage]))) {
+    // Speicher nur freigeben, wenn weder eine Datei noch eine andere Papierkorb-Zeile (Kopie, Altlast) darauf verweist
+    if (
+      x.ablage &&
+      !(await q1('SELECT 1 FROM files WHERE ablage = $1', [x.ablage])) &&
+      !(await q1("SELECT 1 FROM papierkorb WHERE datei->>'ablage' = $1 LIMIT 1", [x.ablage]))
+    ) {
       await loeschen(x.ablage)
       if (x.fid) await variantenLoeschen(x.fid)
     }

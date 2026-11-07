@@ -36,7 +36,7 @@
 //   Belegung wieder unter 80 % liegt (oder das Konto unbegrenzt wird). Benachrichtigung: benachrichtigen.ts → quotaWarnen().
 import type { PoolClient } from 'pg'
 import { db, q, q1 } from './db'
-import { rechteVon } from './teams'
+import { ordnerRecht, rechteVon } from './teams'
 import { istPro } from './lizenz'
 import { getQuota, setSetting, sLang } from './settings'
 
@@ -386,6 +386,15 @@ export async function kontingentPruefen(nutzer: QuotaNutzer | null, bytes: numbe
   }
 }
 
+/**
+ * Vor jeder Kontingent-Auskunft zu einem Zielordner: Das Konto muss in den Ordner hochladen dürfen. Sonst wären Name,
+ * Limit und Belegung eines fremden Teams über die 507-Meldung abfragbar. Fehlender Ordner und fehlendes Recht sehen gleich aus.
+ */
+export async function zielOrdnerPruefen(userId: number, ordner: number | null | undefined): Promise<void> {
+  if (ordner && !(await ordnerRecht(userId, ordner))?.hineinladen)
+    throw fehler(404, 'Ordner nicht gefunden.', 'Folder not found.')
+}
+
 export interface Grenzen {
   /** Höchstzahl Bytes für diesen Upload; 0 = ohne Grenze (Konvention von schreiben()) */
   max: number
@@ -399,6 +408,7 @@ export interface Grenzen {
  * `dateiMax` ist die Instanz-/Rollen-Grenze in Bytes (Infinity = keine). Frühprüfung, nicht verbindlich.
  */
 export async function uploadGrenzen(u: QuotaNutzer, ordner: number | null, dateiMax = Infinity): Promise<Grenzen> {
+  await zielOrdnerPruefen(u.id, ordner)
   const stand = await quotaStand(u)
   const team = await teamVonOrdner(ordner)
   const ts = team ? await teamStand(team) : null

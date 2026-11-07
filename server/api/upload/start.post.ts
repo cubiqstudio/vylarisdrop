@@ -3,7 +3,7 @@ import { q } from '../../utils/db'
 import { requireUser } from '../../utils/auth'
 import { zielOrt } from '../../utils/speicher'
 import { dateiGroesseMax } from '../../utils/hochladen'
-import { groesseText, kontingentPruefen, reserviert } from '../../utils/quota'
+import { groesseText, kontingentPruefen, reserviert, zielOrdnerPruefen } from '../../utils/quota'
 import { requireRecht } from '../../utils/teams'
 
 const TEIL = 8 * 1024 * 1024
@@ -24,6 +24,8 @@ export default defineEventHandler(async (event) => {
       `Die Datei ist zu groß: erlaubt sind höchstens ${groesseText(dateiMax, false)}, die Datei hat ${groesseText(size, false)}.`,
       `The file is too large: at most ${groesseText(dateiMax, true)} are allowed, the file has ${groesseText(size, true)}.`
     )
+  // Das Konto muss in den Ordner hochladen dürfen, bevor Team-Kontingentzahlen in einer Fehlermeldung erscheinen
+  await zielOrdnerPruefen(u.id, ordner)
   // Frühprüfung gegen Konto- und Team-Kontingent (laufende Chunk-Uploads sind eingeplant); verbindlich prüft dateiAnlegen()
   await kontingentPruefen(u, size, { ordner, zusatz: await reserviert(u.id) })
   const offen = await q<{ n: string }>('SELECT count(*) AS n FROM uploads WHERE user_id = $1', [u.id])
