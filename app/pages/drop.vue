@@ -15,27 +15,33 @@ const files = ref<any[]>([])
 const gesamt = ref(0)
 const seite = ref(1)
 const laedt = ref(false)
+const PRO = 48
+// Zählt jeden regulären Ladevorgang: ein Live-Abgleich, der währenddessen lief, ist veraltet und wird verworfen
+let ladeNr = 0
+const filterQuery = () => ({
+  art: art.value || undefined,
+  tag: tag.value || undefined,
+  ordner: ordnerId.value || undefined,
+  suche: suche.value || undefined,
+  sort: sort.value
+})
 async function laden(neuStart = true) {
+  const nr = ++ladeNr
   laedt.value = true
   try {
     if (neuStart) seite.value = 1
-    const r = await api('/api/files', {
-      query: {
-        seite: seite.value,
-        pro: 48,
-        art: art.value || undefined,
-        tag: tag.value || undefined,
-        ordner: ordnerId.value || undefined,
-        suche: suche.value || undefined,
-        sort: sort.value
-      }
-    })
-    files.value = neuStart ? r.files : [...files.value, ...r.files]
+    const r = await api('/api/files', { query: { seite: seite.value, pro: PRO, ...filterQuery() } })
+    if (nr !== ladeNr) return // inzwischen neu gefiltert: das Ergebnis gehört nicht mehr zur Anzeige
+    if (neuStart) files.value = r.files
+    else {
+      const da = new Set(files.value.map((f) => f.id)) // Verschiebungen durch neue Dateien dürfen nichts doppeln
+      files.value = [...files.value, ...r.files.filter((f: any) => !da.has(f.id))]
+    }
     gesamt.value = r.gesamt
   } catch (e: any) {
-    fehler(e.message)
+    if (nr === ladeNr) fehler(e.message)
   } finally {
-    laedt.value = false
+    if (nr === ladeNr) laedt.value = false
   }
 }
 const { data: ordnerDaten, refresh: ordnerNeu } = await (useFetch as any)('/api/folders', { key: 'ordner' })
@@ -48,35 +54,11 @@ const anzahl = useHochzaehlen(() => Number(stats.value?.dateien || 0))
 
 onMounted(() => laden())
 watch([art, tag, sort, ordnerId, suche], () => laden())
-watch(neu, () => laden())
+watch(neu, () => liveListe()) // eigener Upload fertig: Liste still abgleichen (behält nachgeladene Seiten und Scrollposition)
 function mehr() {
   seite.value++
   void laden(false)
 }
-let nachladen: any = null
-watch(files, (l) => {
-  clearTimeout(nachladen)
-  if (l.some((f) => f.verarbeitung === 'offen' || f.verarbeitung === 'laeuft'))
-    nachladen = setTimeout(async () => {
-      try {
-        const r = await api('/api/files', {
-          query: {
-            seite: 1,
-            pro: Math.max(48, files.value.length),
-            art: art.value || undefined,
-            tag: tag.value || undefined,
-            ordner: ordnerId.value || undefined,
-            suche: suche.value || undefined,
-            sort: sort.value
-          }
-        })
-        const neu = new Map(r.files.map((f: any) => [f.id, f]))
-        files.value = files.value.map((f) => (neu.get(f.id) as any) || f)
-      } catch {}
-    }, 3000)
-})
-onBeforeUnmount(() => clearTimeout(nachladen))
-
 const ARTEN = computed(() => [
   { v: '', text: t('Alle', 'All') },
   { v: 'bild', text: t('Bilder', 'Images') },
@@ -131,6 +113,84 @@ function geloescht(id: string) {
   files.value = files.value.filter((x) => x.id !== id)
   gesamt.value--
 }
+
+// ===== Live-Aktualisierung =====
+// Dateiliste: die bisher geladenen Seiten still neu holen (kein Leer-Zustand, keine Ladeanzeige), unveränderte Karten behalten ihr Objekt
+async function holeListe(n: number) {
+  const q = filterQuery()
+  const pro = Math.min(200, n)
+  const alle: any[] = []
+  let summe = 0
+  for (let k = 1; k <= Math.ceil(n / pro); k++) {
+    const r = await api('/api/files', { query: { seite: k, pro, ...q } })
+    if (k === 1) summe = r.gesamt
+    alle.push(...r.files)
+    if (r.files.length < pro) break
+  }
+  return { files: alle.slice(0, n), gesamt: summe }
+}
+const gleich = (a: unknown, b: unknown) => JSON.stringify(a) === JSON.stringify(b)
+async function offeneDateiAbgleichen(neueListe: any[]) {
+  const id = offen.value?.id
+  if (!id) return
+  const inListe = neueListe.find((f) => f.id === id)
+  if (inListe) {
+    if (inListe !== offen.value && !gleich(inListe, offen.value)) offen.value = inListe
+    return
+  }
+  // Nicht (mehr) in der angezeigten Liste: gelöscht/ohne Zugriff oder nur weggerückt (neue Dateien, Filter)? Die Einzelabfrage klärt es.
+  try {
+    const r = await api(`/api/files/${id}`)
+    if (offen.value?.id !== id) return
+    const neu = { ...offen.value, ...r.file }
+    if (!gleich(neu, offen.value)) offen.value = neu
+  } catch (e: any) {
+    if (e.status === 404 && offen.value?.id === id) {
+      offen.value = null
+      ok(t('Die Datei wurde woanders gelöscht oder verschoben.', 'The file was deleted or moved elsewhere.'))
+    }
+  }
+}
+async function listeAbgleichen() {
+  for (let i = 0; laedt.value && i < 50; i++) await new Promise((r) => setTimeout(r, 200)) // erst fertig laden lassen
+  const start = ladeNr
+  const r = await holeListe(Math.max(1, seite.value) * PRO)
+  if (start !== ladeNr) return void liveListe() // währenddessen gefiltert oder nachgeladen: nochmal von vorn
+  const alt = new Map(files.value.map((f) => [f.id, f]))
+  const neueListe = r.files.map((f: any) => {
+    const o = alt.get(f.id)
+    return o && gleich(o, f) ? o : f
+  })
+  if (neueListe.length !== files.value.length || neueListe.some((f: any, i: number) => f !== files.value[i])) files.value = neueListe
+  if (gesamt.value !== r.gesamt) gesamt.value = r.gesamt
+  // Auswahl: Verschwundenes entfernen, der Rest bleibt
+  if (auswahl.value.size) {
+    const da = new Set(neueListe.map((f: any) => f.id))
+    const rest = [...auswahl.value].filter((id) => da.has(id))
+    if (rest.length !== auswahl.value.size) auswahl.value = new Set(rest)
+  }
+  await offeneDateiAbgleichen(neueListe)
+}
+const liveListe = liveDrosseln(listeAbgleichen)
+// Ordnerliste (Auswahl beim Verschieben, Titel des geöffneten Ordners); ist der geöffnete Ordner weg, zurück zu „Alle Dateien“
+async function ordnerAbgleichen() {
+  const r = await api('/api/folders')
+  if (!gleich(r, ordnerDaten.value)) ordnerDaten.value = r
+  if (ordnerId.value && !(r.ordner || []).some((o: any) => String(o.id) === ordnerId.value)) {
+    ok(t('Dieser Ordner wurde gelöscht.', 'This folder was deleted.'))
+    await navigateTo({ path: '/drop', query: { ...route.query, ordner: undefined } }, { replace: true })
+  }
+}
+const liveOrdner = liveDrosseln(ordnerAbgleichen)
+// Zähler im Kopf (Dateien, Ordner, zuletzt hochgeladen) und die Speicheranzeige der Seitenleiste (gleicher Schlüssel „stats“)
+async function statsAbgleichen() {
+  const r = await api('/api/files/stats')
+  if (!gleich(r, stats.value)) stats.value = r
+}
+const liveStats = liveDrosseln(statsAbgleichen, 2000)
+useLive(['dateien'], liveListe)
+useLive(['ordner'], liveOrdner)
+useLive(['dateien', 'ordner', 'papierkorb'], liveStats)
 
 const ablage = ref<HTMLElement | null>(null)
 const ablageAn = ref(false)
