@@ -1,4 +1,5 @@
 import { randomBytes, randomInt } from 'node:crypto'
+import { isIP } from 'node:net'
 import { promises as fs } from 'node:fs'
 import { join } from 'node:path'
 import type { H3Event } from 'h3'
@@ -103,11 +104,46 @@ export async function appGeraetAntwort(
   return { ok: true, token: g.klar, nutzer: appNutzerInfo(u), server: await appServerInfo() }
 }
 
+/** Kommt die Verbindung aus einem lokalen/privaten Netz (Reverse-Proxy auf demselben Rechner oder im Docker-Netz)? */
+function adresseIntern(roh: string): boolean {
+  const a = roh.toLowerCase().replace(/^::ffff:/, '')
+  if (isIP(a) === 4) {
+    const [x, y] = a.split('.').map(Number) as [number, number]
+    return x === 127 || x === 10 || (x === 172 && y >= 16 && y <= 31) || (x === 192 && y === 168) || (x === 169 && y === 254)
+  }
+  return a === '::1' || /^f[cd]/.test(a) || /^fe[89ab]/.test(a)
+}
+/**
+ * Absender fuer die Zaehler der App-Routen. Der erste X-Forwarded-For-Wert stammt vom Client und ist frei waehlbar (auch hinter
+ * nginx, das nur anhaengt). Darum: ohne vorgeschalteten Proxy (Verbindung kommt von einer oeffentlichen Adresse) zaehlt die
+ * Verbindungsadresse, mit lokalem Proxy der LETZTE Eintrag, den der Proxy selbst gesetzt hat.
+ */
+export function appIp(event: H3Event): string {
+  const direkt = String(event.node.req.socket?.remoteAddress || '')
+  if (!direkt || !adresseIntern(direkt)) return direkt || clientIp(event)
+  const letzte = String(getRequestHeader(event, 'x-forwarded-for') || '')
+    .split(',')
+    .pop()!
+    .trim()
+  return isIP(letzte) ? letzte : direkt
+}
+
+/** App-Geraete eines Nutzers widerrufen (Passwortaenderung, Admin-Reset, „Alle Sitzungen beenden“). Das Geraet, aus dem die aktuelle
+ *  Sitzung stammt (sitzungHash), bleibt erhalten. Die Sitzungen widerrufener Geraete enden durch ON DELETE CASCADE. */
+export async function appGeraeteWiderrufen(userId: number, sitzungHash: string | null = null): Promise<number> {
+  const r = await q(
+    `DELETE FROM upload_tokens WHERE user_id = $1 AND art = 'app'
+       AND id NOT IN (SELECT app_geraet FROM sessions WHERE token_hash = $2 AND app_geraet IS NOT NULL) RETURNING id`,
+    [userId, sitzungHash ?? '']
+  )
+  return r.length
+}
+
 /** Anfrage mit einem App-Token (vd_app_…) — sonst 401. Normale Upload-Token und Browser-Sitzungen gelten hier nicht. */
 export async function requireAppToken(event: H3Event): Promise<TokenNutzer> {
   setResponseHeader(event, 'Cache-Control', 'no-store')
-  const ip = clientIp(event)
-  if (limit('app-token:' + ip, 300, 60)) {
+  const ip = appIp(event)
+  if (limit('app-token-ip:' + ip, 300, 60)) {
     setResponseHeader(event, 'Retry-After', 60)
     throw fehler(429, 'Zu viele Anfragen. Bitte warte kurz.', 'Too many requests. Please wait a moment.')
   }

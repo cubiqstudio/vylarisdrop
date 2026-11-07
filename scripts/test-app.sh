@@ -413,6 +413,38 @@ koppeln "$CG" "andere IP" "$RP.100"
 eq "  ... von einer anderen IP aus gilt derselbe Code -> 200" "$CODE" 200
 eq "erfolgreiche Kopplungen zaehlen nicht als Fehlversuch" "$(for i in 1 2 3 4 5 6 7 8 9 10 11 12; do neuer_code "$ERIN"; json - - "$RP.101" POST /api/app/koppeln "{\"code\":\"$CODE_KLAR\",\"geraet\":\"ok$i\"}"; echo $CODE; done | sort -u | tr '\n' ' ')" "200 "
 
+echo "== App-Geraete enden mit Passwortaenderung, Admin-Reset und Alle-Sitzungen-beenden =="
+# Frisches Konto, damit die Rate-Limits (Passwort 8/10 min) der anderen Faelle nicht stoeren
+mk_user appt_frank; login appt_frank; FRANK="$T/c-appt_frank"; FRANK_ID=$(uid_of appt_frank)
+neuer_code "$FRANK"; koppeln "$CODE_KLAR" "pw-a"; TF1="$TOKEN"
+neuer_code "$FRANK"; koppeln "$CODE_KLAR" "pw-b"; TF2="$TOKEN"
+req - "$TF1" - POST /api/app/sitzung -c "$T/f1.txt"; eq "Geraet A: Sitzung vor Passwortaenderung -> 200" "$CODE" 200
+json "$T/f1.txt" - - POST /api/account/password "{\"current\":\"$SUF\",\"password\":\"$SUF-neu\"}"
+eq "Passwortaenderung aus der App-Sitzung -> 200" "$CODE" 200
+req "$T/f1.txt" - - GET /api/account; eq "  ... die eigene App-Sitzung (Geraet A) bleibt gueltig" "$CODE" 200
+req - "$TF1" - GET /api/app/ich;      eq "  ... Geraet A bleibt gekoppelt" "$CODE" 200
+req - "$TF2" - GET /api/app/ich;      eq "  ... Geraet B ist widerrufen -> 401" "$CODE" 401
+req - "$TF2" - POST /api/app/sitzung; eq "  ... Geraet B erzeugt keine neue Sitzung mehr -> 401" "$CODE" 401
+json "$T/f1.txt" - - POST /api/app/token '{"geraet":"pw-c"}'; TF3=$(body | j token)
+curl -s -c "$T/c-appt_frank2" -H 'content-type: application/json' -d "{\"username\":\"appt_frank\",\"password\":\"$SUF-neu\"}" "$BASE/api/auth/login" >/dev/null
+req "$T/c-appt_frank2" - - DELETE /api/account/sessions
+eq "Alle Sitzungen beenden: Geraete werden mitgezaehlt" "$(body | j geraete)" 2
+req - "$TF3" - POST /api/app/sitzung; eq "  ... Geraet C erzeugt keine Sitzung mehr -> 401" "$CODE" 401
+req - "$TF1" - POST /api/app/sitzung; eq "  ... auch Geraet A nicht (Sitzung kam aus anderem Fenster) -> 401" "$CODE" 401
+mk_user appt_gina
+login appt_gina; GINA="$T/c-appt_gina"; GINA_ID=$(uid_of appt_gina)
+neuer_code "$GINA"; koppeln "$CODE_KLAR" "reset"; TG="$TOKEN"
+req - "$TG" - POST /api/app/sitzung; eq "Nutzer-Geraet vor Admin-Reset: Sitzung -> 200" "$CODE" 200
+json "$COOKIE" - - PATCH "/api/users/$GINA_ID" '{"password":"Reset-Passwort-2026!"}'; eq "Admin setzt Passwort zurueck -> 200" "$CODE" 200
+req - "$TG" - GET /api/app/ich;       eq "  ... das Geraet des Nutzers ist widerrufen -> 401" "$CODE" 401
+eq "  ... und die Zeile ist weg" "$(PSQL "SELECT count(*) FROM upload_tokens WHERE user_id=$GINA_ID AND art='app'")" 0
+
+echo "== Zaehler-Schluessel: fremde X-Forwarded-For-Werte sperren keine Nutzer =="
+json "$COOKIE" - - POST /api/app/token '{"geraet":"appt-vorher"}'; eq "Token holen als Inhaber -> 200" "$CODE" 200
+for i in $(seq 1 25); do req - - "$ADMIN_ID" GET /api/app/ich >/dev/null; done
+json "$COOKIE" - - POST /api/app/token '{"geraet":"appt-nachher"}'
+eq "  ... nach 25 Anfragen mit X-Forwarded-For: <Nutzer-ID> weiterhin 200" "$CODE" 200
+
 echo "== Aufraeumen =="
 PSQL "DELETE FROM users WHERE username LIKE 'appt\_%'" >/dev/null
 PSQL "DELETE FROM upload_tokens WHERE name LIKE 'appt-%'" >/dev/null

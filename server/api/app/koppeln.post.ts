@@ -1,10 +1,10 @@
 import { q1 } from '../../utils/db'
-import { clientIp } from '../../utils/auth'
 import {
   appCodeEinloesen,
   appCodeNormal,
   appGeraetAntwort,
   appGeraetName,
+  appIp,
   appKoppelnFehlversuch,
   appKoppelnGesperrt
 } from '../../utils/app'
@@ -12,7 +12,7 @@ import {
 // Die App tauscht einen Kopplungscode gegen ein App-Token. Ohne Anmeldung erreichbar — der Code ist der Beweis.
 // Falsche Codes zaehlen je IP (und insgesamt) als Fehlversuch; unbekannt, abgelaufen und benutzt sehen gleich aus (404).
 export default defineEventHandler(async (event) => {
-  const ip = clientIp(event)
+  const ip = appIp(event)
   if (appKoppelnGesperrt(ip)) {
     setResponseHeader(event, 'Retry-After', 600)
     throw fehler(
