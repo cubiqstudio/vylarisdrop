@@ -1,7 +1,7 @@
 import { requireAdmin } from '../../../utils/auth'
 import { ausUmgebung } from '../../../utils/s3'
 import { istPro } from '../../../utils/lizenz'
-import { zielOrt } from '../../../utils/speicher'
+import { poolPlatz, zielOrt } from '../../../utils/speicher'
 import { umzugStand } from '../../../utils/umzug'
 import { alleZiele, zielBelegung, zielOeffentlich } from '../../../utils/sftpZiele'
 import { speicherZustand } from '../../../utils/sftpVerwaltung'
@@ -25,6 +25,8 @@ export default defineEventHandler(async (event) => {
     })),
     ort: {
       art: w.art,
+      mitglieder: w.mitglieder || ['lokal'],
+      strategie: w.strategie === 'abwechselnd' ? 'abwechselnd' : 'frei',
       sftpZiel: w.sftpZiel ?? null,
       aktuell: ort,
       // gewählt, aber nicht nutzbar (deaktiviert/schreibgeschützt/entfernt): neue Dateien landen dann lokal
@@ -33,6 +35,10 @@ export default defineEventHandler(async (event) => {
       s3Bereit: !!w.s3?.bucket,
       s3Pro: await istPro('s3')
     },
+    // Platz je Pool-Mitglied (bei Pool-Modus die Mitglieder, sonst Vorschau über Server und alle Ziele)
+    platz: await poolPlatz(
+      w.art === 'pool' ? w.mitglieder || ['lokal'] : ['lokal', ...ziele.map((z) => `sftp${z.id}`)]
+    ),
     verteilung,
     umzug
   }

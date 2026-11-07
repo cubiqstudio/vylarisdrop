@@ -110,6 +110,44 @@ async function ortSetzen(art: 'lokal' | 's3' | 'sftp', zielId?: number) {
   }
 }
 const istOrt = (z: any) => ort.value.art === 'sftp' && ort.value.sftpZiel === z.id
+
+// Speicher-Pool: mehrere Speicher wie einer
+const modus = ref<'einzeln' | 'pool'>('einzeln')
+const auswahl = ref<string[]>(['lokal'])
+const strategie = ref<'frei' | 'abwechselnd'>('frei')
+const poolEntwurf = ref(false) // Nutzer bearbeitet gerade: Auffrischen überschreibt nichts
+function poolLaden() {
+  modus.value = ort.value.art === 'pool' ? 'pool' : 'einzeln'
+  auswahl.value = [...(ort.value.mitglieder || ['lokal'])]
+  strategie.value = ort.value.strategie === 'abwechselnd' ? 'abwechselnd' : 'frei'
+  poolEntwurf.value = false
+}
+poolLaden()
+const platz = computed<any>(() => data.value?.platz || null)
+const istPool = computed(() => ort.value.art === 'pool')
+const platzProzent = (m: any) => (m.gesamt ? Math.min(100, Math.max(0, Math.round((m.belegt / m.gesamt) * 100))) : 0)
+const mitgliedName = (m: any) => (m.art === 'lokal' ? t('Dieser Server', 'This server') : m.name)
+function mitgliedWechsel(id: string, an: boolean) {
+  poolEntwurf.value = true
+  auswahl.value = an ? [...new Set([...auswahl.value, id])] : auswahl.value.filter((x) => x !== id)
+}
+async function poolSpeichern() {
+  if (!auswahl.value.length) return fehler(t('Bitte mindestens ein Mitglied wählen.', 'Please choose at least one member.'))
+  wechselt.value = true
+  try {
+    await api('/api/speicher/ziele/ort', {
+      method: 'PUT',
+      body: { art: 'pool', mitglieder: auswahl.value, strategie: strategie.value }
+    })
+    await refresh()
+    poolLaden()
+    ok(t('Speicher-Pool gespeichert', 'Storage pool saved'))
+  } catch (e: any) {
+    fehler(e.message)
+  } finally {
+    wechselt.value = false
+  }
+}
 const aktive = computed(() => ziele.value.filter((z) => z.aktiv && z.schreibbar))
 const gesperrt = computed(() => !!ort.value.ausUmgebung || wechselt.value)
 
@@ -123,7 +161,7 @@ onMounted(() => {
   const tick = () => {
     uhr = setTimeout(
       async () => {
-        if (!assistent.offen) await refresh().catch(() => {})
+        if (!assistent.offen && !poolEntwurf.value) await refresh().catch(() => {})
         tick()
       },
       umzugLaeuft.value ? 2000 : 6000
@@ -186,7 +224,57 @@ onBeforeUnmount(() => clearTimeout(uhr))
             )
           }}
         </div>
-        <div class="zo-wahl" role="radiogroup" :aria-label="t('Speicherort für neue Dateien', 'Storage location for new files')">
+        <div class="zo-wahl zo-modus" role="radiogroup" :aria-label="t('Art der Speicherwahl', 'Kind of storage choice')">
+          <label :class="{ an: modus === 'einzeln' }">
+            <input v-model="modus" type="radio" name="modus" value="einzeln" :disabled="gesperrt" @change="poolEntwurf = true" />
+            <Ico n="server" />
+            <span><b>{{ t('Nur ein Speicher', 'One storage only') }}</b><small>{{ t('Alle neuen Dateien an einen Ort', 'All new files to one place') }}</small></span>
+          </label>
+          <label :class="{ an: modus === 'pool' }">
+            <input v-model="modus" type="radio" name="modus" value="pool" :disabled="gesperrt" @change="poolEntwurf = true" />
+            <Ico n="knoten" />
+            <span><b>{{ t('Speicher-Pool', 'Storage pool') }}</b><small>{{ t('Mehrere Speicher zu einem zusammenlegen', 'Combine several storages into one') }}</small></span>
+          </label>
+        </div>
+
+        <form v-if="modus === 'pool'" class="zo-pool" @submit.prevent="poolSpeichern">
+          <fieldset :disabled="gesperrt">
+            <legend>{{ t('Mitglieder des Pools', 'Pool members') }}</legend>
+            <div class="zo-wahl">
+              <label :class="{ an: auswahl.includes('lokal') }">
+                <input type="checkbox" :checked="auswahl.includes('lokal')" @change="mitgliedWechsel('lokal', ($event.target as HTMLInputElement).checked)" />
+                <Ico n="server" />
+                <span><b>{{ t('Dieser Server', 'This server') }}</b><small>{{ t('Ordner /data (Docker-Volume)', 'Folder /data (Docker volume)') }}</small></span>
+              </label>
+              <label v-for="z in ziele" :key="z.id" :class="{ an: auswahl.includes('sftp' + z.id) }">
+                <input type="checkbox" :checked="auswahl.includes('sftp' + z.id)" @change="mitgliedWechsel('sftp' + z.id, ($event.target as HTMLInputElement).checked)" />
+                <Ico n="knoten" />
+                <span><b>{{ z.name }}</b><small class="mono">{{ z.host }}{{ z.basisPfad }}</small></span>
+                <span v-if="!z.aktiv" class="chip neutral">{{ t('aus', 'off') }}</span>
+                <span v-else-if="!z.schreibbar" class="chip neutral">{{ t('nur lesen', 'read-only') }}</span>
+                <span v-else-if="z.status?.online === false" class="chip rot">{{ t('offline', 'offline') }}</span>
+              </label>
+            </div>
+          </fieldset>
+          <label class="feld zo-strategie">
+            <span>{{ t('Verteilung neuer Dateien', 'How new files are spread') }}</span>
+            <select v-model="strategie" class="eingabe" :disabled="gesperrt" @change="poolEntwurf = true">
+              <option value="frei">{{ t('Meisten freien Platz (Standard)', 'Most free space (default)') }}</option>
+              <option value="abwechselnd">{{ t('Abwechselnd (reihum)', 'Round robin') }}</option>
+            </select>
+          </label>
+          <p class="leise zo-text">
+            {{
+              t(
+                'Offline, deaktivierte oder schreibgeschützte Mitglieder werden übersprungen; fällt alles aus, bleibt es auf diesem Server. Vorhandene Dateien bleiben, wo sie sind.',
+                'Offline, disabled or write-protected members are skipped; if all fail, files stay on this server. Existing files stay where they are.'
+              )
+            }}
+          </p>
+          <button type="submit" class="knopf rot" :disabled="gesperrt || !auswahl.length"><Ico n="check" /> {{ t('Pool speichern', 'Save pool') }}</button>
+        </form>
+
+        <div v-else class="zo-wahl" role="radiogroup" :aria-label="t('Speicherort für neue Dateien', 'Storage location for new files')">
           <label :class="{ an: ort.art === 'lokal' || (ort.ausgewichen && false) }">
             <input type="radio" name="ort" :checked="ort.art === 'lokal'" :disabled="gesperrt" @change="ortSetzen('lokal')" />
             <Ico n="server" />
@@ -204,9 +292,38 @@ onBeforeUnmount(() => clearTimeout(uhr))
             <span v-if="z.status?.online === false" class="chip rot">{{ t('offline', 'offline') }}</span>
           </label>
         </div>
-        <p v-if="!aktive.length" class="leise zo-text">{{ t('Sobald du eine SFTP-Erweiterung hinzugefügt hast, erscheint sie hier zur Auswahl.', 'Once you add an SFTP add-on it appears here to choose from.') }}</p>
+        <p v-if="!aktive.length && modus !== 'pool'" class="leer-text leise zo-text">{{ t('Sobald du eine SFTP-Erweiterung hinzugefügt hast, erscheint sie hier zur Auswahl.', 'Once you add an SFTP add-on it appears here to choose from.') }}</p>
       </section>
 
+      <!-- Gesamtplatz -->
+      <section v-if="platz?.mitglieder?.length" class="block zp" aria-labelledby="zp-titel">
+        <div class="reihe zw">
+          <h3 id="zp-titel">{{ istPool ? t('Gesamtplatz des Pools', 'Total space of the pool') : t('Platz aller Speicher', 'Space of all storages') }}</h3>
+          <span v-if="istPool" class="chip info">{{ ort.strategie === 'abwechselnd' ? t('abwechselnd', 'round robin') : t('meisten freien Platz', 'most free space') }}</span>
+        </div>
+        <div v-if="platz.summe.bekannt" class="zp-summe">
+          <b class="mono">{{ groesse(platz.summe.frei) }}</b>
+          <span>{{ t('frei von', 'free of') }} {{ groesse(platz.summe.gesamt) }} · {{ t('belegt', 'used') }} {{ groesse(platz.summe.belegt) }}</span>
+          <div class="zp-balken" role="meter" :aria-label="t('Belegung insgesamt', 'Total usage')" aria-valuemin="0" aria-valuemax="100" :aria-valuenow="platz.summe.gesamt ? Math.round((platz.summe.belegt / platz.summe.gesamt) * 100) : 0">
+            <i :style="{ width: (platz.summe.gesamt ? (platz.summe.belegt / platz.summe.gesamt) * 100 : 0) + '%' }"></i>
+          </div>
+          <small v-if="platz.unbekannt" class="leise">{{ t(`Ohne Angabe und nicht in der Summe: ${platz.unbekannt} Mitglied(er).`, `Unknown and not in the total: ${platz.unbekannt} member(s).`) }}</small>
+        </div>
+        <p v-else class="leise">{{ t('Keine Platzangabe verfügbar.', 'No space information available.') }}</p>
+        <ul class="zp-liste">
+          <li v-for="m in platz.mitglieder" :key="m.ort">
+            <div class="reihe zw">
+              <b>{{ mitgliedName(m) }}</b>
+              <span v-if="m.online === false" class="chip rot">{{ t('offline', 'offline') }}</span>
+              <span v-else-if="m.gesamt == null" class="chip neutral">{{ t('Platz unbekannt', 'space unknown') }}</span>
+              <span v-else class="mono zp-zahl">{{ groesse(m.frei) }} {{ t('frei von', 'free of') }} {{ groesse(m.gesamt) }}</span>
+            </div>
+            <div v-if="m.gesamt != null" class="zp-balken klein" role="meter" :aria-label="mitgliedName(m)" aria-valuemin="0" aria-valuemax="100" :aria-valuenow="platzProzent(m)">
+              <i :style="{ width: platzProzent(m) + '%' }"></i>
+            </div>
+          </li>
+        </ul>
+      </section>
       <!-- Erweiterungen -->
       <div v-if="ziele.length" class="zl" aria-live="polite">
         <VdZielKarte
@@ -248,6 +365,63 @@ onBeforeUnmount(() => clearTimeout(uhr))
 </template>
 
 <style scoped>
+.zo-modus {
+  margin-bottom: 18px;
+}
+.zo-pool {
+  margin: 0 0 14px;
+}
+.zo-pool fieldset {
+  border: 0;
+  padding: 0;
+  margin: 0 0 12px;
+  min-width: 0;
+}
+.zo-pool legend {
+  font-weight: 600;
+  margin-bottom: 8px;
+  padding: 0;
+}
+.zo-strategie {
+  max-width: 420px;
+  margin-bottom: 8px;
+}
+.zp-summe {
+  display: grid;
+  gap: 6px;
+  margin: 8px 0 14px;
+}
+.zp-summe > b {
+  font-size: 26px;
+}
+.zp-balken {
+  height: 10px;
+  border-radius: 6px;
+  background: var(--linie);
+  overflow: hidden;
+}
+.zp-balken.klein {
+  height: 6px;
+  margin-top: 6px;
+}
+.zp-balken i {
+  display: block;
+  height: 100%;
+  background: var(--a);
+  border-radius: 6px;
+}
+.zp-liste {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+  display: grid;
+  gap: 12px;
+}
+.zp-zahl {
+  font-size: 13px;
+  color: var(--text2);
+}
+
 .block + .block,
 .zl + .block,
 .block + .zl,

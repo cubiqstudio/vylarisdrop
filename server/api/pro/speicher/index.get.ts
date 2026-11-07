@@ -3,7 +3,7 @@ import { requireAdmin } from '../../../utils/auth'
 import { ausUmgebung, getSpeicher } from '../../../utils/s3'
 import { umzugStand } from '../../../utils/umzug'
 import { alleKnoten, KNOTEN_ID } from '../../../utils/knoten'
-import { platte, zielOrt } from '../../../utils/speicher'
+import { platte, poolPlatz, zielOrt } from '../../../utils/speicher'
 
 export default defineEventHandler(async (event) => {
   await requireAdmin(event)
@@ -20,6 +20,7 @@ export default defineEventHandler(async (event) => {
     verteilung: Object.fromEntries(verteilung.map((v) => [v.ort, { anzahl: Number(v.n), bytes: Number(v.s) }])),
     umzug: await umzugStand(),
     platte: await platte(),
+    pool: w.art === 'pool' ? await poolPlatz() : null,
     knoten: knoten.map((k) => ({ ...k, ich: k.id === KNOTEN_ID })),
     ordnerGeteilt: new Set(knoten.filter((k) => k.lebt).map((k) => k.ordner)).size <= 1
   }

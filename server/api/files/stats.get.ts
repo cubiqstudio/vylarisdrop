@@ -1,8 +1,9 @@
 import { q, q1 } from '../../utils/db'
 import { requireUser } from '../../utils/auth'
-import { platte } from '../../utils/speicher'
+import { platte, poolPlatz } from '../../utils/speicher'
 import { quotaStand } from '../../utils/quota'
 import { quotaWarnen } from '../../utils/benachrichtigen'
+import { getSpeicher } from '../../utils/s3'
 
 export default defineEventHandler(async (event) => {
   const u = await requireUser(event)
@@ -17,7 +18,10 @@ export default defineEventHandler(async (event) => {
   // Warnstufe nachziehen (z. B. wenn ein Admin das Limit geändert oder der Papierkorb sich geleert hat)
   void quotaWarnen(u.id, quota).catch(() => {})
   const p = u.role === 'owner' ? await platte() : null
+  // Pool: statt nur des lokalen Platzes den Gesamtplatz aller Mitglieder (nur Inhaber sehen Plattenwerte)
+  const pool = u.role === 'owner' && (await getSpeicher()).art === 'pool' ? await poolPlatz() : null
   return {
+    pool,
     dateien: proArt.reduce((a, r) => a + Number(r.n), 0),
     ordner: Number(ordner?.n || 0),
     zuletzt: letzte?.t || null,
