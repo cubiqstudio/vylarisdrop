@@ -2,6 +2,7 @@ import { q, q1 } from '../../utils/db'
 import { requireUser } from '../../utils/auth'
 import { meineTeams, ordnerRecht } from '../../utils/teams'
 import { neuesGalerieToken } from '../../utils/galerie'
+import { ordnerBaumBytes, verschiebenPruefen } from '../../utils/quota'
 
 export default defineEventHandler(async (event) => {
   const u = await requireUser(event)
@@ -27,7 +28,7 @@ export default defineEventHandler(async (event) => {
         [id, p]
       )
       if (kreis) throw fehler(400, 'Ein Ordner kann nicht in sich selbst liegen.', 'A folder cannot be inside itself.')
-      await teamSetzen(id, ziel.team_id)
+      await teamSetzen(id, ziel.team_id, o.team_id)
     } else if (o.team_id && !o.eigen)
       throw fehler(400, 'Ein Team-Ordner bleibt im Team.', 'A team folder stays in the team.')
     await q('UPDATE folders SET parent_id = $1 WHERE id = $2', [p, id])
@@ -42,7 +43,7 @@ export default defineEventHandler(async (event) => {
         'Das darf der Ersteller oder die Team-Leitung.',
         'Only the creator or the team lead may do this.'
       )
-    await teamSetzen(id, t)
+    await teamSetzen(id, t, o.team_id)
   }
   if (typeof b?.public === 'boolean') await q('UPDATE folders SET public = $1 WHERE id = $2', [b.public, id])
   let galerie: { token: string | null } | undefined
@@ -68,10 +69,13 @@ export default defineEventHandler(async (event) => {
   return { ok: true, ...(galerie ? { galerie } : {}) }
 })
 
-async function teamSetzen(id: number, team: number | null) {
-  await q(
-    `WITH RECURSIVE unter(id) AS (SELECT $1::int UNION SELECT f.id FROM folders f JOIN unter ON f.parent_id = unter.id)
+// Ordner samt Unterordnern einem Team zuweisen (oder null = privat). Team-Kontingent: der Inhalt zählt im Ziel-Team neu.
+async function teamSetzen(id: number, team: number | null, vorher?: number | null) {
+  await verschiebenPruefen({ team }, team && team !== vorher ? await ordnerBaumBytes(id) : 0, vorher ?? null, (x) =>
+    x(
+      `WITH RECURSIVE unter(id) AS (SELECT $1::int UNION SELECT f.id FROM folders f JOIN unter ON f.parent_id = unter.id)
     UPDATE folders SET team_id = $2 WHERE id IN (SELECT id FROM unter)`,
-    [id, team]
+      [id, team]
+    )
   )
 }

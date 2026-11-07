@@ -17,6 +17,8 @@ async function aktion(body: Record<string, any>, text: string) {
     if (body.id) weg.value = [...weg.value, body.id]
     await api('/api/papierkorb', { method: 'POST', body })
     ok(text)
+    // Der Papierkorb zählt zum Speicher: Seitenleiste und Karte neu laden
+    void refreshNuxtData(['stats', 'quota-me'])
     setTimeout(() => {
       void refresh().then(() => {
         weg.value = []
@@ -84,6 +86,7 @@ const tageBis = (d: string) => Math.max(0, Math.ceil((new Date(d).getTime() - Da
         </button>
       </div>
     </div>
+    <VdQuotaKarte />
     <div v-if="!liste.length" class="leer-hinweis block">
       <span class="leer-ic"><Ico n="trash" /></span>
       <h3>{{ t('Der Papierkorb ist leer', 'The trash is empty') }}</h3>

@@ -3,6 +3,7 @@ import { loeschen } from './speicher'
 import { istSlug, neuerName } from './namen'
 import type { DateiZeile } from './dateien'
 import { variantenLoeschen } from './bildvarianten'
+import { quotaWarnen } from './benachrichtigen'
 
 export const TAGE = 30
 
@@ -112,8 +113,8 @@ export async function endgueltig(where: { id?: string; userId?: number; aelterAl
     bed.push(`geloescht_at < now() - ($${w.length} || ' days')::interval`)
   }
   if (!bed.length) return 0
-  const weg = await q<{ id: string; ablage: string; fid: string }>(
-    `DELETE FROM papierkorb WHERE ${bed.join(' AND ')} RETURNING id, datei->>'ablage' AS ablage, datei->>'id' AS fid`,
+  const weg = await q<{ id: string; ablage: string; fid: string; user_id: number }>(
+    `DELETE FROM papierkorb WHERE ${bed.join(' AND ')} RETURNING id, user_id, datei->>'ablage' AS ablage, datei->>'id' AS fid`,
     w
   )
   for (const x of weg) {
@@ -122,6 +123,8 @@ export async function endgueltig(where: { id?: string; userId?: number; aelterAl
       if (x.fid) await variantenLoeschen(x.fid)
     }
   }
+  // Der Papierkorb zählt zum Kontingent: nach dem Leeren die Warnstufen der betroffenen Konten neu bewerten
+  for (const uid of new Set(weg.map((x) => x.user_id))) void quotaWarnen(uid).catch(() => {})
   return weg.length
 }
 

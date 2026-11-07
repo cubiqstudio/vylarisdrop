@@ -10,6 +10,8 @@ import { verarbeiten } from './medien'
 import { ablaufBegrenzen, ordnerRecht } from './teams'
 import { gezaehlt } from './traffic'
 import { variantenLoeschen } from './bildvarianten'
+import { hatGrenze, kontingentPruefen, mitKontingentSperre, type Ausf } from './quota'
+import { quotaWarnen } from './benachrichtigen'
 
 const MAGIE: Array<[number[], number, string]> = [
   [[0x89, 0x50, 0x4e, 0x47], 0, 'image/png'],
@@ -215,7 +217,7 @@ export async function dateiAnlegen(
   gemeldet: string,
   o: UploadOptionen,
   sprache: 'de' | 'en' = 'de',
-  x?: ImportWerte
+  iw?: ImportWerte
 ): Promise<DateiZeile> {
   const cfg = await getUploads()
   const name =
@@ -233,52 +235,69 @@ export async function dateiAnlegen(
   if (o.ordner && !(await ordnerRecht(userId, o.ordner))?.hineinladen)
     throw fehler(404, 'Ordner nicht gefunden.', 'Folder not found.')
   const ablauf =
-    x?.ablauf !== undefined ? x.ablauf : await ablaufBegrenzen(userId, o.ablauf ? ablaufAus(o.ablauf) : null)
+    iw?.ablauf !== undefined ? iw.ablauf : await ablaufBegrenzen(userId, o.ablauf ? ablaufAus(o.ablauf) : null)
   const max = o.maxAufrufe && o.maxAufrufe > 0 ? Math.min(1_000_000, Math.floor(o.maxAufrufe)) : null
-  const pw = x?.passwortHash || (o.passwort ? await hashPw(String(o.passwort).slice(0, 200)) : '')
-  const wunsch = x?.slug && istSlug(x.slug) ? x.slug : ''
+  const pw = iw?.passwortHash || (o.passwort ? await hashPw(String(o.passwort).slice(0, 200)) : '')
+  const wunsch = iw?.slug && istSlug(iw.slug) ? iw.slug : ''
   const stil = o.stil || cfg.namensstil
-  for (let versuch = 0; versuch < 8; versuch++) {
-    let slug = neuerName(stil, { laenge: cfg.laenge + Math.floor(versuch / 3), original: name, sprache })
-    if (versuch > 0 && (stil === 'datum' || stil === 'woerter' || stil === 'original'))
-      slug += '-' + neuerName('zufall', { laenge: 3 })
-    if (versuch === 0 && wunsch) slug = wunsch
-    try {
-      const z = await q1<DateiZeile>(
-        `INSERT INTO files (user_id, folder_id, slug, name, original_name, mime, art, size, ablage, sha256, expires_at, max_views, password_hash, created_at, views, favorite, verschluesselt, live)
-        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13, coalesce($14, now()), $15, $16, $17, $18) RETURNING *`,
-        [
-          userId,
-          o.ordner || null,
-          slug,
-          name,
-          original.slice(0, 200),
-          mime,
-          art,
-          g.size,
-          g.schluessel,
-          g.sha256,
-          ablauf,
-          max,
-          pw,
-          x?.erstellt || null,
-          Math.max(0, Math.floor(x?.aufrufe || 0)),
-          !!x?.favorit,
-          e2e,
-          !!x?.live && art === 'bild'
-        ]
-      )
-      verarbeiten(z!.id)
-      return z!
-    } catch (e: any) {
-      if (e?.code !== '23505') {
+  // Kontingent: endgültige, verbindliche Prüfung unmittelbar vor dem Anlegen (siehe quota.ts). Ohne Limit keine Sperre.
+  const grenze = await hatGrenze(userId, o.ordner)
+  const anlegen = async (x: Ausf): Promise<DateiZeile> => {
+    if (grenze.begrenzt) {
+      try {
+        await kontingentPruefen(grenze.nutzer, g.size, { ordner: o.ordner, x })
+      } catch (e) {
         await loeschen(g.schluessel)
         throw e
       }
     }
+    for (let versuch = 0; versuch < 8; versuch++) {
+      let slug = neuerName(stil, { laenge: cfg.laenge + Math.floor(versuch / 3), original: name, sprache })
+      if (versuch > 0 && (stil === 'datum' || stil === 'woerter' || stil === 'original'))
+        slug += '-' + neuerName('zufall', { laenge: 3 })
+      if (versuch === 0 && wunsch) slug = wunsch
+      try {
+        const z = (
+          await x(
+            `INSERT INTO files (user_id, folder_id, slug, name, original_name, mime, art, size, ablage, sha256, expires_at, max_views, password_hash, created_at, views, favorite, verschluesselt, live)
+        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13, coalesce($14, now()), $15, $16, $17, $18) RETURNING *`,
+            [
+              userId,
+              o.ordner || null,
+              slug,
+              name,
+              original.slice(0, 200),
+              mime,
+              art,
+              g.size,
+              g.schluessel,
+              g.sha256,
+              ablauf,
+              max,
+              pw,
+              iw?.erstellt || null,
+              Math.max(0, Math.floor(iw?.aufrufe || 0)),
+              !!iw?.favorit,
+              e2e,
+              !!iw?.live && art === 'bild'
+            ]
+          )
+        )[0] as DateiZeile
+        verarbeiten(z.id)
+        return z
+      } catch (e: any) {
+        if (e?.code !== '23505') {
+          await loeschen(g.schluessel)
+          throw e
+        }
+      }
+    }
+    await loeschen(g.schluessel)
+    throw fehler(500, 'Es konnte kein freier Link-Name gefunden werden.', 'No free link name could be found.')
   }
-  await loeschen(g.schluessel)
-  throw fehler(500, 'Es konnte kein freier Link-Name gefunden werden.', 'No free link name could be found.')
+  const z = grenze.begrenzt ? await mitKontingentSperre(userId, grenze.team, anlegen) : await anlegen((s, p = []) => q(s, p))
+  void quotaWarnen(userId).catch(() => {})
+  return z
 }
 
 export async function basisUrl(event: H3Event): Promise<string> {

@@ -1,10 +1,10 @@
 import nodemailer from 'nodemailer'
 import { q, q1 } from './db'
 import { getDesign, getSetting } from './settings'
-import { kontingentVon } from './hochladen'
+import { groesseText, paarText, quotaStand, type QuotaStand } from './quota'
 import type { Nutzer } from './auth'
 
-export type Art = 'upload' | 'anfrage' | 'speicher' | 'virus' | 'webhook' | 'system' | 'traffic'
+export type Art = 'upload' | 'anfrage' | 'speicher' | 'virus' | 'webhook' | 'system' | 'traffic' | 'quota'
 export interface BenachEinst {
   discord?: string
   email?: boolean
@@ -26,7 +26,8 @@ export const STANDARD: Record<Art, boolean> = {
   virus: true,
   webhook: true,
   system: true,
-  traffic: true
+  traffic: true,
+  quota: true
 }
 export const WEBHOOK =
   /^https:\/\/(?:ptb\.|canary\.)?(?:discord|discordapp)\.com\/api\/webhooks\/\d{5,25}\/[\w-]{20,100}$/
@@ -149,27 +150,56 @@ export async function nachUpload(u: Nutzer, datei: { name: string; size: number 
   await speicherPruefen(u).catch(() => {})
 }
 
-export async function speicherPruefen(u: Nutzer) {
-  const k = await kontingentVon(u)
-  if (!k) return
-  const r = await q1<{ s: string }>('SELECT coalesce(sum(size), 0) AS s FROM files WHERE user_id = $1', [u.id])
-  const anteil = Number(r?.s || 0) / k
-  const gewarnt = !!u.prefs?.speicherGewarnt
-  if (anteil >= 0.9 && !gewarnt) {
-    await q(`UPDATE users SET prefs = prefs || '{"speicherGewarnt": true}'::jsonb WHERE id = $1`, [u.id])
-    const pz = Math.round(anteil * 100),
-      en = u.prefs?.lang === 'en'
-    imHintergrund(
-      u.id,
-      'speicher',
-      en
-        ? { titel: 'Storage almost full', text: `Your storage is ${pz}% full. Delete old files to make room.` }
+// Kontingent-Warnungen: bei >= 80 % und >= 100 % einmalig (users.quota_gewarnt = 0 | 80 | 100). Die Stufe fällt auf 0 zurück,
+// sobald die Belegung unter 80 % liegt oder das Konto unbegrenzt ist. Die Stufe wird atomar gesetzt (UPDATE ... WHERE alte
+// Stufe), damit parallele Uploads oder mehrere Server-Knoten nie doppelt benachrichtigen.
+export async function quotaWarnen(userId: number, stand?: QuotaStand): Promise<void> {
+  const u = await q1<{ id: number; role: Nutzer['role']; quota_bytes: number | null; rolle_id: number | null; prefs: any; quota_gewarnt: number }>(
+    'SELECT id, role, quota_bytes, rolle_id, prefs, quota_gewarnt FROM users WHERE id = $1',
+    [userId]
+  )
+  if (!u) return
+  const s = stand || (await quotaStand(u))
+  const alt = Number(u.quota_gewarnt) || 0
+  let neu = 0
+  if (s.limit != null) {
+    const p = s.prozent ?? 0
+    neu = p >= 100 ? 100 : p >= 80 ? Math.max(alt, 80) : 0
+  }
+  if (neu === alt) return
+  const ok = await q('UPDATE users SET quota_gewarnt = $2 WHERE id = $1 AND quota_gewarnt = $3 RETURNING id', [userId, neu, alt])
+  if (!ok.length || neu < alt || s.limit == null) return
+  const en = u.prefs?.lang === 'en'
+  const pz = Math.min(999, Math.floor(s.prozent ?? 0))
+  const rest = en
+    ? 'Delete old files or empty the trash to make room.'
+    : 'Lösche alte Dateien oder leere den Papierkorb, um Platz zu schaffen.'
+  imHintergrund(
+    userId,
+    'quota',
+    neu === 100
+      ? en
+        ? {
+            titel: 'Your storage is full',
+            text: `Your storage is full: ${paarText(s.used, s.limit, true)} used. New uploads are rejected until you free up space. ${rest}`
+          }
+        : {
+            titel: 'Dein Speicher ist voll',
+            text: `Dein Speicher ist voll: ${paarText(s.used, s.limit, false)} belegt. Neue Uploads werden abgelehnt, bis wieder Platz ist. ${rest}`
+          }
+      : en
+        ? {
+            titel: 'Storage almost full',
+            text: `Your storage is ${pz}% full (${paarText(s.used, s.limit, true)}, ${groesseText(s.free ?? 0, true)} left). ${rest}`
+          }
         : {
             titel: 'Speicher fast voll',
-            text: `Dein Speicher ist zu ${pz} % belegt. Lösche alte Dateien, um Platz zu schaffen.`
+            text: `Dein Speicher ist zu ${pz} % belegt (${paarText(s.used, s.limit, false)}, noch ${groesseText(s.free ?? 0, false)} frei). ${rest}`
           }
-    )
-  } else if (anteil < 0.85 && gewarnt) {
-    await q(`UPDATE users SET prefs = prefs - 'speicherGewarnt' WHERE id = $1`, [u.id])
-  }
+  )
+}
+
+/** Bestehende Schnittstelle (nachUpload, Datei-Anfragen): prüft die Warnstufen des Kontos */
+export async function speicherPruefen(u: Pick<Nutzer, 'id'>) {
+  await quotaWarnen(u.id)
 }

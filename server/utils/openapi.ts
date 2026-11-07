@@ -135,6 +135,16 @@ export function openapi(basis: string) {
                       quota: { type: ['integer', 'null'], example: 10737418240 },
                       files: { type: 'integer', example: 412 }
                     }
+                  },
+                  quota: {
+                    type: 'object',
+                    description: 'Effective storage quota (null limit = unlimited). Used includes the trash.',
+                    properties: {
+                      limit: { type: ['integer', 'null'], example: 10737418240 },
+                      used: { type: 'integer', example: 734003200 },
+                      free: { type: ['integer', 'null'], example: 10003415040 },
+                      source: { type: 'string', enum: ['konto', 'rolle', 'standard', 'keins'] }
+                    }
                   }
                 }
               })
@@ -218,7 +228,8 @@ export function openapi(basis: string) {
                 properties: { files: { type: 'array', items: { $ref: '#/components/schemas/File' } } }
               })
             },
-            413: { $ref: '#/components/responses/Error' }
+            413: { $ref: '#/components/responses/Error' },
+            507: { $ref: '#/components/responses/Error', description: 'Storage quota of the account or team is exhausted' }
           }
         })
       },

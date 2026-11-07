@@ -3,6 +3,7 @@ import { ereignis } from '../../utils/db'
 import { clientIp, requireOwner } from '../../utils/auth'
 import { getAuslieferung, getMedien, getUploads, setSetting, setSprache } from '../../utils/settings'
 import { requirePro } from '../../utils/lizenz'
+import { setQuotaStandard } from '../../utils/quota'
 import { getMail } from '../../utils/benachrichtigen'
 
 const Body = z.object({
@@ -48,7 +49,9 @@ const Body = z.object({
       erlaubt: z.array(z.string().trim().toLowerCase().max(253)).max(200).optional()
     })
     .optional(),
-  traffic: z.object({ grenzeGb: z.number().min(0).max(1_000_000).nullable() }).optional()
+  traffic: z.object({ grenzeGb: z.number().min(0).max(1_000_000).nullable() }).optional(),
+  // Standard-Kontingent in GB für Konten ohne eigenes Limit (null/0 = keins)
+  quota: z.object({ standardGb: z.number().min(0).max(1_000_000).nullable() }).optional()
 })
 
 export default defineEventHandler(async (event) => {
@@ -83,6 +86,7 @@ export default defineEventHandler(async (event) => {
     await requirePro('traffic')
     await setSetting('traffic', { grenzeGb: b.traffic.grenzeGb && b.traffic.grenzeGb > 0 ? b.traffic.grenzeGb : null })
   }
+  if (b.quota) await setQuotaStandard(b.quota.standardGb)
   if (b.webhooks) await setSetting('webhooks', { intern: b.webhooks.intern })
   if (b.mail) await setSetting('mail', { ...b.mail, pass: b.mail.pass || (await getMail())?.pass || '' })
   await ereignis('settings_changed', ich.id, {}, clientIp(event))

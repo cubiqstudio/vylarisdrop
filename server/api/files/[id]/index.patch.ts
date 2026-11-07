@@ -3,6 +3,7 @@ import { hashPw, requireUser } from '../../../utils/auth'
 import { ablaufAus, basisUrl, fuerPanel, type DateiZeile } from '../../../utils/dateien'
 import { istSlug } from '../../../utils/namen'
 import { dateiRecht, ordnerRecht } from '../../../utils/teams'
+import { teamVonOrdner, verschiebenPruefen } from '../../../utils/quota'
 
 export default defineEventHandler(async (event) => {
   const u = await requireUser(event)
@@ -13,6 +14,7 @@ export default defineEventHandler(async (event) => {
   const b = await readBody(event)
   const set: string[] = []
   const w: unknown[] = [id]
+  let verschieben: { ordner: number | null; von: number | null } | null = null
   const neu = (sp: string, v: unknown) => {
     w.push(v)
     set.push(`${sp} = $${w.length}`)
@@ -42,6 +44,8 @@ export default defineEventHandler(async (event) => {
     if (o != null && !(await ordnerRecht(u.id, o))?.hineinladen)
       throw fehler(404, 'Ordner nicht gefunden.', 'Folder not found.')
     neu('folder_id', o)
+    // Team-Kontingent: die Datei zählt im Ziel-Team (außer sie liegt dort schon)
+    if (o !== f.folder_id) verschieben = { ordner: o, von: await teamVonOrdner(f.folder_id) }
   }
   if ('ablauf' in (b || {})) neu('expires_at', b.ablauf ? ablaufAus(b.ablauf) : null)
   if ('max_aufrufe' in (b || {})) {
@@ -52,7 +56,11 @@ export default defineEventHandler(async (event) => {
   }
   if (typeof b?.passwort === 'string') neu('password_hash', b.passwort ? await hashPw(b.passwort.slice(0, 200)) : '')
   if (typeof b?.favorit === 'boolean') neu('favorite', b.favorit)
-  if (set.length) await q(`UPDATE files SET ${set.join(', ')} WHERE id = $1`, w)
+  if (set.length) {
+    const sql = `UPDATE files SET ${set.join(', ')} WHERE id = $1`
+    if (verschieben) await verschiebenPruefen({ ordner: verschieben.ordner }, Number(f.size), verschieben.von, (x) => x(sql, w))
+    else await q(sql, w)
+  }
 
   if (Array.isArray(b?.tags)) {
     const ids = [...new Set(b.tags.map(Number).filter((n: number) => Number.isInteger(n) && n > 0))].slice(0, 30)

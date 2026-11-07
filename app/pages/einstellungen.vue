@@ -74,7 +74,8 @@ const ben = reactive({
     virus: true,
     webhook: true,
     system: true,
-    traffic: true
+    traffic: true,
+    quota: true
   } as Record<string, boolean>
 })
 watch(
@@ -97,10 +98,16 @@ const ARTEN = computed(() => [
     )
   },
   {
+    k: 'quota',
+    ic: 'cloud',
+    text: t('Dein Speicher wird knapp', 'Your storage is running low'),
+    info: t('Einmal bei 80 % und einmal bei 100 % deines Kontingents.', 'Once at 80% and once at 100% of your quota.')
+  },
+  {
     k: 'speicher',
     ic: 'database',
-    text: t('Speicher fast voll', 'Storage almost full'),
-    info: t('Einmal, wenn dein Kontingent zu 90 % belegt ist.', 'Once, when your quota is 90% used.')
+    text: t('Speicher-Box oder Bucket fast voll', 'Storage box or bucket almost full'),
+    info: t('Einmal, wenn eine Box oder ein Bucket zu 80 % belegt ist.', 'Once, when a box or bucket is 80% used.')
   },
   {
     k: 'traffic',
@@ -298,6 +305,8 @@ const ausl = reactive({
   erlaubtText: ''
 })
 const trafficGb = ref<number | null>(null)
+// Standard-Kontingent (Bytes) für Konten ohne eigenes Limit und ohne Rollen-Kontingent; null = keins
+const standardQuota = ref<number | null | undefined>(null)
 const { data: proInfo } = await (useFetch as any)('/api/pro', { key: 'pro', immediate: istAdmin.value })
 const proTraffic = computed(() => !!proInfo.value?.funktionen?.traffic)
 const { data: bildcache, refresh: bildcacheNeu } = await (useFetch as any)('/api/system/bildcache', {
@@ -320,6 +329,7 @@ watch(
       if (i.auslieferung)
         Object.assign(ausl, { ...i.auslieferung, erlaubtText: (i.auslieferung.erlaubt || []).join('\n') })
       if (i.traffic) trafficGb.value = i.traffic.grenzeGb
+      standardQuota.value = i.quota?.standardGb ? Math.round(i.quota.standardGb * 1024 ** 3) : null
     }
   },
   { immediate: true }
@@ -344,6 +354,8 @@ function cacheLeeren() {
   )
 }
 async function insSpeichern() {
+  if (standardQuota.value === undefined)
+    return fehler(t('Bitte ein gültiges Standard-Kontingent eingeben.', 'Please enter a valid default quota.'))
   try {
     await api('/api/settings', {
       method: 'PUT',
@@ -351,6 +363,7 @@ async function insSpeichern() {
         design: { name: ins.name, color: ins.color },
         uploads: { maxGb: Number(ins.maxGb) || 0, namensstil: ins.namensstil, laenge: Number(ins.laenge) },
         lang: ins.lang,
+        quota: { standardGb: standardQuota.value ? standardQuota.value / 1024 ** 3 : null },
         medien: { ...med, qualitaet: Number(med.qualitaet) },
         auslieferung: {
           bilder: ausl.bilder,
@@ -595,7 +608,10 @@ const STILE = computed(() => [
         </div>
         <div class="block">
           <h3>{{ t('Uploads', 'Uploads') }}</h3>
-          <label class="feld"><span>{{ t('Größte Datei (GB)', 'Largest file (GB)') }}</span><input v-model="ins.maxGb" class="eingabe" type="number" min="0" step="0.1" :disabled="!istInhaber"><small>{{ t('0 = ohne Grenze. Kontingente pro Konto stellst du unter „Nutzer“ ein.', '0 = no limit. Per-account quotas are set under “Users”.') }}</small></label>
+          <label class="feld"><span>{{ t('Größte Datei (GB)', 'Largest file (GB)') }}</span><input v-model="ins.maxGb" class="eingabe" type="number" min="0" step="0.1" :disabled="!istInhaber"><small>{{ t('0 = ohne Grenze. Gilt je Datei, unabhängig vom Kontingent.', '0 = no limit. Applies per file, independent of the quota.') }}</small></label>
+          <div class="feld"><span>{{ t('Standard-Kontingent pro Konto', 'Default quota per account') }}</span>
+            <VdQuotaEingabe v-model="standardQuota" art="einfach" id-prefix="std" />
+            <small>{{ t('Gilt für normale Konten ohne eigenes Limit und ohne Rollen-Kontingent. Admins und Inhaber bleiben unbegrenzt. Einzelne Konten stellst du unter „Nutzer“ ein.', 'Applies to regular accounts without their own limit or role quota. Admins and the owner stay unlimited. Set individual accounts under “Users”.') }}</small></div>
           <label class="feld"><span>{{ t('Standard-Link-Stil', 'Default link style') }}</span><VdAuswahl v-model="ins.namensstil" class="eingabe" :disabled="!istInhaber"><option v-for="s in STILE" :key="s.v" :value="s.v">{{ s.text }} — {{ s.bsp }}</option></VdAuswahl></label>
           <label class="feld"><span>{{ t('Länge zufälliger Links', 'Random link length') }}</span><input v-model="ins.laenge" class="eingabe" type="number" min="4" max="32" :disabled="!istInhaber"></label>
         </div>
