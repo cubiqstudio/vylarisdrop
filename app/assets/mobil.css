@@ -1,0 +1,457 @@
+/* Handy-Feinschliff (auch für die Android-WebView-App): sichere Bereiche, Touch-Verhalten, unsichtbare Scrollbalken
+   mit Überlauf-Hinweis, Mindest-Trefferflächen, Bottom-Sheets. Bewusst global und additiv, damit Seiten und Komponenten
+   kaum angefasst werden müssen. Hover-Regeln nur für Mausgeräte erledigt scripts/postcss-hover-nur-maus.mjs. */
+
+html {
+  -webkit-text-size-adjust: 100%;
+  text-size-adjust: 100%;
+  -webkit-tap-highlight-color: transparent;
+  /* Notch/Home-Indikator: der Seitenhintergrund reicht bis an den Rand (viewport-fit=cover) */
+  background: var(--bg);
+}
+body {
+  /* Adressleisten-Sprung: wo nötig dvh statt vh (Seiten setzen min-height: 100vh vor 100dvh) */
+  overscroll-behavior-y: none;
+}
+html.menue-offen,
+html.menue-offen body {
+  overflow: hidden;
+}
+a,
+button,
+summary,
+label,
+select,
+[role='button'],
+[role='menuitem'],
+[role='tab'],
+input[type='checkbox'],
+input[type='radio'],
+input[type='range'] {
+  /* kein 300-ms-Warten und kein Doppeltipp-Zoom auf Bedienelementen */
+  touch-action: manipulation;
+}
+a,
+button,
+summary,
+[role='button'],
+[role='menuitem'],
+[role='tab'] {
+  -webkit-tap-highlight-color: rgba(var(--a-rgb, 30, 115, 190), 0.14);
+}
+img,
+video,
+canvas {
+  max-width: 100%;
+}
+
+/* ---------- Scrollbalken: weg, wo Auswahl-/Navigationsleisten scrollen; Hinweis über weichen Rand ---------- */
+@property --f-l {
+  syntax: '<length>';
+  inherits: false;
+  initial-value: 0px;
+}
+@property --f-r {
+  syntax: '<length>';
+  inherits: false;
+  initial-value: 0px;
+}
+@property --f-t {
+  syntax: '<length>';
+  inherits: false;
+  initial-value: 0px;
+}
+@property --f-b {
+  syntax: '<length>';
+  inherits: false;
+  initial-value: 0px;
+}
+
+/* Reiter, Chips, Aktionsleisten, Dialog- und Auswahllisten */
+:is(
+    .seite,
+    .aktionen,
+    .aktionsleiste,
+    .tab,
+    .ktab,
+    .tab-wrap,
+    .sa-tabs,
+    .rollleiste,
+    .ansichten .seg,
+    .baum,
+    .dateien,
+    .up-liste,
+    .pop-liste,
+    .lieferungen,
+    .vd-wahl-liste,
+    .menue,
+    .modal-hg,
+    .modal
+  ) {
+  scrollbar-width: none !important;
+  overscroll-behavior: contain;
+  -webkit-overflow-scrolling: touch;
+}
+:is(
+    .seite,
+    .aktionen,
+    .aktionsleiste,
+    .tab,
+    .ktab,
+    .tab-wrap,
+    .sa-tabs,
+    .rollleiste,
+    .ansichten .seg,
+    .baum,
+    .dateien,
+    .up-liste,
+    .pop-liste,
+    .lieferungen,
+    .vd-wahl-liste,
+    .menue,
+    .modal-hg,
+    .modal
+  )::-webkit-scrollbar {
+  display: none;
+  width: 0;
+  height: 0;
+}
+
+/* Lange Tabellen, Code und Protokolle: Scrollbalken darf bleiben, auf kleinen Bildschirmen dünn */
+@media (max-width: 860px), (pointer: coarse) {
+  html,
+  .tabelle-box,
+  .ll-zeilen,
+  .code,
+  .code pre,
+  pre.cmd,
+  .sc-zeile pre,
+  .zeile code,
+  .l-inhalt pre,
+  .scrape,
+  .beispiel,
+  .unter,
+  .fehlerliste,
+  .textansicht,
+  .za-schluessel {
+    scrollbar-width: thin;
+    overscroll-behavior-x: contain;
+  }
+}
+
+/* Weicher Ausblend-Verlauf am Rand, solange dort noch Inhalt abgeschnitten ist (scrollgesteuert, ohne JavaScript;
+   die Maske liegt nur bei tatsächlichem Überlauf an, weil die Animation nur dann läuft) */
+@supports (animation-timeline: scroll()) {
+  :is(.tab, .ktab, .tab-wrap, .sa-tabs, .rollleiste, .ansichten .seg) {
+    mask-image: linear-gradient(to right, transparent 0, #000 var(--f-l), #000 calc(100% - var(--f-r)), transparent 100%);
+    animation: vd-rand-x linear both;
+    animation-timeline: scroll(self inline);
+  }
+  /* "Löschen" klebt rechts (eigener Schatten), daher nur links ausblenden */
+  .aktionen {
+    mask-image: linear-gradient(to right, transparent 0, #000 var(--f-l));
+    animation: vd-rand-l linear both;
+    animation-timeline: scroll(self inline);
+  }
+  :is(.baum, .dateien, .up-liste, .lieferungen) {
+    mask-image: linear-gradient(to bottom, transparent 0, #000 var(--f-t), #000 calc(100% - var(--f-b)), transparent 100%);
+    animation: vd-rand-y linear both;
+    animation-timeline: scroll(self block);
+  }
+}
+@keyframes vd-rand-x {
+  0% {
+    --f-l: 0px;
+    --f-r: 26px;
+  }
+  4% {
+    --f-l: 26px;
+    --f-r: 26px;
+  }
+  96% {
+    --f-l: 26px;
+    --f-r: 26px;
+  }
+  100% {
+    --f-l: 26px;
+    --f-r: 0px;
+  }
+}
+@keyframes vd-rand-l {
+  0% {
+    --f-l: 0px;
+  }
+  5%,
+  100% {
+    --f-l: 22px;
+  }
+}
+@keyframes vd-rand-y {
+  0% {
+    --f-t: 0px;
+    --f-b: 22px;
+  }
+  4% {
+    --f-t: 22px;
+    --f-b: 22px;
+  }
+  96% {
+    --f-t: 22px;
+    --f-b: 22px;
+  }
+  100% {
+    --f-t: 22px;
+    --f-b: 0px;
+  }
+}
+
+/* Ansicht-Reiter (Alle Dateien | Zuletzt | Favoriten | Team-Ordner): eine Zeile, seitlich wischbar statt umbrechen */
+.ansichten .seg {
+  flex-wrap: nowrap;
+  overflow-x: auto;
+  max-width: 100%;
+}
+.ansichten .seg button {
+  flex: none;
+  white-space: nowrap;
+}
+
+/* ---------- Eingaben: mindestens 16 px (kein Zoom beim Fokussieren in iOS) ---------- */
+@media (pointer: coarse), (max-width: 860px) {
+  input:not([type='checkbox'], [type='radio'], [type='range'], [type='file'], [type='color'], [type='hidden']),
+  select,
+  textarea,
+  .eingabe,
+  .vd-wahl.eingabe {
+    font-size: 16px !important;
+  }
+  /* größere Schrift darf Felder in Flex-Zeilen nicht über den Rand schieben */
+  input:not([type='checkbox'], [type='radio'], [type='range'], [type='file'], [type='color'], [type='hidden']),
+  select,
+  .vd-wahl {
+    min-width: 0;
+    max-width: 100%;
+  }
+}
+
+/* ---------- Touch-Geräte: Mindest-Trefferfläche 44 x 44 px ---------- */
+@media (pointer: coarse) {
+  .knopf,
+  .knopf.klein,
+  .avatar,
+  button.krume,
+  .krume.jetzt {
+    min-height: 44px;
+    min-width: 44px;
+  }
+  .knopf.klein {
+    padding-block: 9px;
+  }
+  .seg {
+    padding: 3px;
+    gap: 3px;
+  }
+  .seg button {
+    min-height: 44px;
+    min-width: 44px;
+    justify-content: center;
+    padding-inline: 14px;
+  }
+  .eingabe,
+  select,
+  input:not([type='checkbox'], [type='radio'], [type='range'], [type='file'], [type='color'], [type='hidden']),
+  .vd-wahl.eingabe {
+    min-height: 44px;
+  }
+  textarea.eingabe,
+  textarea {
+    min-height: 88px;
+  }
+  input[type='checkbox'],
+  input[type='radio'] {
+    width: 22px;
+    height: 22px;
+  }
+  label:has(> input[type='checkbox'], > input[type='radio']) {
+    min-height: 44px;
+    align-items: center;
+  }
+  /* Schalter: sichtbar 42 x 24, Trefferfläche 50 x 44 */
+  .schalter {
+    width: 50px;
+    height: 44px;
+    padding: 10px 4px;
+    background-clip: content-box !important;
+  }
+  .schalter::after {
+    top: 13px;
+    left: 7px;
+  }
+  .schalter.an::after {
+    left: 25px;
+  }
+  .vd-wahl-liste li,
+  .konto-menu a,
+  .konto-menu button {
+    min-height: 44px;
+  }
+  .toast {
+    min-height: 44px;
+  }
+  /* Auswahl- und Aktionsleisten: mehr Luft zwischen den Knöpfen */
+  .aktionen,
+  .reihe,
+  .werkzeuge {
+    gap: 8px;
+  }
+  /* seitenspezifische Kleinknöpfe (Reiter, Zeiträume, Kopieren, Farben …) */
+  .pop-liste button,
+  .aktionsleiste button,
+  .werkzeuge > button.tag,
+  a.ziel,
+  .platzhalter button,
+  .farben > button,
+  .farben > input,
+  .zeitraum button,
+  button.zeile.klickbar,
+  .kopieren,
+  .sc-kopie,
+  .stile button,
+  .reiter-klein button,
+  .lz-key,
+  .drop-link,
+  .vd-wahl.sprache {
+    min-height: 44px;
+    min-width: 44px;
+  }
+  details.anleitung > summary {
+    padding-block: 12px;
+  }
+  footer a,
+  .vd-fuss a {
+    display: inline-flex;
+    align-items: center;
+    min-height: 44px;
+  }
+}
+
+/* ---------- Kleine Bildschirme: Dialoge als Bottom-Sheet, Datei-Detail als Vollbild ---------- */
+@media (max-width: 720px) {
+  .modal-hg {
+    --m-x: max(16px, env(safe-area-inset-left, 0px));
+    align-items: flex-end;
+    padding: env(safe-area-inset-top, 0px) 0 0;
+    overscroll-behavior: contain;
+  }
+  .modal {
+    max-width: none;
+    width: 100%;
+    max-height: calc(100dvh - 24px - env(safe-area-inset-top, 0px));
+    overflow-y: auto;
+    border-radius: 20px 20px 0 0;
+    border-width: 1px 0 0;
+    padding: 18px max(16px, env(safe-area-inset-right, 0px)) calc(18px + env(safe-area-inset-bottom, 0px))
+      max(16px, env(safe-area-inset-left, 0px));
+    animation: vd-sheet-rein 0.32s var(--kurve) backwards;
+  }
+  .modal::before {
+    content: '';
+    display: block;
+    width: 38px;
+    height: 4px;
+    border-radius: 4px;
+    background: var(--linie2);
+    margin: -8px auto 12px;
+  }
+  .modal.breit {
+    height: 100dvh;
+    max-height: 100dvh;
+    border-radius: 0;
+    border-width: 0;
+    padding-top: calc(14px + env(safe-area-inset-top, 0px));
+    animation-name: vd-voll-rein;
+  }
+  .modal.breit::before {
+    display: none;
+  }
+  /* Kopf (Titel, Schließen) und Fuß (Knöpfe) bleiben beim Scrollen im Dialog sichtbar */
+  .modal .modal-kopf {
+    position: sticky;
+    top: -18px;
+    z-index: 3;
+    margin: -18px calc(-1 * max(16px, env(safe-area-inset-right, 0px))) 12px calc(-1 * max(16px, env(safe-area-inset-left, 0px)));
+    padding: 18px max(16px, env(safe-area-inset-right, 0px)) 10px max(16px, env(safe-area-inset-left, 0px));
+    background: var(--flaeche);
+  }
+  .modal.breit .modal-kopf {
+    top: calc(-14px - env(safe-area-inset-top, 0px));
+    margin-top: calc(-14px - env(safe-area-inset-top, 0px));
+    padding-top: calc(14px + env(safe-area-inset-top, 0px));
+  }
+  .modal .modal-fuss {
+    position: sticky;
+    bottom: calc(-18px - env(safe-area-inset-bottom, 0px));
+    z-index: 3;
+    margin-inline: calc(-1 * max(16px, env(safe-area-inset-left, 0px)));
+    padding: 12px max(16px, env(safe-area-inset-right, 0px)) calc(12px + env(safe-area-inset-bottom, 0px))
+      max(16px, env(safe-area-inset-left, 0px));
+    margin-bottom: calc(-18px - env(safe-area-inset-bottom, 0px));
+    background: var(--flaeche);
+    border-top: 1px solid var(--linie);
+  }
+  .modal .modal-fuss .knopf {
+    flex: 1 1 auto;
+  }
+}
+@keyframes vd-sheet-rein {
+  from {
+    opacity: 0.4;
+    transform: translateY(48px);
+  }
+}
+@keyframes vd-voll-rein {
+  from {
+    opacity: 0;
+    transform: translateY(24px);
+  }
+}
+
+/* Untere Leiste (Handy-Rahmen): bei aktiver Auswahl (eigene Aktionsleiste unten), offener Schublade oder Dialog tritt sie zurück */
+@media (max-width: 860px) {
+  body:has(.auswahlleiste, .aktionsleiste.an, .modal-hg, .seite.offen) .tabbar {
+    transform: translateY(100%);
+    opacity: 0;
+    pointer-events: none;
+  }
+}
+
+/* ---------- Toasts über der unteren Leiste und der Home-Geste ---------- */
+.toasts {
+  right: max(22px, env(safe-area-inset-right, 0px));
+  bottom: calc(22px + env(safe-area-inset-bottom, 0px));
+}
+@media (max-width: 860px) {
+  .toasts {
+    left: max(16px, env(safe-area-inset-left, 0px));
+    right: max(16px, env(safe-area-inset-right, 0px));
+    bottom: calc(76px + env(safe-area-inset-bottom, 0px));
+    align-items: center;
+  }
+  .toast {
+    max-width: 100%;
+  }
+}
+
+/* Dialoge und Menüs: Scroll-Animationen (Ränder) sollen auch bei reduzierter Bewegung stehen bleiben */
+@media (prefers-reduced-motion: reduce) {
+  :is(.tab, .ktab, .tab-wrap, .sa-tabs, .rollleiste, .ansichten .seg, .aktionen, .baum, .dateien, .up-liste, .lieferungen) {
+    animation-duration: auto !important;
+  }
+}
+
+/* Querformat auf dem Handy: untere Leiste ohne Beschriftung, damit Platz bleibt */
+@media (max-width: 860px) and (max-height: 480px) {
+  .tabbar span {
+    display: none;
+  }
+}

@@ -223,6 +223,7 @@ const STATUS: Record<string, [string, string, string]> = {
 }
 .zu-wahl {
   flex: 1 1 260px;
+  min-width: 0;
   display: block;
 }
 .zu-wahl > span {

@@ -611,7 +611,7 @@ async function tagAnlegen() {
 .aktionsleiste {
   position: fixed;
   left: 50%;
-  bottom: 26px;
+  bottom: calc(26px + env(safe-area-inset-bottom, 0px));
   transform: translate(-50%, calc(100% + 60px));
   display: flex;
   gap: 6px;
@@ -687,8 +687,8 @@ async function tagAnlegen() {
     margin-left: 0;
   }
   .aktionsleiste {
-    left: 12px;
-    right: 12px;
+    left: max(12px, env(safe-area-inset-left, 0px));
+    right: max(12px, env(safe-area-inset-right, 0px));
     transform: translate(0, calc(100% + 60px));
     overflow-x: auto;
   }

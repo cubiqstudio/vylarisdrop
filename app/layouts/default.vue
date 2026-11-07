@@ -259,6 +259,31 @@ watch(
     menu.value = false
   }
 )
+// Schublade (kleine Bildschirme): Hintergrund nicht mitscrollen lassen, Esc und Wischen nach links schließen
+watch(mobilNav, (an) => {
+  if (import.meta.client) document.documentElement.classList.toggle('menue-offen', an)
+})
+function schubladeTaste(e: KeyboardEvent) {
+  if (e.key === 'Escape' && mobilNav.value) mobilNav.value = false
+}
+onMounted(() => document.addEventListener('keydown', schubladeTaste))
+onBeforeUnmount(() => {
+  document.removeEventListener('keydown', schubladeTaste)
+  document.documentElement.classList.remove('menue-offen')
+})
+let wischStart: { x: number; y: number } | null = null
+function wischAn(e: TouchEvent) {
+  const f = e.touches[0]
+  wischStart = f ? { x: f.clientX, y: f.clientY } : null
+}
+function wischAb(e: TouchEvent) {
+  const f = e.changedTouches[0]
+  if (!wischStart || !f) return
+  const dx = f.clientX - wischStart.x
+  const dy = f.clientY - wischStart.y
+  wischStart = null
+  if (dx < -64 && Math.abs(dy) < Math.abs(dx) * 0.6) mobilNav.value = false
+}
 </script>
 
 <template>
@@ -277,7 +302,7 @@ watch(
       >
     </div>
 
-    <aside class="seite" :class="{ offen: mobilNav }">
+    <aside class="seite" :class="{ offen: mobilNav }" @touchstart.passive="wischAn" @touchend.passive="wischAb">
       <NuxtLink to="/" class="marke-link"><VdMarke /></NuxtLink>
       <nav ref="navEl" class="nav-alle" :aria-label="t('Bereiche', 'Sections')">
         <span
@@ -327,7 +352,7 @@ watch(
       </div>
       <VdVersion v-if="istAdmin" class="version-fuss" />
     </aside>
-    <div v-if="mobilNav" class="seite-hg" @click="mobilNav = false"></div>
+    <div v-if="mobilNav" class="seite-hg" aria-hidden="true" @click="mobilNav = false"></div>
 
     <div class="haupt">
       <header class="leiste">
@@ -343,18 +368,18 @@ watch(
           /><kbd>Strg K</kbd></label
         >
         <div class="rechts">
-          <button class="knopf rund" :aria-label="t('Hell/Dunkel umschalten', 'Toggle light/dark')" @click="themaUm">
+          <button class="knopf rund nur-desk" :aria-label="t('Hell/Dunkel umschalten', 'Toggle light/dark')" @click="themaUm">
             <Ico :n="ich?.theme === 'light' ? 'moon' : 'sun'" />
           </button>
           <button
-            class="knopf rund"
+            class="knopf rund nur-desk"
             :aria-label="t('Aufnehmen', 'Record')"
             :title="t('Sprache oder Video aufnehmen', 'Record voice or video')"
             @click="aufnahmeAuf = true"
           >
             <Ico n="mic" />
           </button>
-          <button class="knopf rot" @click="dateiFeld?.click()">
+          <button class="knopf rot nur-desk" @click="dateiFeld?.click()">
             <Ico n="upload" /><span class="text-hochladen">{{ t('Hochladen', 'Upload') }}</span>
           </button>
           <input ref="dateiFeld" type="file" multiple class="versteckt" @change="gewaehlt" />
@@ -374,6 +399,10 @@ watch(
                         : t('Nutzer', 'User')
                   }}</small>
                 </div>
+                <button class="nur-klein" role="menuitem" @click="themaUm">
+                  <Ico :n="ich?.theme === 'light' ? 'moon' : 'sun'" />
+                  {{ ich?.theme === 'light' ? t('Dunkles Design', 'Dark mode') : t('Helles Design', 'Light mode') }}
+                </button>
                 <NuxtLink to="/einstellungen" role="menuitem"
                   ><Ico n="gear" /> {{ t('Einstellungen', 'Settings') }}</NuxtLink
                 >
@@ -388,6 +417,21 @@ watch(
         <slot />
       </main>
     </div>
+
+    <!-- Handy: feste untere Leiste mit den Hauptaktionen (Dateien, Drop, Hochladen, Aufnehmen, Menü) -->
+    <nav class="tabbar" :aria-label="t('Schnellzugriff', 'Quick access')">
+      <NuxtLink to="/" :class="{ an: istAn('/') }"><Ico n="cloud" /><span>{{ t('Dateien', 'Files') }}</span></NuxtLink>
+      <NuxtLink to="/drop" :class="{ an: istAn('/drop') }"><Ico n="grid" /><span>Drop</span></NuxtLink>
+      <button type="button" class="hoch" :aria-label="t('Hochladen', 'Upload')" @click="dateiFeld?.click()">
+        <Ico n="upload" />
+      </button>
+      <button type="button" :aria-label="t('Aufnehmen', 'Record')" @click="aufnahmeAuf = true">
+        <Ico n="mic" /><span>{{ t('Aufnehmen', 'Record') }}</span>
+      </button>
+      <button type="button" :class="{ an: mobilNav }" :aria-expanded="mobilNav" @click="mobilNav = !mobilNav">
+        <Ico n="menu" /><span>{{ t('Mehr', 'More') }}</span>
+      </button>
+    </nav>
 
     <Transition name="ziehen">
       <div v-if="zieht" class="zieh-flaeche" aria-hidden="true">
@@ -410,6 +454,7 @@ watch(
   display: grid;
   grid-template-columns: 248px 1fr;
   min-height: 100vh;
+  min-height: 100dvh;
 }
 .mit-intro .seite,
 .mit-intro .haupt {
@@ -519,17 +564,51 @@ watch(
 }
 
 .seite {
+  --sl: 14px;
   border-right: 1px solid var(--linie);
-  padding: 20px 14px;
+  padding: calc(20px + env(safe-area-inset-top, 0px)) 14px calc(20px + env(safe-area-inset-bottom, 0px)) var(--sl);
   display: flex;
   flex-direction: column;
   gap: 22px;
   position: sticky;
   top: 0;
   height: 100vh;
+  height: 100dvh;
   background: var(--bg);
   overflow-y: auto;
+  overscroll-behavior: contain;
+  /* kein sichtbarer Scrollbalken (gescrollt wird weiter normal); den Überlauf zeigt ein weicher Verlauf am unteren Rand */
+  scrollbar-width: none;
   z-index: 30;
+}
+.seite::-webkit-scrollbar {
+  display: none;
+}
+.seite::after {
+  content: '';
+  flex: none;
+  position: sticky;
+  bottom: 0;
+  height: 30px;
+  margin-top: -52px;
+  background: linear-gradient(to bottom, transparent, var(--bg));
+  pointer-events: none;
+  opacity: 0;
+}
+@supports (animation-timeline: scroll()) {
+  .seite::after {
+    animation: seiteRand linear both;
+    animation-timeline: scroll(nearest block);
+  }
+}
+@keyframes seiteRand {
+  0%,
+  92% {
+    opacity: 1;
+  }
+  100% {
+    opacity: 0;
+  }
 }
 .marke-link {
   padding: 4px 8px;
@@ -542,7 +621,7 @@ watch(
 }
 .schieber {
   position: absolute;
-  left: -14px;
+  left: calc(-1 * var(--sl));
   width: 3px;
   border-radius: 0 3px 3px 0;
   background: var(--a);
@@ -700,7 +779,8 @@ watch(
   display: flex;
   align-items: center;
   gap: 12px;
-  padding: 14px 28px;
+  padding: calc(14px + env(safe-area-inset-top, 0px)) max(28px, env(safe-area-inset-right, 0px)) 14px
+    max(28px, env(safe-area-inset-left, 0px));
   background: var(--glas);
   backdrop-filter: blur(16px) saturate(1.4);
   border-bottom: 1px solid var(--linie);
@@ -833,8 +913,12 @@ watch(
   opacity: 0;
 }
 .inhalt {
-  padding: 28px;
+  padding: 28px max(28px, env(safe-area-inset-right, 0px)) 28px max(28px, env(safe-area-inset-left, 0px));
   max-width: 1320px;
+}
+.nur-klein,
+.tabbar {
+  display: none;
 }
 
 .zieh-flaeche {
@@ -921,32 +1005,45 @@ watch(
     grid-template-columns: 1fr;
   }
   .seite {
+    --sl: max(14px, env(safe-area-inset-left, 0px));
     position: fixed;
     left: 0;
     top: 0;
     bottom: 0;
-    width: 260px;
+    width: min(300px, 86vw);
     transform: translateX(-100%);
+    visibility: hidden;
+    z-index: 130;
     transition:
       transform 0.35s var(--kurve),
-      box-shadow 0.35s;
+      box-shadow 0.35s,
+      visibility 0s 0.35s;
   }
   .seite.offen {
     transform: none;
+    visibility: visible;
+    transition-delay: 0s;
     box-shadow: 0 0 60px rgba(0, 0, 0, 0.5);
   }
   .seite-hg {
     display: block;
     position: fixed;
     inset: 0;
-    z-index: 25;
+    z-index: 125;
     background: rgba(0, 0, 0, 0.4);
   }
   .mobil {
     display: inline-flex;
   }
   .leiste {
-    padding: 12px 16px;
+    padding: calc(10px + env(safe-area-inset-top, 0px)) max(16px, env(safe-area-inset-right, 0px)) 10px
+      max(16px, env(safe-area-inset-left, 0px));
+  }
+  .nur-desk {
+    display: none;
+  }
+  .nur-klein {
+    display: flex;
   }
   .suche kbd,
   .text-hochladen {
@@ -960,7 +1057,70 @@ watch(
     padding: 8px 10px;
   }
   .inhalt {
-    padding: 18px 16px;
+    padding: 16px max(16px, env(safe-area-inset-right, 0px)) calc(84px + env(safe-area-inset-bottom, 0px))
+      max(16px, env(safe-area-inset-left, 0px));
+  }
+  .tabbar {
+    position: fixed;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    z-index: 120;
+    display: grid;
+    grid-template-columns: repeat(5, minmax(0, 1fr));
+    align-items: center;
+    padding: 4px max(6px, env(safe-area-inset-right, 0px)) calc(4px + env(safe-area-inset-bottom, 0px))
+      max(6px, env(safe-area-inset-left, 0px));
+    background: color-mix(in srgb, var(--bg) 93%, transparent);
+    backdrop-filter: blur(16px) saturate(1.4);
+    -webkit-backdrop-filter: blur(16px) saturate(1.4);
+    border-top: 1px solid var(--linie);
+    transition:
+      transform 0.25s var(--kurve),
+      opacity 0.2s;
+  }
+  .tabbar a,
+  .tabbar button {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 2px;
+    min-height: 48px;
+    min-width: 44px;
+    border: 0;
+    border-radius: 12px;
+    background: transparent;
+    color: var(--text3);
+    font-size: 10.5px;
+    font-weight: 500;
+    cursor: pointer;
+    touch-action: manipulation;
+  }
+  .tabbar svg {
+    width: 20px;
+    height: 20px;
+  }
+  .tabbar a.an,
+  .tabbar button.an {
+    color: var(--a);
+  }
+  .tabbar .hoch {
+    justify-self: center;
+    width: 52px;
+    height: 44px;
+    min-height: 44px;
+    border-radius: 14px;
+    background: var(--a);
+    color: #fff;
+    box-shadow: 0 6px 18px -8px rgba(var(--a-rgb), 0.7);
+  }
+  .tabbar .hoch svg {
+    width: 21px;
+    height: 21px;
+  }
+  .konto-menu {
+    min-width: min(240px, calc(100vw - 32px));
   }
 }
 </style>

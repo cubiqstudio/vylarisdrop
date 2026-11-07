@@ -663,6 +663,63 @@ const ariaSort = (k: CloudSortierung) => (props.sort === k ? (props.richtung ===
     backdrop-filter: blur(6px);
   }
 }
+/* ---------- Touch: Trefferflächen von mindestens 44 px, Zeilen größer ---------- */
+@media (pointer: coarse) {
+  .liste .zeile {
+    min-height: 60px;
+  }
+  .liste .kopfzeile,
+  .liste .zeile {
+    grid-template-columns: 44px minmax(0, 1fr) 44px 44px;
+  }
+  .stern,
+  .mehr {
+    width: 44px;
+    height: 44px;
+  }
+  .spalte {
+    min-height: 44px;
+  }
+  .c-akt {
+    grid-column: 3 / 5;
+  }
+  /* Auswahlfeld: sichtbar 22 px, tippbar 44 x 44 */
+  .haken {
+    width: 44px;
+    height: 44px;
+    border: 0;
+    background: transparent !important;
+    position: relative;
+  }
+  .haken::before {
+    content: '';
+    position: absolute;
+    left: 11px;
+    top: 11px;
+    width: 22px;
+    height: 22px;
+    border-radius: 7px;
+    border: 1.5px solid var(--linie2);
+    background: var(--flaeche);
+  }
+  .haken.an::before,
+  .haken.teil::before {
+    background: var(--a);
+    border-color: var(--a);
+  }
+  .haken svg,
+  .haken.teil::after {
+    position: relative;
+  }
+  .raster .c-haken {
+    left: 0;
+    top: 0;
+  }
+  .raster .c-akt {
+    right: 0;
+    top: 0;
+  }
+}
 @media (prefers-reduced-motion: reduce) {
   .zeile {
     transition: none !important;

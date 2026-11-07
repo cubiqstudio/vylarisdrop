@@ -200,6 +200,7 @@ const meinThema = computed(() => theme.value.user?.theme || 'dark')
   margin: 0 auto;
   padding: 18px 20px 20px;
   min-height: 100vh;
+  min-height: 100dvh;
   display: flex;
   flex-direction: column;
 }
