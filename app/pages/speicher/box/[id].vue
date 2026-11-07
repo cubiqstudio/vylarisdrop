@@ -198,7 +198,7 @@ function loeschen() {
 
 const bsp = ref<'sftp' | 'rclone' | 'windows' | 'macos'>('sftp')
 const beispiel = computed(() => {
-  const u = box.value?.kennung || 'rd000000',
+  const u = box.value?.kennung || 'vd000000',
     h = a.value.host || 'cloud.example.com',
     p = a.value.sftpPort || 2222,
     w = a.value.webdav || ''

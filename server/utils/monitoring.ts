@@ -25,7 +25,7 @@ export const getMon = async (): Promise<MonEinst> => {
 export async function monToken(neu = false): Promise<string> {
   const m = await getMon()
   if (m.token && !neu) return m.token
-  const token = 'rdm_' + randomBytes(24).toString('hex')
+  const token = 'vdm_' + randomBytes(24).toString('hex')
   await setSetting('monitoring', { ...m, token })
   return token
 }

@@ -177,7 +177,7 @@ export async function kontingentErlaubt(u: Nutzer, alt: number, neu: number): Pr
 
 async function neueKennung(): Promise<string> {
   for (let i = 0; i < 50; i++) {
-    const k = `rd${randomInt(100000, 1000000)}`
+    const k = `vd${randomInt(100000, 1000000)}`
     if (!(await q1('SELECT 1 FROM speicher_boxen WHERE kennung = $1', [k]))) return k
   }
   throw fehler(500, st('Keine freie Kennung gefunden.', 'No free identifier found.'))

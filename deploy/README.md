@@ -140,7 +140,7 @@ Der Schalter braucht den Update-Dienst auf dem Server (einmal `sudo bash install
 
 VylarisCloud kann selbst Speicher anbieten — wie eine Storage-Box bzw. ein Object Storage bei einem Hoster, nur auf deinem Server. Eingeschaltet wird das im Panel unter **Speicher** (nur der Inhaber): VylarisCloud startet dafür zwei kleine Zusatz-Container, [SFTPGo](https://github.com/drakkan/sftpgo) für SFTP/SCP/WebDAV und [Garage](https://git.deuxfleurs.fr/Deuxfleurs/garage) für S3 (zusammen rund 30 MB Arbeitsspeicher). Beide laufen unverändert unter ihrer eigenen Lizenz (AGPL-3.0).
 
-- **Storage-Box:** eigener Login (z. B. `rd482913`), Passwort oder SSH-Schlüssel, festes Kontingent. Zugang per **SFTP/SCP** über einen eigenen Port (Standard `2222`, beim Einschalten wählbar; ufw/firewalld öffnet VylarisCloud selbst) und per **WebDAV** unter `https://deine-domain/webdav/` (Netzlaufwerk in Windows und macOS).
+- **Storage-Box:** eigener Login (z. B. `vd482913`), Passwort oder SSH-Schlüssel, festes Kontingent. Zugang per **SFTP/SCP** über einen eigenen Port (Standard `2222`, beim Einschalten wählbar; ufw/firewalld öffnet VylarisCloud selbst) und per **WebDAV** unter `https://deine-domain/webdav/` (Netzlaufwerk in Windows und macOS).
 - **Unterkonten:** eigener Login nur für einen Unterordner der Box, nur lesen oder lesen und schreiben. Sie teilen sich das Kontingent der Box.
 - **Bucket:** S3-kompatibel unter der Adresse von VylarisCloud (`https://deine-domain`, Region `garage`, **Path-Style**). Zugangsschlüssel je Bucket, lesend oder schreibend; das Secret wird nur beim Anlegen gezeigt.
 - **Kontingente** setzen SFTPGo und Garage hart durch. VylarisCloud misst die Belegung stündlich (Verlauf 7/30/90 Tage) und warnt bei 80 % und bei vollem Kontingent.

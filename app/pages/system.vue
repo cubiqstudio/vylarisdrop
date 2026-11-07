@@ -74,7 +74,7 @@ const scrape = computed(() => {
     scheme: ${u.protocol.replace(':', '')}
     metrics_path: /metrics
     authorization:
-      credentials: ${zeigeToken.value && data.value.token ? data.value.token : 'rdm_…'}
+      credentials: ${zeigeToken.value && data.value.token ? data.value.token : 'vdm_…'}
     static_configs:
       - targets: ['${u.host}']`
     : ''
@@ -164,7 +164,7 @@ const pz = (n: number) => `${zahl(n, 1)} %`
           <p class="leise klein">{{ t('Jeder Server liefert unter /metrics seine eigenen Zähler plus die gemeinsamen Werte. Bei mehreren Servern jeden einzeln abfragen.', 'Each server serves its own counters plus the shared values at /metrics. With several servers, scrape each one.') }}</p>
           <template v-if="data.token">
             <div class="feldzeile"><span class="etikett">URL</span><code class="mono">{{ data.metrikUrl }}</code><button class="knopf nur-icon" :aria-label="t('Kopieren', 'Copy')" @click="kopie('url', data.metrikUrl)"><Ico :n="kopiert === 'url' ? 'check' : 'copy'" /></button></div>
-            <div class="feldzeile"><span class="etikett">Token</span><code class="mono">{{ zeigeToken ? data.token : 'rdm_' + '•'.repeat(20) }}</code>
+            <div class="feldzeile"><span class="etikett">Token</span><code class="mono">{{ zeigeToken ? data.token : 'vdm_' + '•'.repeat(20) }}</code>
               <button class="knopf nur-icon" :aria-label="t('Zeigen', 'Show')" @click="zeigeToken = !zeigeToken"><Ico :n="zeigeToken ? 'lock' : 'eye'" /></button>
               <button class="knopf nur-icon" :aria-label="t('Kopieren', 'Copy')" @click="kopie('token', data.token)"><Ico :n="kopiert === 'token' ? 'check' : 'copy'" /></button>
               <button class="knopf nur-icon" :aria-label="t('Erneuern', 'Renew')" @click="tokenNeu"><Ico n="undo" /></button></div>

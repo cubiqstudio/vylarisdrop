@@ -33,7 +33,7 @@ async function unterkontoErlaubt(req: http.IncomingMessage): Promise<boolean> {
   } catch {
     return true
   }
-  if (!/^rd\d{6}-sub\d+$/.test(login)) return true
+  if (!/^vd\d{6}-sub\d+$/.test(login)) return true
   const ordner = await unterOrdner(login)
   if (!ordner) return true
   const drin = (p: string | null) => !!p && (p === `/webdav/${ordner}` || p.startsWith(`/webdav/${ordner}/`))
