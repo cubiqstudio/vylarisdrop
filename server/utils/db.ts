@@ -216,6 +216,7 @@ CREATE TABLE IF NOT EXISTS speicher_verlauf (art text NOT NULL, ref int NOT NULL
 ALTER TABLE files ADD COLUMN IF NOT EXISTS geaendert_at timestamptz NOT NULL DEFAULT now();
 ALTER TABLE folders ADD COLUMN IF NOT EXISTS geaendert_at timestamptz NOT NULL DEFAULT now();
 ALTER TABLE folders ADD COLUMN IF NOT EXISTS favorite boolean NOT NULL DEFAULT false;
+CREATE INDEX IF NOT EXISTS folders_parent_idx ON folders(parent_id);
 
 -- [cloud:webdav] App-Passwoerter fuer WebDAV-Clients (nur Hash gespeichert, Klartext wird einmal gezeigt)
 CREATE TABLE IF NOT EXISTS dav_zugaenge (
