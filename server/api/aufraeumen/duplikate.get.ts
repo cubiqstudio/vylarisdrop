@@ -8,7 +8,7 @@ const MAX_KOPIEN = 60
 /**
  * Duplikate: Dateien mit gleichem sha256 UND gleicher Größe (leerer sha256 und leere Dateien zählen nicht), in Gruppen,
  * größte Ersparnis zuerst. Je Gruppe die Kopien (höchstens 60) mit Ordnerpfad, Datum und Freigabe-Kennzeichen sowie eine Empfehlung:
- *   behalten = die Kopie, die bleiben soll (nicht löschbare zuerst, dann geteilte, dann in einem Ordner, dann die älteste)
+ *   behalten = die Kopie, die bleiben soll (nicht löschbare zuerst, dann Kopien ohne Ablauf und Aufruf-Limit, dann geteilte, dann in einem Ordner, dann die älteste)
  *   geschuetzt = geteilt (Link wurde aufgerufen, Passwort, Ablauf, Galerie): wird nie automatisch zum Löschen vorgeschlagen
  *   fremd = darf das Konto nicht löschen (Team-Datei eines anderen Mitglieds)
  *   loeschen = überzählige, ungeteilte Kopie
@@ -36,7 +36,7 @@ export default defineEventHandler(async (event) => {
   const aus = gruppen.map((g, i) => {
     const kopien = nachGruppe.get(i + 1) || []
     // Rangfolge für die zu behaltende Kopie
-    const rang = (d: AufDateiEintrag) => [d.darfLoeschen ? 1 : 0, d.geteilt.irgendwie ? 0 : 1, d.ordnerId != null ? 0 : 1, new Date(d.erstellt).getTime()]
+    const rang = (d: AufDateiEintrag) => [d.darfLoeschen ? 1 : 0, d.geteilt.schutz ? 1 : 0, d.geteilt.irgendwie ? 0 : 1, d.ordnerId != null ? 0 : 1, new Date(d.erstellt).getTime()]
     const sortiert = [...kopien].sort((a, c) => {
       const x = rang(a),
         y = rang(c)

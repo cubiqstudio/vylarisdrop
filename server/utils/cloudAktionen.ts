@@ -1,5 +1,6 @@
 import { z } from 'zod'
 import type { H3Event } from 'h3'
+import type { PoolClient } from 'pg'
 import { db, q, q1, ereignis } from './db'
 import { clientIp, type Nutzer } from './auth'
 import { aenderbareDateien, dateiRecht, meineTeams, ordnerRecht, requireRecht, type OrdnerRecht } from './teams'
@@ -314,7 +315,12 @@ export async function favorit(u: Nutzer, b: z.infer<typeof FavoritBody>) {
 
 // ---------- Löschen (Papierkorb) ----------
 
-export async function loeschenAuswahl(u: Nutzer, b: z.infer<typeof AuswahlBody>, event: H3Event) {
+export async function loeschenAuswahl(
+  u: Nutzer,
+  b: z.infer<typeof AuswahlBody>,
+  event: H3Event,
+  bedingung?: (z: DateiZeile, c: PoolClient) => Promise<boolean>
+) {
   const dIds = [...new Set(b.dateien)]
   const oIds = [...new Set(b.ordner)]
   if (!dIds.length && !oIds.length) throw fehler(400, 'Nichts ausgewählt.', 'Nothing selected.')
@@ -374,7 +380,7 @@ export async function loeschenAuswahl(u: Nutzer, b: z.infer<typeof AuswahlBody>,
   let geloescht = 0
   const arbeiter = async (liste: typeof zeilen) => {
     for (const f of liste) {
-      if (await inPapierkorb({ id: f.id }, u.id)) {
+      if (await inPapierkorb({ id: f.id }, u.id, bedingung)) {
         geloescht++
         webhookAusloesen(f.user_id, 'file.deleted', {
           file: { id: f.id, slug: f.slug, name: f.name },
