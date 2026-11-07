@@ -43,6 +43,7 @@ export async function zipAusliefern(event: H3Event, u: Nutzer, query: { dateien?
   const teamIds = (await meineTeams(u.id)).map((t) => t.team_id)
 
   const dateien: ZipDatei[] = []
+  let ersterOrdner = ''
   const leereOrdner: string[] = []
   // Namen je Verzeichnis eindeutig machen (ohne Groß-/Kleinschreibung), wie es Entpacker auf Windows/macOS brauchen
   const belegt = new Map<string, Set<string>>()
@@ -77,6 +78,7 @@ export async function zipAusliefern(event: H3Event, u: Nutzer, query: { dateien?
       const start = teil.find((o) => o.id === wurzel)!
       const pfade = new Map<number, string>()
       pfade.set(wurzel, vergeben('', zipTeil(start.name, 'ordner'), 'ordner'))
+      ersterOrdner ||= pfade.get(wurzel)!
       let offen = teil.filter((o) => o.id !== wurzel)
       while (offen.length) {
         const bereit = offen.filter((o) => o.parent_id != null && pfade.has(o.parent_id))
@@ -102,7 +104,7 @@ export async function zipAusliefern(event: H3Event, u: Nutzer, query: { dateien?
   const einzigerOrdner = !dIds.length && oIds.length === 1
   let titel = String(query.name || '').trim()
   if (!titel) {
-    if (einzigerOrdner) titel = [...belegt.get('')!][0] || 'Ordner'
+    if (einzigerOrdner) titel = ersterOrdner || 'Ordner'
     else titel = 'VylarisCloud'
   }
   titel = zipTeil(titel.replace(/\.zip$/i, ''), 'VylarisCloud').slice(0, 100)

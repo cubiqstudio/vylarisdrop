@@ -80,11 +80,11 @@ function punkteFuer(l: CloudEintrag[]): MenuePunkt[] {
   if (ein?.typ === 'ordner') p.push({ k: 'galerie', text: t('Galerie & Teilen (Drop) …', 'Gallery & sharing (Drop) …'), ic: 'external' })
   p.push({ k: 't1', text: '', trenner: true })
   if (ein) p.push({ k: 'umbenennen', text: t('Umbenennen', 'Rename'), ic: 'edit', kurz: 'F2', aus: !aenderbar })
-  p.push({ k: 'verschieben', text: t('Verschieben nach …', 'Move to …'), ic: 'move', aus: !aenderbar, kurz: 'Strg X' })
-  p.push({ k: 'kopieren', text: t('Kopieren nach …', 'Copy to …'), ic: 'copy', kurz: 'Strg C' })
+  p.push({ k: 'verschieben', text: t('Verschieben nach …', 'Move to …'), ic: 'move', aus: !aenderbar, kurz: t('Strg X', 'Ctrl X') })
+  p.push({ k: 'kopieren', text: t('Kopieren nach …', 'Copy to …'), ic: 'copy', kurz: t('Strg C', 'Ctrl C') })
   p.push({ k: 'favorit', text: alleFav ? t('Favorit entfernen', 'Remove favourite') : t('Als Favorit merken', 'Mark as favourite'), ic: 'star', aus: !aenderbar })
   p.push({ k: 't2', text: '', trenner: true })
-  p.push({ k: 'loeschen', text: t('In den Papierkorb', 'Move to trash'), ic: 'trash', gefahr: true, aus: !aenderbar, kurz: 'Entf' })
+  p.push({ k: 'loeschen', text: t('In den Papierkorb', 'Move to trash'), ic: 'trash', gefahr: true, aus: !aenderbar, kurz: t('Entf', 'Del') })
   return p
 }
 
@@ -100,13 +100,13 @@ function eintragMenue(e: CloudEintrag | null, pos: { x: number; y: number }) {
     c.auswahlLeeren()
     const p: MenuePunkt[] = []
     if (c.kannHineinladen.value) {
-      p.push({ k: 'neuordner', text: t('Neuer Ordner', 'New folder'), ic: 'folder', kurz: 'Strg ⇧ N' })
+      p.push({ k: 'neuordner', text: t('Neuer Ordner', 'New folder'), ic: 'folder', kurz: t('Strg ⇧ N', 'Ctrl ⇧ N') })
       p.push({ k: 'hochladen', text: t('Dateien hochladen', 'Upload files'), ic: 'upload' })
       p.push({ k: 'hochladenOrdner', text: t('Ordner hochladen', 'Upload folder'), ic: 'upload' })
-      if (c.ablage.value) p.push({ k: 'einfuegen', text: t(`Einfügen (${c.ablage.value.anzahl})`, `Paste (${c.ablage.value.anzahl})`), ic: 'copy', kurz: 'Strg V' })
+      if (c.ablage.value) p.push({ k: 'einfuegen', text: t(`Einfügen (${c.ablage.value.anzahl})`, `Paste (${c.ablage.value.anzahl})`), ic: 'copy', kurz: t('Strg V', 'Ctrl V') })
       p.push({ k: 't1', text: '', trenner: true })
     }
-    p.push({ k: 'alle', text: t('Alles auswählen', 'Select all'), ic: 'check', kurz: 'Strg A', aus: !eintraege.value.length })
+    p.push({ k: 'alle', text: t('Alles auswählen', 'Select all'), ic: 'check', kurz: t('Strg A', 'Ctrl A'), aus: !eintraege.value.length })
     menue.value = { ...pos, art: 'leer', punkte: p }
   }
 }
@@ -116,7 +116,7 @@ function neuMenue(ev: MouseEvent) {
   if (ansicht.value === 'team' && !ordnerId.value) {
     if (meta.value?.kannTeamOrdner) p.push({ k: 'teamordner', text: t('Team-Ordner anlegen', 'Create team folder'), ic: 'folder' })
   } else {
-    p.push({ k: 'neuordner', text: t('Neuer Ordner', 'New folder'), ic: 'folder', kurz: 'Strg ⇧ N' })
+    p.push({ k: 'neuordner', text: t('Neuer Ordner', 'New folder'), ic: 'folder', kurz: t('Strg ⇧ N', 'Ctrl ⇧ N') })
     p.push({ k: 'hochladen', text: t('Dateien hochladen', 'Upload files'), ic: 'upload' })
     p.push({ k: 'hochladenOrdner', text: t('Ordner hochladen', 'Upload folder'), ic: 'upload' })
   }
@@ -291,7 +291,11 @@ async function baumOk(ziel: number | null) {
 const ordnerDaten = ref<any[]>([])
 const tagDaten = ref<any[]>([])
 watch(detail, async (d) => {
-  if (!d || ordnerDaten.value.length) return
+  if (!d) {
+    ordnerDaten.value = [] // beim nächsten Öffnen frisch laden (Ordner können sich geändert haben)
+    return
+  }
+  if (ordnerDaten.value.length) return
   try {
     const [o, tg] = await Promise.all([api('/api/folders'), api('/api/tags').catch(() => ({ tags: [] }))])
     const byId = new Map<number, any>((o.ordner || []).map((x: any) => [x.id, x]))
@@ -527,8 +531,8 @@ const summeText = computed(() => {
   const s = meta.value?.summe
   if (!s) return ''
   const teile: string[] = []
-  if (s.ordner) teile.push(t(`${zahl(s.ordner)} Ordner`, `${zahl(s.ordner)} folders`))
-  if (s.dateien) teile.push(t(`${zahl(s.dateien)} Dateien`, `${zahl(s.dateien)} files`))
+  if (s.ordner) teile.push(mehrzahl(s.ordner, ['Ordner', 'Ordner'], ['folder', 'folders']))
+  if (s.dateien) teile.push(mehrzahl(s.dateien, ['Datei', 'Dateien'], ['file', 'files']))
   if (s.bytes) teile.push(groesse(s.bytes))
   return teile.join(' · ')
 })
@@ -1373,8 +1377,8 @@ button.krume:hover {
     flex: 0 0 auto;
     flex-direction: column;
     gap: 3px;
-    min-width: 68px;
-    padding: 7px 6px;
+    min-width: 62px;
+    padding: 7px 4px;
     border-color: transparent;
     background: var(--flaeche2);
     font-size: 11px;
