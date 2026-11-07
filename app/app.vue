@@ -17,7 +17,20 @@ useHead({
     'data-theme': () => thema.value,
     style: () => `--a: ${theme.value.color}; --a-rgb: ${hexRgb(theme.value.color)}`
   },
-  link: () => [{ rel: 'icon', href: theme.value.marke?.icon || '/icon.svg', key: 'icon' }]
+  link: () => [
+    { rel: 'icon', href: theme.value.marke?.icon || '/icon.svg', key: 'icon' },
+    { rel: 'apple-touch-icon', href: theme.value.marke?.icon || '/icons/apple-touch-icon.png', key: 'apple-icon' }
+  ],
+  // Adressleiste/Statusleiste im Ton der Kopfzeile (Hintergrund des gewählten Themas); "system" folgt dem Gerät
+  meta: () => [
+    { name: 'apple-mobile-web-app-title', content: theme.value.name, key: 'apple-titel' },
+    ...(thema.value === 'system'
+      ? [
+          { name: 'theme-color', content: '#f5f9fe', media: '(prefers-color-scheme: light)', key: 'tc-hell' },
+          { name: 'theme-color', content: '#0b0d11', media: '(prefers-color-scheme: dark)', key: 'tc-dunkel' }
+        ]
+      : [{ name: 'theme-color', content: thema.value === 'light' ? '#f5f9fe' : '#0b0d11', key: 'tc' }])
+  ]
 })
 const { toasts } = useToast()
 </script>

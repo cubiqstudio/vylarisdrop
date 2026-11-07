@@ -1181,7 +1181,7 @@ button.krume:hover {
 .up-panel {
   position: fixed;
   left: 272px;
-  bottom: 22px;
+  bottom: calc(22px + env(safe-area-inset-bottom, 0px));
   width: min(360px, calc(100vw - 32px));
   background: var(--flaeche);
   border: 1px solid var(--linie);
@@ -1283,7 +1283,7 @@ button.krume:hover {
 .snack {
   position: fixed;
   left: 50%;
-  bottom: 26px;
+  bottom: calc(26px + env(safe-area-inset-bottom, 0px));
   transform: translateX(-50%);
   z-index: 160;
   display: flex;
@@ -1334,7 +1334,7 @@ button.krume:hover {
 
 @media (max-width: 860px) {
   .up-panel {
-    left: 16px;
+    left: max(16px, env(safe-area-inset-left, 0px));
   }
 }
 @media (max-width: 720px) {
@@ -1353,9 +1353,9 @@ button.krume:hover {
     position: fixed;
     inset: auto 8px 8px 8px;
     min-height: 0;
-    left: 8px;
-    right: 8px;
-    bottom: 8px;
+    left: max(8px, env(safe-area-inset-left, 0px));
+    right: max(8px, env(safe-area-inset-right, 0px));
+    bottom: calc(8px + env(safe-area-inset-bottom, 0px));
     z-index: 140;
     display: grid;
     grid-template-columns: auto 1fr;
@@ -1403,10 +1403,10 @@ button.krume:hover {
     padding-bottom: 120px;
   }
   .up-panel {
-    bottom: 84px;
+    bottom: calc(76px + env(safe-area-inset-bottom, 0px));
   }
   .snack {
-    bottom: 96px;
+    bottom: calc(88px + env(safe-area-inset-bottom, 0px));
     flex-wrap: wrap;
   }
   .ext-hinweis {
