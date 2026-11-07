@@ -32,29 +32,41 @@ interface NavPunkt {
 }
 const NAV = computed<Array<{ gruppe: string; punkte: NavPunkt[] }>>(() => [
   {
-    gruppe: t('Bibliothek', 'Library'),
+    gruppe: 'Cloud',
     punkte: [
-      { zu: '/', ic: 'grid', text: t('Dateien', 'Files'), zahl: stats.value?.dateien },
-      { zu: '/ordner', ic: 'folder', text: t('Ordner', 'Folders'), zahl: stats.value?.ordner },
-      { zu: '/paste', ic: 'code', text: t('Text & Code', 'Text & code') },
-      { zu: '/anfragen', ic: 'mail', text: t('Datei-Anfragen', 'File requests') },
+      { zu: '/', ic: 'cloud', text: t('Meine Dateien', 'My files'), zahl: stats.value?.dateien },
+      { zu: '/sync', ic: 'umzug', text: t('Sync & WebDAV', 'Sync & WebDAV') },
       { zu: '/speicher', ic: 'box', text: t('Speicher', 'Storage') },
       { zu: '/statistik', ic: 'chart', text: t('Statistik', 'Statistics') },
       { zu: '/papierkorb', ic: 'trash', text: t('Papierkorb', 'Trash') }
     ]
   },
   {
+    gruppe: 'Drop',
+    punkte: [
+      { zu: '/drop', ic: 'grid', text: t('Uploads & Links', 'Uploads & links') },
+      { zu: '/ordner', ic: 'folder', text: t('Ordner', 'Folders'), zahl: stats.value?.ordner },
+      { zu: '/paste', ic: 'code', text: t('Text & Code', 'Text & code') },
+      { zu: '/anfragen', ic: 'mail', text: t('Datei-Anfragen', 'File requests') },
+      { zu: '/werkzeuge', ic: 'upload', text: t('Upload-Werkzeuge', 'Upload tools') },
+      { zu: '/embed', ic: 'sparkle', text: t('Embed-Designer', 'Embed designer') }
+    ]
+  },
+  {
     gruppe: t('Verwaltung', 'Manage'),
     punkte: [
-      { zu: '/werkzeuge', ic: 'upload', text: t('Upload-Werkzeuge', 'Upload tools') },
-      { zu: '/embed', ic: 'sparkle', text: t('Embed-Designer', 'Embed designer') },
       { zu: '/import', ic: 'umzug', text: t('Import', 'Import') },
       { zu: '/protokoll', ic: 'list', text: t('Protokoll', 'Activity log') },
       { zu: '/regeln', ic: 'clock', text: t('Speicher-Regeln', 'Storage rules') },
       { zu: '/webhooks', ic: 'network', text: 'Webhooks' },
       { zu: '/api-doku', ic: 'code', text: t('API-Doku', 'API docs') },
       { zu: '/einstellungen', ic: 'gear', text: t('Einstellungen', 'Settings') },
-      ...(istAdmin.value ? [{ zu: '/nutzer', ic: 'users', text: t('Nutzer', 'Users') }] : [])
+      ...(istAdmin.value
+        ? [
+            { zu: '/nutzer', ic: 'users', text: t('Nutzer', 'Users') },
+            { zu: '/speicher/ziele', ic: 'database', text: t('Speicher-Erweiterungen', 'Storage add-ons') }
+          ]
+        : [])
     ]
   },
   ...(istAdmin.value
@@ -79,7 +91,12 @@ const NAV = computed<Array<{ gruppe: string; punkte: NavPunkt[] }>>(() => [
       ]
     : [])
 ])
-const istAn = (zu: string) => (zu === '/' ? route.path === '/' : route.path.startsWith(zu))
+const istAn = (zu: string) =>
+  zu === '/'
+    ? route.path === '/'
+    : zu === '/speicher'
+      ? route.path.startsWith('/speicher') && !route.path.startsWith('/speicher/ziele')
+      : route.path.startsWith(zu)
 
 const navEl = ref<HTMLElement | null>(null)
 const balken = reactive({ top: 0, hoehe: 0, sicht: false })
@@ -185,7 +202,7 @@ const suche = ref(String(route.query.suche || ''))
 let sucheTimer: any = null
 watch(suche, (v) => {
   clearTimeout(sucheTimer)
-  sucheTimer = setTimeout(() => navigateTo({ path: '/', query: { ...(v ? { suche: v } : {}) } }), 280)
+  sucheTimer = setTimeout(() => navigateTo({ path: route.path.startsWith('/drop') ? '/drop' : '/', query: { ...(v ? { suche: v } : {}) } }), 280)
 })
 const sucheEl = ref<HTMLInputElement | null>(null)
 onMounted(() =>

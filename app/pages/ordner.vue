@@ -118,7 +118,7 @@ function loeschen(o: any) {
     </form>
     <div v-if="baum.length" class="liste">
       <div v-for="(o, i) in baum" :key="o.id" class="zeile" :style="{ '--tiefe': o.tiefe, animationDelay: Math.min(i, 15) * 35 + 'ms' }">
-        <NuxtLink :to="{ path: '/', query: { ordner: o.id } }" class="ziel" :style="o.team ? { '--tf': o.team.farbe } : {}"><span :class="['ic', { team: o.team }]"><Ico :n="o.team ? 'users' : 'folder'" /></span><b>{{ o.name }}</b>
+        <NuxtLink :to="{ path: '/drop', query: { ordner: o.id } }" class="ziel" :style="o.team ? { '--tf': o.team.farbe } : {}"><span :class="['ic', { team: o.team }]"><Ico :n="o.team ? 'users' : 'folder'" /></span><b>{{ o.name }}</b>
           <span v-if="o.team && o.tiefe === 0" class="team-chip">{{ o.team.name }}</span><span v-if="!o.eigen" class="sehrleise klein">{{ t('geteilt', 'shared') }}</span>
           <span class="sehrleise anzahl">{{ zahl(o.anzahl) }} {{ o.anzahl === 1 ? t('Datei', 'file') : t('Dateien', 'files') }}</span></NuxtLink>
         <template v-if="o.verwalten">

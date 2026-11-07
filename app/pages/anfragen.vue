@@ -152,7 +152,7 @@ const status = (a: any) =>
           <code class="mono">{{ a.link.replace(/^https?:\/\//, '') }}</code>
           <button class="knopf klein" :class="{ kopiert: kopiert === a.id }" @click="kopie(a)"><Ico :n="kopiert === a.id ? 'check' : 'copy'" /> {{ kopiert === a.id ? t('Kopiert', 'Copied') : t('Link kopieren', 'Copy link') }}</button>
           <button v-if="a.anzahl" class="knopf klein" :aria-expanded="eingangAuf === a.id" @click="eingangZeigen(a)"><Ico n="mic" /> {{ t('Eingang', 'Inbox') }}</button>
-          <NuxtLink v-if="a.folder_id" :to="{ path: '/', query: { ordner: a.folder_id } }" class="knopf klein"><Ico n="folder" /> {{ t('Dateien ansehen', 'View files') }}</NuxtLink>
+          <NuxtLink v-if="a.folder_id" :to="{ path: '/drop', query: { ordner: a.folder_id } }" class="knopf klein"><Ico n="folder" /> {{ t('Dateien ansehen', 'View files') }}</NuxtLink>
           <button class="knopf klein" @click="umschalten(a)">{{ a.aktiv ? t('Schließen', 'Close') : t('Wieder öffnen', 'Reopen') }}</button>
           <button class="knopf nur-icon" :aria-label="t('Entfernen', 'Remove')" @click="loeschen(a)"><Ico n="trash" /></button>
         </div>

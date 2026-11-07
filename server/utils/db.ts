@@ -208,6 +208,32 @@ CREATE TABLE IF NOT EXISTS speicher_schluessel (
   access_key text NOT NULL UNIQUE, schreiben boolean NOT NULL DEFAULT true, created_at timestamptz NOT NULL DEFAULT now());
 -- Belegung je Stunde (art: box | bucket), 100 Tage
 CREATE TABLE IF NOT EXISTS speicher_verlauf (art text NOT NULL, ref int NOT NULL, zeit timestamptz NOT NULL, bytes bigint NOT NULL, anzahl bigint NOT NULL DEFAULT 0, PRIMARY KEY (art, ref, zeit));
+
+-- ===== 1.1.0 Cloud =====
+-- Jeder Bereich haengt seine Aenderungen NUR unter seiner eigenen Markierung an (verhindert Merge-Konflikte).
+
+-- [cloud:dateimanager] Aenderungszeit fuer Dateien/Ordner (WebDAV-ETag, "Zuletzt geaendert"), Ordner-Favoriten
+ALTER TABLE files ADD COLUMN IF NOT EXISTS geaendert_at timestamptz NOT NULL DEFAULT now();
+ALTER TABLE folders ADD COLUMN IF NOT EXISTS geaendert_at timestamptz NOT NULL DEFAULT now();
+ALTER TABLE folders ADD COLUMN IF NOT EXISTS favorite boolean NOT NULL DEFAULT false;
+
+-- [cloud:webdav] App-Passwoerter fuer WebDAV-Clients (nur Hash gespeichert, Klartext wird einmal gezeigt)
+CREATE TABLE IF NOT EXISTS dav_zugaenge (
+  id serial PRIMARY KEY, user_id int NOT NULL REFERENCES users(id) ON DELETE CASCADE, name text NOT NULL,
+  prefix text NOT NULL, key_hash text NOT NULL UNIQUE, schreiben boolean NOT NULL DEFAULT true,
+  created_at timestamptz NOT NULL DEFAULT now(), last_used_at timestamptz);
+CREATE INDEX IF NOT EXISTS dav_zugaenge_user_idx ON dav_zugaenge(user_id);
+
+-- [cloud:quota] Warnstufe je Konto (0 | 80 | 100) und Team-Kontingent
+ALTER TABLE users ADD COLUMN IF NOT EXISTS quota_gewarnt int NOT NULL DEFAULT 0;
+ALTER TABLE teams ADD COLUMN IF NOT EXISTS quota_bytes bigint;
+
+-- [cloud:sftp] Speicher-Erweiterungen: externe SFTP-Speicher, die Admins online einbinden (Zugang verschluesselt)
+CREATE TABLE IF NOT EXISTS speicher_ziele (
+  id serial PRIMARY KEY, name text NOT NULL, art text NOT NULL DEFAULT 'sftp', host text NOT NULL, port int NOT NULL DEFAULT 22,
+  benutzer text NOT NULL, auth text NOT NULL DEFAULT 'passwort', geheim text NOT NULL DEFAULT '', host_key text NOT NULL DEFAULT '',
+  basis_pfad text NOT NULL DEFAULT '/', aktiv boolean NOT NULL DEFAULT true, schreibbar boolean NOT NULL DEFAULT true,
+  status jsonb NOT NULL DEFAULT '{}', created_at timestamptz NOT NULL DEFAULT now());
 `
 
 export const TABELLEN = [
@@ -218,6 +244,8 @@ export const TABELLEN = [
   'team_mitglieder',
   'user_identitaeten',
   'upload_tokens',
+  'dav_zugaenge',
+  'speicher_ziele',
   'folders',
   'anfragen',
   'files',
