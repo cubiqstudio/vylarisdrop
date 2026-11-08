@@ -210,6 +210,13 @@ export interface ImportWerte {
   live?: boolean
 }
 
+/** Säubert einen Dateinamen (Steuerzeichen, Rück- und Schrägstriche entfernen, trimmen, 200 Zeichen). Gilt für das Anlegen UND für die Ablage-Regeln. */
+export const dateiNameSaeubern = (name: string): string =>
+  String(name || '')
+    .replace(/[\u0000-\u001f\\/]/g, '')
+    .trim()
+    .slice(0, 200)
+
 export async function dateiAnlegen(
   userId: number,
   g: Geschrieben,
@@ -220,11 +227,7 @@ export async function dateiAnlegen(
   iw?: ImportWerte
 ): Promise<DateiZeile> {
   const cfg = await getUploads()
-  const name =
-    (o.name || original || 'datei')
-      .replace(/[\u0000-\u001f\\/]/g, '')
-      .trim()
-      .slice(0, 200) || 'datei'
+  const name = dateiNameSaeubern(o.name || original || 'datei') || 'datei'
   const e2e = !!o.verschluesselt
   if (e2e && g.kopf.subarray(0, 4).toString('latin1') !== 'RDE1') {
     await loeschen(g.schluessel)

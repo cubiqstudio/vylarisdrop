@@ -4,6 +4,7 @@ import { ablaufAus } from '../../utils/dateien'
 import { ablaufBegrenzen, aenderbareDateien, ordnerRecht } from '../../utils/teams'
 import { inPapierkorb } from '../../utils/papierkorb'
 import { teamVonOrdner, verschiebenPruefen } from '../../utils/quota'
+import { ablageUmstellenPruefen } from '../../utils/ablageRegeln'
 import { webhookAusloesen } from '../../utils/webhooks'
 
 export default defineEventHandler(async (event) => {
@@ -42,6 +43,7 @@ export default defineEventHandler(async (event) => {
         )
         for (const g of gruppen) if ((await teamVonOrdner(g.folder_id)) !== ziel) zuwachs += Number(g.s)
       }
+      for (const fid of e) await ablageUmstellenPruefen(u, fid, { ordnerId: o })
       await verschiebenPruefen({ team: ziel }, zuwachs, null, (x) =>
         x('UPDATE files SET folder_id = $1 WHERE id = ANY($2::bigint[])', [o, e])
       )

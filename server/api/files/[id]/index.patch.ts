@@ -5,6 +5,7 @@ import { istSlug } from '../../../utils/namen'
 import { ablaufBegrenzen, dateiRecht, ordnerRecht } from '../../../utils/teams'
 import { eindeutigerName, mitNamenssperre, sperrSchluessel } from '../../../utils/dateiNamen'
 import { teamVonOrdner, verschiebenPruefen } from '../../../utils/quota'
+import { ablageUmstellenPruefen } from '../../../utils/ablageRegeln'
 
 export default defineEventHandler(async (event) => {
   const u = await requireUser(event)
@@ -62,6 +63,8 @@ export default defineEventHandler(async (event) => {
   const nameIdx = set.findIndex((x) => x.startsWith('name ='))
   const wunsch = nameIdx >= 0 ? String(w[nameIdx + 1]) : f.name
   if (wunsch !== f.name || neuerOrdner !== f.folder_id) {
+    // Ablage-Regeln: Umbenennen/Verschieben darf die Datei nicht NEU unter ein Verbot stellen (z. B. a.txt -> a.exe)
+    await ablageUmstellenPruefen(u, f.id, { name: wunsch, ordnerId: neuerOrdner })
     await mitNamenssperre(sperrSchluessel(f.user_id, neuerOrdner), async () => {
       const n = await eindeutigerName({ ordnerId: neuerOrdner, userId: f.user_id, name: wunsch, art: 'datei', ausser: f.id })
       if (nameIdx >= 0) w[nameIdx + 1] = n

@@ -257,11 +257,14 @@ export interface SpeicherEinst {
   wer: 'admins' | 'alle'
   grenzeGb: number
   maxAnzahl: number
+  // Adresse für SFTP, wenn die Web-Adresse hinter einem Cloudflare Tunnel liegt (dort geht SFTP nicht durch)
+  sftpHost: string
 }
 export const getSpeicherEinst = async (): Promise<SpeicherEinst> => ({
   wer: 'admins',
   grenzeGb: 100,
   maxAnzahl: 5,
+  sftpHost: '',
   ...(await getSetting<Partial<SpeicherEinst>>('speicherdienst', {}))
 })
 

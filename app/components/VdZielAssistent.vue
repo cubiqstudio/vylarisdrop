@@ -144,9 +144,12 @@ async function speichern() {
   laeuft.value = 'speichern'
   fehlerText.value = ''
   try {
-    if (bearb) await api(`/api/speicher/ziele/${z0.id}`, { method: 'PUT', body: body(pin.value || undefined) })
-    else await api('/api/speicher/ziele', { method: 'POST', body: body(pin.value) })
+    const r: any = bearb
+      ? await api(`/api/speicher/ziele/${z0.id}`, { method: 'PUT', body: body(pin.value || undefined) })
+      : await api('/api/speicher/ziele', { method: 'POST', body: body(pin.value) })
     ok(bearb ? t('Änderungen gespeichert', 'Changes saved') : t('Speicher-Erweiterung hinzugefügt', 'Storage add-on added'))
+    // Ablage-Regeln nennen diese Box: Ausschalten/Schreibschutz warnt (wie der Schalter in der Liste)
+    if (r?.warnung) fehler(r.warnung)
     emit('gespeichert')
     emit('zu')
   } catch (e: any) {

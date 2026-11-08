@@ -13,6 +13,7 @@ import {
 } from '../../../../utils/sftpZiele'
 import { sftpTesten, poolVerwerfen } from '../../../../utils/sftpClient'
 import { testEingabe } from '../../../../utils/sftpVerwaltung'
+import { regelnMitZiel } from '../../../../utils/ablageRegeln'
 
 const Body = ZielEingabe.partial().extend({ host_key: z.string().trim().regex(FINGERABDRUCK).optional() })
 
@@ -84,5 +85,19 @@ export default defineEventHandler(async (event) => {
   const geaendert = Object.keys(aenderungen).filter((k) => k !== 'geheim' && (aenderungen as any)[k] !== (alt as any)[k])
   if (aenderungen.geheim) geaendert.push('zugangsdaten')
   await ereignis('sftp_ziel_geaendert', ich.id, { id, name: neu.name, felder: geaendert }, clientIp(event))
-  return { ok: true, ziel: zielOeffentlich((await zielLaden(id, true))!) }
+  // Warnung statt Sperre: wird die Box ausgeschaltet oder schreibgeschützt, überspringen Ablage-Regeln sie (Rückfall der Regel greift)
+  const regeln = !neu.aktiv || !neu.schreibbar ? await regelnMitZiel(`sftp${id}`) : []
+  return {
+    ok: true,
+    ziel: zielOeffentlich((await zielLaden(id, true))!),
+    ...(regeln.length
+      ? {
+          warnung: st(
+            `Achtung: ${regeln.length} aktive Ablage-Regel(n) nennen diese Box (${regeln.map((r) => r.name || '#' + r.id).join(', ')}). Solange sie ausgeschaltet oder schreibgeschützt ist, wird sie dort übersprungen.`,
+            `Note: ${regeln.length} active storage rule(s) name this box (${regeln.map((r) => r.name || '#' + r.id).join(', ')}). While it is switched off or read-only, those rules skip it.`
+          ),
+          regeln: regeln.map((r) => ({ id: r.id, name: r.name }))
+        }
+      : {})
+  }
 })

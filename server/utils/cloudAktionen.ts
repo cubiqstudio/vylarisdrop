@@ -8,6 +8,7 @@ import { eindeutigerName, mitNamenssperre, namenSaeubern, sperrSchluessel } from
 import { inPapierkorb } from './papierkorb'
 import { webhookAusloesen } from './webhooks'
 import { dateiAnlegen, type DateiZeile } from './dateien'
+import { ablageKontextFuer, ablageUmstellenPruefen } from './ablageRegeln'
 import { dateiGroesseMax } from './hochladen'
 import { groesseText, istQuotaFehler, kontingentPruefen, ordnerBaumBytes, teamVonOrdner, verschiebenPruefen, type Ausf } from './quota'
 import { lesen, loeschen, schreiben } from './speicher'
@@ -176,6 +177,7 @@ export async function verschieben(u: Nutzer, b: z.infer<typeof ZielBody>, event:
           unveraendert++
           continue
         }
+        await ablageUmstellenPruefen(u, f.id, { ordnerId: ziel })
         const name = await eindeutigerName({ ordnerId: ziel, userId: u.id, name: f.name, art: 'datei', ausser: f.id })
         const von = await teamVonOrdner(f.folder_id)
         await verschiebenPruefen({ team: neuesTeam }, neuesTeam && von !== neuesTeam ? Number(f.size) : 0, von, (x) =>
@@ -204,6 +206,8 @@ export async function umbenennen(u: Nutzer, b: z.infer<typeof UmbenennenBody>, e
   if (b.typ === 'datei') {
     const f = await dateiRecht<DateiZeile>(u.id, String(b.id), 'aendern')
     if (!f) throw dateiNichtGefunden()
+    // Ablage-Regeln: das Umbenennen darf die Datei nicht NEU unter ein Verbot stellen (a.txt -> a.exe)
+    await ablageUmstellenPruefen(u, f.id, { name: gewuenscht })
     const name = await mitNamenssperre(sperrSchluessel(f.user_id, f.folder_id), async () => {
       const n = await eindeutigerName({ ordnerId: f.folder_id, userId: f.user_id, name: gewuenscht, art: 'datei', ausser: f.id })
       if (n !== f.name) await q('UPDATE files SET name = $1, geaendert_at = now() WHERE id = $2', [n, f.id])
@@ -461,12 +465,19 @@ export async function kopieren(u: Nutzer, b: z.infer<typeof ZielBody>, event: H3
   const fehlerListe: string[] = []
   let kopiert = 0
   let quotaFehler: unknown = null
+  let ablageFehler: unknown = null // Ablage-Regel verbietet/lehnt ab: deren Status und Meldung sollen beim Client ankommen
   const angelegteOrdner: number[] = []
   const kopierDatei = async (f: DateiZeile, ordnerId: number | null, teamId: number | null) => {
     try {
       await mitNamenssperre(sperrSchluessel(u.id, ordnerId), async () => {
         const name = await eindeutigerName({ ordnerId, userId: u.id, teamId, name: f.name, art: 'datei' })
-        const g = await schreiben(lesen(f.ablage), 0)
+        // Die Kopie folgt den Ablage-Regeln (Name, Typ, Größe der Quelle, Konto, Zielordner)
+        const g = await schreiben(
+          lesen(f.ablage),
+          0,
+          undefined,
+          ablageKontextFuer(u, { name, mime: f.mime, groesse: Number(f.size), ordnerId })
+        )
         if (f.sha256 && g.sha256 !== f.sha256) {
           await loeschen(g.schluessel)
           throw new Error('Prüfsumme stimmt nicht')
@@ -487,6 +498,7 @@ export async function kopieren(u: Nutzer, b: z.infer<typeof ZielBody>, event: H3
       kopiert++
     } catch (e: any) {
       if (istQuotaFehler(e)) quotaFehler ??= e
+      else if (e?.ablage) ablageFehler ??= e
       fehlerListe.push(`${f.name}: ${String(e?.message || e).slice(0, 120)}`)
     }
   }
@@ -542,6 +554,7 @@ export async function kopieren(u: Nutzer, b: z.infer<typeof ZielBody>, event: H3
     // Nichts wurde kopiert: die schon angelegten (leeren) Ordner wieder entfernen
     if (angelegteOrdner.length) await q('DELETE FROM folders WHERE id = ANY($1::int[])', [angelegteOrdner])
     if (quotaFehler) throw quotaFehler
+    if (ablageFehler) throw ablageFehler
     throw fehler(500, `Kopieren fehlgeschlagen: ${fehlerListe[0]}`, `Copy failed: ${fehlerListe[0]}`)
   }
   return { ok: true, kopiert, ordner: neueOrdner.length, fehler: fehlerListe.length ? fehlerListe.slice(0, 10) : undefined }

@@ -342,6 +342,16 @@ CREATE TABLE IF NOT EXISTS app_koppelcodes (
   id serial PRIMARY KEY, user_id int NOT NULL REFERENCES users(id) ON DELETE CASCADE, code_hash text NOT NULL UNIQUE,
   ablauf_at timestamptz NOT NULL, benutzt_at timestamptz, created_at timestamptz NOT NULL DEFAULT now());
 CREATE INDEX IF NOT EXISTS app_koppelcodes_user_idx ON app_koppelcodes(user_id, created_at DESC);
+
+-- [cloud:ablage] Ablage-Regeln: in welchen Speicher (lokal, S3, Storage Box, Pool) welche NEUEN Dateien kommen und was gar nicht gespeichert wird.
+-- Regeln verweisen per Text auf Orte ('lokal', 's3', 'sftp<ID>', 'pool'); ein entferntes oder inaktives Ziel macht eine Regel nicht ungueltig.
+CREATE TABLE IF NOT EXISTS ablage_regeln (
+  id serial PRIMARY KEY, position int NOT NULL DEFAULT 0, name text NOT NULL DEFAULT '', aktiv boolean NOT NULL DEFAULT true,
+  bedingung jsonb NOT NULL DEFAULT '{}', aktion text NOT NULL DEFAULT 'speichern' CHECK (aktion IN ('speichern', 'verbieten')),
+  ziele text[] NOT NULL DEFAULT '{}', strategie text NOT NULL DEFAULT 'erste' CHECK (strategie IN ('erste', 'frei', 'abwechselnd')),
+  fallback text NOT NULL DEFAULT 'naechstes' CHECK (fallback IN ('naechstes', 'lokal', 'ablehnen')), meldung text NOT NULL DEFAULT '',
+  created_by int, created_at timestamptz NOT NULL DEFAULT now(), geaendert_at timestamptz NOT NULL DEFAULT now());
+CREATE INDEX IF NOT EXISTS ablage_regeln_pos_idx ON ablage_regeln(position, id);
 `
 
 export const TABELLEN = [
@@ -354,6 +364,7 @@ export const TABELLEN = [
   'upload_tokens',
   'dav_zugaenge',
   'speicher_ziele',
+  'ablage_regeln',
   'lizenz_schluessel',
   'lizenz_geraete',
   'folders',

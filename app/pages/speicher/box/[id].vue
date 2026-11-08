@@ -280,7 +280,7 @@ const vorher2 = (z: string | null) => (z ? vorher(z) : t('noch nie', 'never'))
           <section class="karte rein">
             <h3><Ico n="key" /> {{ t('Zugangsdaten', 'Credentials') }}</h3>
             <div class="zeilen">
-              <VdKopierZeile :label="t('Server', 'Server')" :wert="a.host" />
+              <VdKopierZeile :label="t('Server', 'Server')" :wert="a.sftpHost || a.host" />
               <VdKopierZeile label="SFTP-Port" :wert="String(a.sftpPort)" />
               <VdKopierZeile :label="t('Benutzer', 'User')" :wert="box.kennung" />
               <VdKopierZeile label="WebDAV" :wert="a.webdav" />

@@ -8,6 +8,7 @@ import { getNet, getUploads, st } from './settings'
 import { lesen, loeschen, ortVon, pfadVon, platte, schreiben } from './speicher'
 import { artVon, basisUrl, dateiAnlegen, fuerPanel, typErkennen, type DateiZeile } from './dateien'
 import { dateiCsp } from './dateiCsp'
+import { ablageKontextFuer, ablageUmstellenPruefen, ueberschreibOrt } from './ablageRegeln'
 import { freierPlatz } from './hochladen'
 import {
   hatGrenze,
@@ -555,9 +556,22 @@ async function putKern(c: DavKontext, teile: string[]) {
   }
   let g
   try {
-    g = await schreiben(anfrageStrom(ev), lim.fuerSchreiben)
+    // Ablage-Regeln: neue Datei -> Ort nach den Regeln; Überschreiben bleibt am Ort der vorhandenen Datei, solange der beschreibbar ist (sonst wie neu; nur Verbote gelten).
+    // Größe: Content-Length; ohne (chunked) unbekannt, Verbote werden dann nach dem Schreiben mit der echten Größe geprüft
+    g = await schreiben(
+      anfrageStrom(ev),
+      lim.fuerSchreiben,
+      vorhanden ? await ueberschreibOrt(vorhanden.ablage) : undefined,
+      ablageKontextFuer(c.u, {
+        name: vorhanden ? vorhanden.name : frueh.name,
+        mime: String(getRequestHeader(ev, 'content-type') || '').split(';')[0]!.trim(),
+        groesse: cl,
+        ordnerId: zielOrdner
+      })
+    )
   } catch (e: any) {
     ev.node.req.resume()
+    if (e?.ablage) throw davFehler(e.statusCode, e.message, e.message, { Connection: 'close' })
     if (e?.code === 'ZU_GROSS') throw zuGrossFehler(lim)
     if (e?.code === 'ABGEBROCHEN' || /aborted|ECONNRESET|abgebrochen/i.test(String(e?.message || e?.code))) {
       // Client hat abgebrochen: schreiben() hat die halbe Datei bereits entfernt, es gibt nichts zu antworten
@@ -795,8 +809,15 @@ async function dateiKopieren(
   const quelle = await q1<{ verschluesselt: boolean; mime: string }>('SELECT verschluesselt, mime FROM files WHERE id = $1', [f.id])
   let g
   try {
-    g = await schreiben(lesen(f.ablage), lim.fuerSchreiben)
+    // Die Kopie folgt den Ablage-Regeln des Ziels (Name, Typ, Größe der Quelle, Konto des Kopierenden, Zielordner)
+    g = await schreiben(
+      lesen(f.ablage),
+      lim.fuerSchreiben,
+      undefined,
+      ablageKontextFuer(c.u, { name, mime: quelle?.mime || f.mime, groesse: Number(f.size), ordnerId: ordner })
+    )
   } catch (e: any) {
+    if (e?.ablage) throw davFehler(e.statusCode, e.message, e.message)
     if (e?.code === 'ZU_GROSS') throw zuGrossFehler(lim)
     throw e
   }
@@ -953,6 +974,13 @@ async function verschiebenKopieren(c: DavKontext, teile: string[], kopie: boolea
           ? quelle.row.mime
           : typErkennen(Buffer.alloc(0), zielName, quelle.row.mime)
       const art = (quelle.row as any).verschluesselt ? 'datei' : artVon(mime, zielName)
+      // Ablage-Regeln: durch das Verschieben/Umbenennen darf die Datei nicht NEU unter ein Verbot fallen (wie bei COPY)
+      try {
+        await ablageUmstellenPruefen(c.u, quelle.row.id, { name: zielName, ordnerId: zielOrdner })
+      } catch (e: any) {
+        if (e?.ablage) throw davFehler(e.statusCode, e.message, e.message)
+        throw e
+      }
       // Team-Kontingent des Ziels: die Datei zaehlt im Ziel-Team neu (ausser sie liegt dort schon)
       const vonTeam = await teamVonOrdner(quelle.row.folder_id)
       await verschiebenPruefen({ ordner: zielOrdner }, Number(quelle.row.size), vonTeam, async (x) => {
@@ -1076,7 +1104,7 @@ async function lockMethode(c: DavKontext, teile: string[]) {
     await seriell(`${behaelterId(a.eltern)}/${nameSchluessel(a.name)}`, async () => {
       const b = await aufloesen(c, teile)
       if (b.knoten) return
-      const g = await schreiben(Readable.from([]), 0)
+      const g = await schreiben(Readable.from([]), 0, undefined, ablageKontextFuer(c.u, { name: a.name, groesse: 0, ordnerId: ordnerIdVon(a.eltern!) }))
       await dateiAnlegen(c.u.id, g, a.name, '', { ordner: ordnerIdVon(a.eltern!), name: a.name }, c.u.prefs?.lang === 'en' ? 'en' : 'de')
       angelegt = true
     })

@@ -1,5 +1,6 @@
 import { q, q1 } from './db'
 import { getSpeicher } from './s3'
+import { regelnMitZiel } from './ablageRegeln'
 import { st } from './settings'
 import { sftpTesten, type TestErgebnis } from './sftpClient'
 import {
@@ -91,6 +92,13 @@ export async function loeschHindernis(z: ZielZeile): Promise<string | null> {
     return st(
       `„${z.name}“ ist der Speicherort für neue Uploads. Bitte zuerst einen anderen Speicherort wählen.`,
       `“${z.name}” is the storage location for new uploads. Please choose another location first.`
+    )
+  // Ablage-Regeln: eine aktive Regel, die diese Box nennt, würde ins Leere zeigen — erst die Regel ändern
+  const regeln = await regelnMitZiel(`sftp${z.id}`)
+  if (regeln.length)
+    return st(
+      `Die Ablage-Regel(n) ${regeln.map((r) => `„${r.name || '#' + r.id}“`).join(', ')} nennen „${z.name}“ noch. Bitte zuerst die Regel ändern oder ausschalten (Speicher-Regeln, Reiter „Ablage“).`,
+      `The storage rule(s) ${regeln.map((r) => `“${r.name || '#' + r.id}”`).join(', ')} still name “${z.name}”. Please change or switch off the rule first (Storage rules, “Placement” tab).`
     )
   const up = await q1<{ n: string }>('SELECT count(*) AS n FROM uploads WHERE speicher = $1', [`sftp${z.id}`])
   if (Number(up?.n || 0))

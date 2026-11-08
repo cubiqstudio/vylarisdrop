@@ -3,6 +3,18 @@ useHead({ title: () => t('Speicher-Regeln', 'Storage rules') })
 const { ok, fehler } = useToast()
 const bestaetigen = useBestaetigen()
 const { data, refresh } = await (useFetch as any)('/api/regeln', { key: 'regeln' })
+// Reiter: Lebenszyklus-Regeln (jeder) und Ablage-Regeln „Wohin kommt was?“ (nur Admin/Inhaber; die API ist serverseitig gesperrt)
+const route = useRoute()
+const istAdmin = computed(() => !!data.value?.admin)
+const tab = ref<'lebenszyklus' | 'ablage'>(route.query.tab === 'ablage' ? 'ablage' : 'lebenszyklus')
+watchEffect(() => {
+  if (tab.value === 'ablage' && !istAdmin.value) tab.value = 'lebenszyklus'
+})
+function reiterTaste(e: KeyboardEvent) {
+  if (e.key !== 'ArrowLeft' && e.key !== 'ArrowRight') return
+  tab.value = tab.value === 'ablage' ? 'lebenszyklus' : 'ablage'
+  nextTick(() => (document.getElementById('reiter-' + tab.value) as HTMLElement | null)?.focus())
+}
 const { data: ord } = await (useFetch as any)('/api/folders', { key: 'ordner' })
 const regeln = computed<any[]>(() => data.value?.regeln || [])
 const ordner = computed<any[]>(() => {
@@ -224,9 +236,18 @@ function jetzt(r: any, anzahl: number) {
 <template>
   <section class="rein">
     <div class="kopf"><div><div class="eyebrow"><Ico n="clock" /> {{ t('Verwaltung', 'Manage') }}</div><h1>{{ t('Speicher-Regeln', 'Storage rules') }}</h1>
-      <p>{{ t('Alte und vergessene Dateien räumen sich von selbst auf — einmal am Tag.', 'Old and forgotten files clean themselves up — once a day.') }}</p></div>
-      <button class="knopf rot" @click="neu"><Ico n="plus" /> {{ t('Regel anlegen', 'Add rule') }}</button>
+      <p v-if="tab === 'lebenszyklus'">{{ t('Alte und vergessene Dateien räumen sich von selbst auf — einmal am Tag.', 'Old and forgotten files clean themselves up — once a day.') }}</p>
+      <p v-else>{{ t('Lege fest, in welchem Speicher neue Dateien landen — nach Art, Größe, Konto, Rolle und Ordner.', 'Decide which storage new files end up in — by type, size, account, role and folder.') }}</p></div>
+      <button v-if="tab === 'lebenszyklus'" class="knopf rot" @click="neu"><Ico n="plus" /> {{ t('Regel anlegen', 'Add rule') }}</button>
     </div>
+
+    <div v-if="istAdmin" class="seg reiter-leiste" role="tablist" :aria-label="t('Art der Regeln', 'Kind of rules')" @keydown="reiterTaste">
+      <button id="reiter-lebenszyklus" type="button" role="tab" :aria-selected="tab === 'lebenszyklus'" :tabindex="tab === 'lebenszyklus' ? 0 : -1" :class="{ an: tab === 'lebenszyklus' }" @click="tab = 'lebenszyklus'"><Ico n="clock" /> {{ t('Aufräumen nach Zeit', 'Clean-up by age') }}</button>
+      <button id="reiter-ablage" type="button" role="tab" :aria-selected="tab === 'ablage'" :tabindex="tab === 'ablage' ? 0 : -1" :class="{ an: tab === 'ablage' }" @click="tab = 'ablage'"><Ico n="database" /> {{ t('Ablage: Wohin kommt was?', 'Placement: where does what go?') }}</button>
+    </div>
+
+    <VdAblageRegeln v-if="tab === 'ablage' && istAdmin" role="tabpanel" aria-labelledby="reiter-ablage" />
+    <template v-else>
 
     <div v-if="!regeln.length" class="block leer">
       <span class="gross-ic"><Ico n="clock" /></span>
@@ -305,10 +326,14 @@ function jetzt(r: any, anzahl: number) {
       <p v-if="!vor.d.anzahl" class="sehrleise">{{ t('Gerade trifft die Regel keine Datei.', 'The rule matches no file right now.') }}</p>
       <div class="modal-fuss"><button class="knopf" @click="vor = null">{{ t('Schließen', 'Close') }}</button><button class="knopf rot" :disabled="!vor.d.anzahl" @click="jetzt(vor.r, vor.d.anzahl)"><Ico n="play" /> {{ t('Jetzt ausführen', 'Run now') }}</button></div>
     </VdModal>
+    </template>
   </section>
 </template>
 
 <style scoped>
+.reiter-leiste {
+  margin-bottom: 16px;
+}
 .liste {
   display: flex;
   flex-direction: column;

@@ -144,7 +144,7 @@ async function boxAnlegen() {
     einmal.value = {
       titel: t('Storage-Box angelegt', 'Storage box created'),
       zeilen: [
-        { label: t('Server', 'Server'), wert: a.host },
+        { label: t('Server', 'Server'), wert: a.sftpHost || a.host },
         { label: 'SFTP-Port', wert: String(a.sftpPort) },
         { label: t('Benutzer', 'User'), wert: r.box.kennung },
         { label: t('Passwort', 'Password'), wert: r.passwort },
@@ -213,7 +213,8 @@ async function einstSpeichern() {
       body: {
         wer: einst.value.wer,
         grenzeGb: Number(einst.value.grenzeGb) || 0,
-        maxAnzahl: Number(einst.value.maxAnzahl) || 0
+        maxAnzahl: Number(einst.value.maxAnzahl) || 0,
+        sftpHost: String(einst.value.sftpHost || '').trim()
       }
     })
     ok(t('Gespeichert', 'Saved'))
@@ -367,6 +368,15 @@ async function einstSpeichern() {
 
       <section v-if="d.inhaber && einst" class="abschnitt rein">
         <div class="abschnitt-kopf"><div><h2><Ico n="gear" /> {{ t('Einstellungen', 'Settings') }}</h2><p>{{ t('Nur für dich als Inhaber sichtbar.', 'Only visible to you as the owner.') }}</p></div></div>
+        <div class="block sftp-host">
+          <h3>{{ t('Adresse für SFTP', 'Address for SFTP') }}</h3>
+          <div v-if="d.adresse?.sftpWarnung" class="meldung meldung-warn" role="note" style="margin: 8px 0 12px">
+            <b>{{ t('SFTP geht nicht über deinen Cloudflare Tunnel.', 'SFTP does not work through your Cloudflare tunnel.') }}</b>
+            {{ t('Deine Web-Adresse läuft über Cloudflare, dort kommt SFTP nicht an. Trage hier einen Namen ein, der direkt auf deinen Server zeigt (DNS-Eintrag ohne Cloudflare-Proxy, „graue Wolke“), oder die IP-Adresse des Servers. Port ' + d.adresse.sftpPort + ' muss am Server offen sein.', 'Your web address goes through Cloudflare, where SFTP does not arrive. Enter a name that points straight to your server (DNS record without the Cloudflare proxy, “grey cloud”) or the server’s IP address. Port ' + d.adresse.sftpPort + ' must be open on the server.') }}
+          </div>
+          <label class="feld"><span>{{ t('Host für SFTP (Name oder IP, leer = Web-Adresse)', 'Host for SFTP (name or IP, empty = web address)') }}</span><input v-model="einst.sftpHost" class="eingabe mono" maxlength="253" autocomplete="off" spellcheck="false" placeholder="sftp.deine-domain.de"></label>
+          <small class="leise">{{ t('Wird den Nutzern bei jeder Box als „Server“ angezeigt. Aktuell:', 'Shown to users as “Server” for every box. Currently:') }} <b class="mono">{{ d.adresse?.sftpHost }}</b></small>
+        </div>
         <div class="einst-raster">
           <div class="block">
             <h3>{{ t('Wer darf Speicher anlegen?', 'Who may create storage?') }}</h3>

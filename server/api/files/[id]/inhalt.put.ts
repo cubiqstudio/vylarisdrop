@@ -1,6 +1,7 @@
 import { q, q1, ereignis } from '../../../utils/db'
 import { clientIp, requireUser } from '../../../utils/auth'
 import { loeschen, schreiben } from '../../../utils/speicher'
+import { ablageKontextFuer, ueberschreibOrt } from '../../../utils/ablageRegeln'
 import { artVon, basisUrl, fuerPanel, typErkennen, type DateiZeile } from '../../../utils/dateien'
 import { dateiGroesseMax, freierPlatz } from '../../../utils/hochladen'
 import { quotaWarnen } from '../../../utils/benachrichtigen'
@@ -22,7 +23,15 @@ export default defineEventHandler(async (event) => {
   const grenze0 = Math.min(MAX, await dateiGroesseMax(u))
   let g: Awaited<ReturnType<typeof schreiben>>
   try {
-    g = await schreiben(event.node.req, Math.min(grenze0, frei))
+    // Inhalt ersetzen bleibt am Ort der Datei (kein stilles Verschieben); es gelten nur Verbote. Ist der alte Ort nicht mehr beschreibbar
+    // (Box schreibgeschützt/aus/offline), entscheiden Regeln und Speicher-Einstellung wie bei einer neuen Datei
+    const laenge = Number(getRequestHeader(event, 'content-length')) || null
+    g = await schreiben(
+      event.node.req,
+      Math.min(grenze0, frei),
+      await ueberschreibOrt(f.ablage),
+      ablageKontextFuer(u, { name: f.name, mime: String(getRequestHeader(event, 'content-type') || ''), groesse: laenge, ordnerId: f.folder_id })
+    )
   } catch (e: any) {
     if (e?.code === 'ZU_GROSS') {
       if (frei < grenze0) {
