@@ -68,7 +68,24 @@ export async function speicherAdresse(event: H3Event) {
   } catch {
     host = ''
   }
-  return { basis, host, sftpPort: sftpPort(), webdav: `${basis}/webdav/`, s3: basis, region: S3_REGION }
+  // SFTP braucht einen Namen/eine Adresse, die direkt zum Server führt. Liegt die Web-Adresse hinter einem Cloudflare Tunnel
+  // (Anfrage trägt cf-ray), geht SFTP dort nicht durch: dann ist ein eigener Host (VD_SFTP_HOST oder Einstellung) nötig.
+  const eigen = String(process.env.VD_SFTP_HOST || (await getSpeicherEinst()).sftpHost || '')
+    .trim()
+    .toLowerCase()
+  const eigenOk = /^[a-z0-9]([a-z0-9.-]{0,251}[a-z0-9])?$|^[0-9a-f:]{2,45}$/.test(eigen) ? eigen : ''
+  const ueberCloudflare = !!getRequestHeader(event, 'cf-ray')
+  return {
+    basis,
+    host,
+    sftpHost: eigenOk || host,
+    sftpHostEigen: !!eigenOk,
+    sftpWarnung: !eigenOk && ueberCloudflare,
+    sftpPort: sftpPort(),
+    webdav: `${basis}/webdav/`,
+    s3: basis,
+    region: S3_REGION
+  }
 }
 
 export async function speicherPlatte(): Promise<{ frei: number; gesamt: number } | null> {

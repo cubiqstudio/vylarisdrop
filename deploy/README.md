@@ -160,6 +160,8 @@ VylarisCloud kann selbst Speicher anbieten — wie eine Storage-Box bzw. ein Obj
 - **Kontingente** setzen SFTPGo und Garage hart durch. VylarisCloud misst die Belegung stündlich (Verlauf 7/30/90 Tage) und warnt bei 80 % und bei vollem Kontingent.
 - **Wer darf?** Standardmäßig legen nur Admins Speicher an. Der Inhaber kann es für alle Konten freigeben, mit Grenzen für Größe und Anzahl.
 
+**SFTP hinter einem Cloudflare Tunnel:** Läuft deine Web-Adresse über Cloudflare, kommt SFTP dort nicht an (Cloudflare leitet nur HTTP weiter). Die Boxen brauchen dann einen Namen, der direkt auf den Server zeigt: entweder die IP-Adresse des Servers oder ein eigener DNS-Eintrag ohne Cloudflare-Proxy („graue Wolke“, z. B. `sftp.deine-domain.de`). Trage ihn im Panel unter **Speicher → Einstellungen → Adresse für SFTP** ein (oder setze `VD_SFTP_HOST` in der `.env`); die Boxen zeigen ihn den Nutzern dann als „Server“. Der Port (Standard `2222`) muss am Server offen sein: `ufw allow 2222/tcp` und, falls dein Hoster eine eigene Firewall hat, dort ebenfalls. Solange die Anfrage über Cloudflare kommt und kein eigener Host gesetzt ist, zeigt das Panel einen Hinweis dazu.
+
 Beim Ausschalten bleiben alle Boxen, Buckets und Dateien erhalten (Volumes `speicher`, `sftpgo`, `garage-meta`, `garage-daten`). Hinweise: SFTP geht nicht über einen Cloudflare Tunnel (der leitet nur HTTP weiter) — WebDAV und S3 schon. Garage hält auf einem einzelnen Server keine zweite Kopie: für wichtige Daten eigene Backups machen. Der Schalter braucht den Update-Dienst auf dem Server (bei älteren Installationen einmal `update.sh` ausführen).
 
 ### Daten auf eine andere Platte (HDD)
