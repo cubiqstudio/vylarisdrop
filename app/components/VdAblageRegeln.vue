@@ -24,6 +24,7 @@ const ZUSTAND: Record<string, { k: string; ic: string; de: string; en: string }>
   online: { k: 'ok', ic: 'check', de: 'online', en: 'online' },
   offline: { k: 'rot', ic: 'alert', de: 'offline', en: 'offline' },
   voll: { k: 'warn', ic: 'alert', de: 'voll', en: 'full' },
+  teilweise: { k: 'warn', ic: 'alert', de: 'teilweise erreichbar', en: 'partly reachable' },
   inaktiv: { k: 'neutral', ic: 'pause', de: 'ausgeschaltet', en: 'switched off' },
   schreibgeschuetzt: { k: 'warn', ic: 'lock', de: 'schreibgeschützt', en: 'read-only' },
   entfernt: { k: 'rot', ic: 'x', de: 'entfernt', en: 'removed' },
@@ -36,6 +37,9 @@ const orteOptionen = computed(() =>
 const ortName = (o: string) => (auswahl.value.ziele as any[]).find((z) => z.ort === o)?.name || o
 const kontoName = (id: number) => (auswahl.value.konten as any[]).find((k) => k.id === id)?.username || `#${id}`
 const rolleText = (r: string) => ROLLEN.value.find((x) => x.v === r)?.t || r
+const artText = (a: string) => ARTEN.value.find((x) => x.v === a)?.t || a
+/** MIME-Angabe wie im Dialog: „image/“ (Anfang) wird als „image/*“ gezeigt, damit Vorschau und Liste gleich aussehen */
+const mimeText = (m: string) => (m.replace(/\*$/, '').endsWith('/') ? m.replace(/\*$/, '') + '*' : m)
 
 const mbText = (n: number) => `${n} MB`
 function kommaListe(s: string): string[] {
@@ -49,7 +53,7 @@ function satz(r: any): string {
   const arten = (b.art || []).map((a: string) => ARTEN.value.find((x) => x.v === a)?.t || a)
   teile.push(arten.length ? arten.join(', ') : t('Dateien', 'Files'))
   if (b.endungen?.length) teile.push(t(`mit Endung ${b.endungen.map((e: string) => '.' + e).join(', ')}`, `with extension ${b.endungen.map((e: string) => '.' + e).join(', ')}`))
-  if (b.mime?.length) teile.push(t(`vom Typ ${b.mime.join(', ')}`, `of type ${b.mime.join(', ')}`))
+  if (b.mime?.length) teile.push(t(`vom Typ ${b.mime.map(mimeText).join(', ')}`, `of type ${b.mime.map(mimeText).join(', ')}`))
   if (b.groesse_von_mb && b.groesse_bis_mb) teile.push(t(`von ${mbText(b.groesse_von_mb)} bis ${mbText(b.groesse_bis_mb)}`, `from ${mbText(b.groesse_von_mb)} to ${mbText(b.groesse_bis_mb)}`))
   else if (b.groesse_von_mb) teile.push(t(`ab ${mbText(b.groesse_von_mb)}`, `from ${mbText(b.groesse_von_mb)} up`))
   else if (b.groesse_bis_mb) teile.push(t(`bis ${mbText(b.groesse_bis_mb)}`, `up to ${mbText(b.groesse_bis_mb)}`))
@@ -128,7 +132,10 @@ function bearbeiten(r: any) {
     ziele: [...(r.ziele || [])], strategie: r.strategie, fallback: r.fallback, meldung: r.meldung || ''
   }
 }
-const ganz = (v: any) => (v === null || v === '' || v === undefined || !Number.isFinite(Number(v)) || Number(v) <= 0 ? null : Math.floor(Number(v)))
+const leer = (v: any) => v === null || v === '' || v === undefined
+const ganz = (v: any) => (leer(v) || !Number.isInteger(Number(v)) || Number(v) < 1 ? null : Number(v))
+/** Größen nur als ganze MB ab 1 (0,5 würde sonst still zu „keine Bedingung“ werden — bei einem Verbot sperrte das alles) */
+const zahlOk = (v: any) => leer(v) || (Number.isInteger(Number(v)) && Number(v) >= 1)
 const koerper = (f: any) => ({
   name: f.name,
   aktiv: f.aktiv,
@@ -157,7 +164,16 @@ const vorschauSatz = computed(() => {
   const r = { bedingung: k.bedingung, aktion: k.aktion, ziele: k.ziele, strategie: k.strategie, fallback: k.fallback, meldung: k.meldung }
   return `${satz(r)} → ${folge(r)}`
 })
-const gueltig = computed(() => !!form.value && (form.value.aktion === 'verbieten' || form.value.ziele.length > 0))
+const groesseOk = computed(() => !form.value || (zahlOk(form.value.von) && zahlOk(form.value.bis)))
+const hatBedingung = computed(() => {
+  const b = form.value ? koerper(form.value).bedingung : null
+  return !!b && Object.values(b).some((v: any) => (Array.isArray(v) ? v.length > 0 : v != null))
+})
+/** Eine eingeschaltete Verbotsregel ohne jede Bedingung würde alles sperren — die API lehnt sie ab, hier schon vorher */
+const verbotOhneBedingung = computed(() => !!form.value && form.value.aktion === 'verbieten' && form.value.aktiv && !hatBedingung.value)
+const gueltig = computed(
+  () => !!form.value && groesseOk.value && !verbotOhneBedingung.value && (form.value.aktion === 'verbieten' || form.value.ziele.length > 0)
+)
 function toggle(liste: string[], v: string) {
   const i = liste.indexOf(v)
   if (i >= 0) liste.splice(i, 1)
@@ -297,7 +313,7 @@ const standardText = computed(() => {
         <p><span :class="['chip', ergebnisKopf.k]"><Ico :n="ergebnisKopf.ic" /> {{ ergebnisKopf.text }}</span></p>
         <p v-if="ergebnis.meldung" class="meldung-text">„{{ ergebnis.meldung }}“ ({{ ergebnis.status }})</p>
         <p class="leise">{{ ergebnis.grund }}</p>
-        <p class="leise klein">{{ t('Erkannt als', 'Detected as') }}: {{ ergebnis.kontext.mime }} · {{ ergebnis.kontext.art }} · {{ ergebnis.kontext.groesse == null ? t('Größe unbekannt', 'size unknown') : groesse(ergebnis.kontext.groesse) }} · {{ ergebnis.kontext.konto.name }} ({{ rolleText(ergebnis.kontext.konto.rolle) }})</p>
+        <p class="leise klein">{{ t('Erkannt als', 'Detected as') }}: {{ ergebnis.kontext.mime }} · {{ artText(ergebnis.kontext.art) }} · {{ ergebnis.kontext.groesse == null ? t('Größe unbekannt', 'size unknown') : groesse(ergebnis.kontext.groesse) }} · {{ ergebnis.kontext.konto.name }} ({{ rolleText(ergebnis.kontext.konto.rolle) }})</p>
         <ul v-if="ergebnis.pruefung.length" class="pruef">
           <li v-for="p in ergebnis.pruefung" :key="p.id"><b>{{ p.name || '#' + p.id }}</b>: {{ p.warum }}</li>
         </ul>
@@ -318,9 +334,10 @@ const standardText = computed(() => {
           <label class="feld"><span>{{ t('Endungen (z. B. exe, bat, tar.gz)', 'Extensions (e.g. exe, bat, tar.gz)') }}</span><input v-model="form.endungen" class="eingabe" maxlength="600" placeholder="exe, bat, msi"></label>
           <label class="feld"><span>{{ t('Dateityp (MIME, Anfang oder exakt)', 'File type (MIME, prefix or exact)') }}</span><input v-model="form.mime" class="eingabe" maxlength="1200" placeholder="image/, application/pdf"></label>
           <div class="zwei">
-            <label class="feld"><span>{{ t('Größe mindestens (MB)', 'Size at least (MB)') }}</span><input v-model.number="form.von" class="eingabe" type="number" min="0" step="1" :placeholder="t('keine Untergrenze', 'no lower limit')"></label>
+            <label class="feld"><span>{{ t('Größe mindestens (MB)', 'Size at least (MB)') }}</span><input v-model.number="form.von" class="eingabe" type="number" min="1" step="1" :placeholder="t('keine Untergrenze', 'no lower limit')"></label>
             <label class="feld"><span>{{ t('Größe höchstens (MB)', 'Size at most (MB)') }}</span><input v-model.number="form.bis" class="eingabe" type="number" min="1" step="1" :placeholder="t('keine Obergrenze', 'no upper limit')"></label>
           </div>
+          <p v-if="!groesseOk" class="meldung meldung-warn klein">{{ t('Größen bitte als ganze Megabyte ab 1 angeben (oder leer lassen).', 'Please give sizes as whole megabytes from 1 (or leave empty).') }}</p>
           <p class="leise klein">{{ t('Ist die Größe beim Hochladen unbekannt (z. B. WebDAV ohne Längenangabe), gilt eine Größenbedingung als nicht erfüllt; Verbote werden nach dem Speichern mit der echten Größe noch einmal geprüft.', 'If the size is unknown while uploading (e.g. WebDAV without a length), a size condition counts as not met; bans are checked again after storing with the real size.') }}</p>
           <VdAblageListe v-model="form.konten" :optionen="kontoOptionen" :label="t('Konten (leer = alle)', 'Accounts (empty = all)')" :platzhalter="t('Konto hinzufügen …', 'Add account …')" />
           <div class="feld"><span id="ab-rollen">{{ t('Rollen (leer = alle)', 'Roles (empty = all)') }}</span>
@@ -347,7 +364,7 @@ const standardText = computed(() => {
                 <button type="button" :class="{ an: form.strategie === 'frei' }" :aria-pressed="form.strategie === 'frei'" @click="form.strategie = 'frei'">{{ t('Größter freier Platz', 'Most free space') }}</button>
                 <button type="button" :class="{ an: form.strategie === 'abwechselnd' }" :aria-pressed="form.strategie === 'abwechselnd'" @click="form.strategie = 'abwechselnd'">{{ t('Abwechselnd', 'Alternating') }}</button>
               </div>
-              <p v-if="form.strategie === 'frei'" class="leise klein">{{ t('Nur Ziele mit bekanntem freiem Platz zählen (nicht S3).', 'Only destinations with known free space count (not S3).') }}</p></div>
+              <p v-if="form.strategie === 'frei'" class="leise klein">{{ t('Ziele mit bekanntem freiem Platz kommen zuerst (das mit dem meisten Platz vorn); Ziele ohne Angabe (z. B. S3) folgen in der Reihenfolge der Liste.', 'Destinations with known free space come first (most space first); destinations without a figure (e.g. S3) follow in list order.') }}</p></div>
             <div class="feld"><span id="ab-fb">{{ t('Wenn kein Ziel verfügbar ist', 'If no destination is available') }}</span>
               <div class="seg" role="group" aria-labelledby="ab-fb">
                 <button type="button" :class="{ an: form.fallback === 'naechstes' }" :aria-pressed="form.fallback === 'naechstes'" @click="form.fallback = 'naechstes'">{{ t('Nächste Regel', 'Next rule') }}</button>
@@ -355,6 +372,8 @@ const standardText = computed(() => {
                 <button type="button" :class="{ an: form.fallback === 'ablehnen' }" :aria-pressed="form.fallback === 'ablehnen'" @click="form.fallback = 'ablehnen'">{{ t('Ablehnen (503)', 'Reject (503)') }}</button>
               </div></div>
           </template>
+          <p v-if="verbotOhneBedingung" class="meldung meldung-warn klein">{{ t('Ein Verbot braucht mindestens eine Bedingung oben — sonst würde jeder Upload gesperrt.', 'A ban needs at least one condition above — otherwise every upload would be blocked.') }}</p>
+          <p v-if="form.aktion === 'verbieten'" class="leise klein">{{ t('Typ- und Endungsverbote sind keine Sicherheitsgrenze: Name und Typ bestimmt der Absender. Programme (Windows, Linux, macOS) werden zusätzlich am Inhalt erkannt und fallen unter „Andere Dateien“; Skripte und Archive nicht.', 'Type and extension bans are not a security boundary: the sender chooses name and type. Programs (Windows, Linux, macOS) are also recognised by content and count as “Other files”; scripts and archives are not.') }}</p>
           <label v-if="form.aktion === 'verbieten' || form.fallback === 'ablehnen'" class="feld"><span>{{ form.aktion === 'verbieten' ? t('Meldung beim Verbot', 'Message when forbidden') : t('Meldung beim Ablehnen', 'Message when rejecting') }}</span>
             <input v-model="form.meldung" class="eingabe" maxlength="300" :placeholder="form.aktion === 'verbieten' ? t('z. B. Ausführbare Dateien sind hier nicht erlaubt', 'e.g. Executable files are not allowed here') : t('z. B. Speicher gerade nicht erreichbar', 'e.g. Storage currently unreachable')"></label>
         </fieldset>
@@ -441,6 +460,10 @@ const standardText = computed(() => {
 .was {
   flex: 1;
   min-width: 0;
+}
+.was b,
+.pruef b {
+  overflow-wrap: anywhere;
 }
 .satz {
   margin: 4px 0 0;
@@ -594,6 +617,17 @@ const standardText = computed(() => {
   align-items: center;
   cursor: pointer;
   margin-bottom: 12px;
+}
+@media (pointer: coarse) {
+  .wahl {
+    min-height: 44px;
+    padding-inline: 16px;
+  }
+  .link {
+    display: inline-flex;
+    align-items: center;
+    min-height: 44px;
+  }
 }
 @media (max-width: 560px) {
   .zwei {

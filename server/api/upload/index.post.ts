@@ -1,8 +1,8 @@
 import busboy from 'busboy'
 import { ereignis } from '../../utils/db'
 import { clientIp, limit, userAusSitzungOderToken } from '../../utils/auth'
-import { schreiben } from '../../utils/speicher'
-import { ablageKontextFuer } from '../../utils/ablageRegeln'
+import { loeschen, schreibenGenau } from '../../utils/speicher'
+import { ablageKontextFuer, ablageOrdnerNachtrag } from '../../utils/ablageRegeln'
 import { basisUrl, dateiAnlegen, fuerPanel, type DateiZeile } from '../../utils/dateien'
 import { dateiGroesseMax, optionenAus } from '../../utils/hochladen'
 import { grenzFehler, istQuotaFehler, nutzlastSchaetzen, uploadGrenzen } from '../../utils/quota'
@@ -49,9 +49,13 @@ export default defineEventHandler(async (event) => {
     bb.on('field', (n, v) => {
       if (n.length < 40) felder[n.toLowerCase()] = v
     })
-    // Ablage-Regeln: Name/Typ aus dem Multipart-Kopf, Größe = Content-Length abzüglich Rahmen (bei mehreren Dateien der Rest)
+    // Ablage-Regeln: Name/Typ aus dem Multipart-Kopf. Die Größe vor dem Schreiben ist nur eine Obergrenze (Content-Length abzüglich Rahmen,
+    // bei mehreren Dateien der Rest); Größenbedingungen entscheiden mit der EXAKTEN Größe (schreibenGenau liest dann zuerst in eine
+    // Arbeitsdatei). Der Ordner kann als Header oder als Feld VOR der Datei kommen; steht das Feld dahinter, prüft ablageOrdnerNachtrag.
     let verbraucht = 0
+    let gestartet = 0
     bb.on('file', (_feld, strom, info) => {
+      gestartet++
       const ctx = ablageKontextFuer(u, {
         name: info.filename || 'datei',
         mime: info.mimeType,
@@ -61,20 +65,27 @@ export default defineEventHandler(async (event) => {
       laufend.push(
         (async () => {
           try {
-            const g = await schreiben(strom, max, undefined, ctx)
+            const g = await schreibenGenau(strom, max, ctx)
             verbraucht += g.size
             if (g.size === 0) {
               fehlerListe.push(`${info.filename}: leer`)
               return
             }
             const o = optionenAus(event, felder)
+            try {
+              await ablageOrdnerNachtrag(ctx, o.ordner ?? null)
+            } catch (e) {
+              await loeschen(g.schluessel)
+              throw e
+            }
             o.stil ||= u.prefs?.stil
             o.ablauf ||= u.prefs?.ablauf || null
             erledigt.push(await dateiAnlegen(u.id, g, info.filename || 'datei', info.mimeType || '', o, sprache))
           } catch (e: any) {
             if (e?.code === 'ZU_GROSS') return zuGross()
-            // verboten und noch nichts gespeichert: sofort abbrechen, der Rest der Anfrage wird nicht mehr gelesen
-            if (e?.ablage === 'verbot' && !erledigt.length) return abbrechen(e)
+            // die einzige bisher gesehene Datei ist verboten: sofort abbrechen, der Rest der Anfrage wird nicht mehr gelesen. Ist es nicht
+            // die erste Datei, läuft vielleicht eine andere noch (und wird gespeichert): dann nicht pauschal ablehnen, sondern teilweise melden
+            if (e?.ablage === 'verbot' && gestartet === 1 && !erledigt.length) return abbrechen(e)
             strom.resume()
             if (e?.ablage === 'verbot') verbot ||= e
             else if (istQuotaFehler(e)) quotaFehler ||= e
@@ -87,7 +98,8 @@ export default defineEventHandler(async (event) => {
     bb.on('error', (e) => {
       if (!vorbei) {
         vorbei = true
-        reject(e)
+        // fehlerhaftes Formular (z. B. Steuerzeichen im Dateinamen): sauberer 400 statt 500
+        reject(/malformed|unexpected end|not a multipart|missing/i.test(String((e as Error)?.message)) ? fehler(400, 'Der Upload ist fehlerhaft aufgebaut.', 'The upload is malformed.') : e)
       }
     })
     bb.on('close', () => {

@@ -7,7 +7,7 @@ import { ablageRegelnLaden, regelAnzeige, zielAuswahl, MAX_REGELN } from '../../
 // Ablage-Regeln („Wohin kommt was?“): Liste in Reihenfolge, Zustand der Ziele und Auswahllisten für den Dialog — nur Admin/Inhaber
 export default defineEventHandler(async (event) => {
   await requireAdmin(event)
-  const [regeln, ziele, w, ort] = await Promise.all([ablageRegelnLaden(true), zielAuswahl(), getSpeicher(), standardOrt()])
+  const [regeln, ziele, w, ort] = await Promise.all([ablageRegelnLaden(true), zielAuswahl(), getSpeicher(), standardOrt(true)])
   const [konten, rollen, teams, ordnerRoh] = await Promise.all([
     q('SELECT id, username, role FROM users ORDER BY lower(username) LIMIT 1000'),
     q('SELECT id, name FROM rollen ORDER BY lower(name) LIMIT 200').catch(() => []),

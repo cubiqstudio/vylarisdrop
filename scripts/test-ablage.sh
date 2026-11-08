@@ -186,7 +186,7 @@ eq "Test mit unbekanntem Konto -> 404" "$(code "$COOKIE" POST /api/regeln/ablage
 # Hoechstzahl 200: 199 per SQL dazu (1 Regel ist schon da), dann die 201. per API
 PSQL "INSERT INTO ablage_regeln (position, name, aktion) SELECT 100+g, 'abt-massen', 'verbieten' FROM generate_series(1,199) g; SELECT pg_notify('vd_settings','test|ablage_regeln')" >/dev/null
 eq "200 Regeln vorhanden" "$(PSQL 'SELECT count(*) FROM ablage_regeln')" 200
-eq "201. Regel -> 400 (Hoechstzahl)" "$(code "$COOKIE" POST /api/regeln/ablage '{"aktion":"verbieten"}')" 400
+eq "201. Regel -> 400 (Hoechstzahl)" "$(code "$COOKIE" POST /api/regeln/ablage '{"aktion":"verbieten","bedingung":{"endungen":["zzz"]}}')" 400
 regeln_leeren
 
 echo "== Regeln nach Art, Endung, Groesse, Konto, Rolle, Ordner =="
@@ -312,7 +312,7 @@ eq "voll: beide Boxen haben weniger Platz als die Datei -> kein Ziel, Regel 'nae
 has "voll: Pruefliste nennt 'voll'" "$(J 'str(d["pruefung"])')" "voll"
 zust $ZA '{"platz":null}'; zust $ZB '{"platz":null}'
 api "$COOKIE" POST /api/regeln/ablage/test '{"name":"x.s3","groesse_mb":1}'
-eq "frei ohne bekannten Platz: Ziele zaehlen nicht -> Standard" "$(J 'd["ergebnis"]')" standard
+eq "frei ohne bekannten Platz: erste verfuegbare Box (kein stilles Ausweichen)" "$(J 'd["ergebnis"]')" ziel
 regeln_leeren
 # Pool: das Wort 'pool' steht fuer die aktuell eingestellte Gruppe
 api "$COOKIE" PUT /api/speicher/ziele/ort "{\"art\":\"pool\",\"mitglieder\":[\"$A\",\"$B\"],\"strategie\":\"abwechselnd\"}"; eq "Pool [A,B] eingestellt (200)" "$CODE" 200
@@ -570,6 +570,192 @@ regel '{"aktion":"verbieten","name":"abt-prot","bedingung":{"endungen":["zzz"]}}
 api "$COOKIE" PATCH /api/regeln/ablage/$RP '{"aktiv":false}'; api "$COOKIE" DELETE /api/regeln/ablage/$RP
 for e in ablage_regel_angelegt ablage_regel_geaendert ablage_regel_geloescht; do eq "Protokoll: $e vorhanden" "$([ "$(PSQL "SELECT count(*) FROM events WHERE type='$e'")" -ge 1 ] && echo ja || echo nein)" ja; done
 eq "Protokoll enthaelt weder Passwoerter noch Zugangsdaten" "$(PSQL "SELECT count(*) FROM events WHERE type LIKE 'ablage%' AND (detail::text ILIKE '%boxpw%' OR detail::text ILIKE '%passwort%')")" 0
+regeln_leeren
+
+echo "== Korrekturen nach Pruefung: Namen, Ordner-Feld, Umbenennen/Verschieben, Mehrdatei, Groesse =="
+COOKV=$(awk '/vd_session/{print $7}' "$COOKIE"); COOKV_L=$(awk '/vd_session/{print $7}' "$(C abt_lucas)")
+cat > "$T/mp.py" <<'PY'
+import sys, http.client, urllib.parse, os
+base, path, cookie = sys.argv[1], sys.argv[2], sys.argv[3]
+b = '----vdtest0123456789'
+body = b''
+for spec in sys.argv[4:]:
+    k = spec.split(':', 4)
+    if k[0] == 'v':
+        body += ('--%s\r\nContent-Disposition: form-data; name="%s"\r\n\r\n%s\r\n' % (b, k[1], k[2])).encode()
+    else:
+        data = open(k[4], 'rb').read()
+        body += ('--%s\r\nContent-Disposition: form-data; name="%s"; filename="%s"\r\nContent-Type: %s\r\n\r\n' % (b, k[1], k[2], k[3])).encode('utf-8') + data + b'\r\n'
+body += ('--%s--\r\n' % b).encode()
+u = urllib.parse.urlparse(base)
+c = http.client.HTTPConnection(u.hostname, u.port)
+c.request('POST', path, body, {'Content-Type': 'multipart/form-data; boundary=' + b, 'Cookie': 'vd_session=' + cookie})
+r = c.getresponse(); out = r.read()
+open(os.environ['OUT'], 'wb').write(out)
+print(r.status)
+PY
+# mpu <Cookie-Wert> <Teil> ... : rohes Multipart nach /api/upload (f:Feld:Dateiname:Typ:Pfad | v:Feld:Wert), Reihenfolge wie angegeben
+mpu() { local ck="$1"; shift; CODE=$(OUT="$T/ub" python3 "$T/mp.py" "$BASE" /api/upload "$ck" "$@"); cp "$T/ub" "$T/b"; }
+nzahl() { PSQL "SELECT count(*) FROM files WHERE name LIKE '$1'"; }
+regeln_leeren
+regel '{"name":"keine exe","aktion":"verbieten","bedingung":{"endungen":["exe"]}}'
+bin prog.exe 3000; txt a.txt 3000
+# --- Namens-Tricks: Leerzeichen/Steuerzeichen/Punkt am Ende duerfen ein Endungsverbot nicht umgehen
+mpu "$COOKV" "f:file:abt-nt1.exe :application/octet-stream:$T/prog.exe"; eq "Verbot .exe: Name mit Leerzeichen am Ende -> 415" "$CODE" 415
+mpu "$COOKV" "f:file:abt-nt2.ex$(printf '\001')e:application/octet-stream:$T/prog.exe"; eq "Verbot .exe: rohes Steuerzeichen im Namen -> abgelehnt (400 wegen fehlerhaftem Formular oder 415, nie 200/500)" "$([ "$CODE" = 400 ] || [ "$CODE" = 415 ] && echo ok || echo "$CODE")" ok
+mpu "$COOKV" "f:file:abt-nt3.exe.:application/octet-stream:$T/prog.exe"; eq "Verbot .exe: Punkt am Ende (Windows blendet ihn aus) -> 415" "$CODE" 415
+api "$COOKIE" POST /api/upload/start '{"name":"abt-nt4.exe ","size":6}'; eq "Chunk-Start 'x.exe ' (Leerzeichen) -> 415" "$CODE" 415
+api "$COOKIE" POST /api/upload/start '{"name":"abt-nt5.ex\u0001e","size":6}'; eq "Chunk-Start mit Steuerzeichen -> 415" "$CODE" 415
+api "$COOKIE" POST /api/upload/start '{"name":"abt-nt6.exe\n","size":6}'; eq "Chunk-Start mit Zeilenumbruch am Ende -> 415" "$CODE" 415
+CODE=$(curl -s -o "$T/ub" -w '%{http_code}' -F "name=Gast" -F "file=@$T/prog.exe;filename=\"abt-nt7.exe \"" "$BASE/api/public/anfrage/$TOKA/upload"); eq "Gast-Upload 'x.exe ' -> 415" "$CODE" 415
+eq "kein Namens-Trick hat eine Datei angelegt" "$(nzahl 'abt-nt%')" 0
+# --- Ordner-Feld hinter der Datei darf Ordner-Regeln nicht umgehen
+regeln_leeren
+regel "{\"name\":\"Ordner gesperrt\",\"aktion\":\"verbieten\",\"bedingung\":{\"ordner\":[$OA]}}"
+mpu "$COOKV_L" "v:ordner:$OA" "f:file:abt-o1.txt:text/plain:$T/a.txt"; eq "Ordner-Verbot, Feld VOR der Datei -> 403" "$CODE" 403
+mpu "$COOKV_L" "f:file:abt-o2.txt:text/plain:$T/a.txt" "v:ordner:$OA"; eq "Ordner-Verbot, Feld HINTER der Datei -> 403 (nicht mehr umgehbar)" "$CODE" 403
+eq "  ... keine Datei angelegt" "$(nzahl 'abt-o_.txt')" 0
+regeln_leeren
+regel "{\"name\":\"Ordner -> B\",\"aktion\":\"speichern\",\"ziele\":[\"$B\"],\"bedingung\":{\"ordner\":[$OF]}}"
+mpu "$COOKV_L" "v:ordner:$OF" "f:file:abt-o3.txt:text/plain:$T/a.txt"; eq "Ordner-Ziel, Feld VOR der Datei -> 200" "$CODE" 200
+eq "  ... liegt auf Box B" "$(ort_von "$(J 'd["files"][0]["id"]')")" "$B"
+V5=$(stand)
+mpu "$COOKV_L" "f:file:abt-o4.txt:text/plain:$T/a.txt" "v:ordner:$OF"; eq "Ordner-Ziel, Feld HINTER der Datei -> 400 (Regel koennte nicht mehr stimmen)" "$CODE" 400
+has "  ... Meldung nennt die Reihenfolge" "$(fehlertext "$T/b")" "vor der Datei"
+eq "  ... Datei wieder entfernt (kein Datensatz, kein neues Objekt)" "$(nzahl 'abt-o4.txt')/$(stand)" "0/$V5"
+regeln_leeren
+mpu "$COOKV_L" "f:file:abt-o5.txt:text/plain:$T/a.txt" "v:ordner:$OF"; eq "ohne Ordner-Regeln darf das Feld weiter hinter der Datei stehen (200)" "$CODE" 200
+eq "  ... und die Datei liegt im Ordner" "$(PSQL "SELECT folder_id FROM files WHERE name='abt-o5.txt'")" "$OF"
+# --- Umbenennen/Verschieben darf kein Verbot umgehen
+regeln_leeren
+regel '{"name":"keine exe","aktion":"verbieten","bedingung":{"endungen":["exe"]}}'
+regel "{\"name\":\"Ordner gesperrt\",\"aktion\":\"verbieten\",\"bedingung\":{\"ordner\":[$OA]}}"
+upl "$(C abt_lucas)" a.txt abt-r1.txt text/plain; FR=$FID
+api "$(C abt_lucas)" PATCH /api/files/$FR '{"name":"abt-r1.exe"}'; eq "PATCH Umbenennen nach .exe -> 415" "$CODE" 415
+api "$(C abt_lucas)" PATCH /api/files/$FR "{\"ordner\":$OA}"; eq "PATCH Verschieben in den gesperrten Ordner -> 403" "$CODE" 403
+api "$(C abt_lucas)" POST /api/cloud/umbenennen "{\"typ\":\"datei\",\"id\":\"$FR\",\"name\":\"abt-r1.exe\"}"; eq "Cloud Umbenennen nach .exe -> 415" "$CODE" 415
+api "$(C abt_lucas)" POST /api/cloud/verschieben "{\"dateien\":[\"$FR\"],\"ordner\":[],\"ziel\":$OA}"; eq "Cloud Verschieben in den gesperrten Ordner -> 403" "$CODE" 403
+api "$(C abt_lucas)" POST /api/files/bulk "{\"ids\":[\"$FR\"],\"aktion\":\"verschieben\",\"wert\":$OA}"; eq "Sammelaktion Verschieben in den gesperrten Ordner -> 403" "$CODE" 403
+CODE=$(curl -s -o "$T/db" -w '%{http_code}' --path-as-is -u "$DL" -X MOVE -H "Destination: $BASE/dav/abt-r1.exe" "$BASE/dav/abt-r1.txt"); eq "WebDAV MOVE nach .exe -> 415 (wie COPY)" "$CODE" 415
+CODE=$(curl -s -o "$T/db" -w '%{http_code}' --path-as-is -u "$DL" -X MOVE -H "Destination: $BASE/dav/abt-anders/abt-r1.txt" "$BASE/dav/abt-r1.txt"); eq "WebDAV MOVE in den gesperrten Ordner -> 403" "$CODE" 403
+eq "Datei unveraendert: Name und Ordner" "$(PSQL "SELECT name || '/' || coalesce(folder_id::text,'-') FROM files WHERE id=$FR")" "abt-r1.txt/-"
+api "$(C abt_lucas)" PATCH /api/files/$FR '{"name":"abt-r1-neu.txt"}'; eq "harmloses Umbenennen bleibt erlaubt (200)" "$CODE" 200
+api "$(C abt_lucas)" PATCH /api/files/$FR "{\"ordner\":$OF}"; eq "Verschieben in einen erlaubten Ordner bleibt erlaubt (200)" "$CODE" 200
+# eine schon vorher verbotene Datei darf umsortiert werden (sie faellt nicht NEU unter das Verbot)
+regeln_leeren; upl "$(C abt_lucas)" prog.exe abt-alt.exe application/octet-stream; FAL=$FID; eq "(Vorbereitung) .exe vor der Regel angelegt" "$CODE" 200
+regel '{"name":"keine exe","aktion":"verbieten","bedingung":{"endungen":["exe"]}}'
+api "$(C abt_lucas)" PATCH /api/files/$FAL '{"name":"abt-alt2.exe"}'; eq "schon vorher verbotene Datei: Umbenennen nach .exe bleibt moeglich (200)" "$CODE" 200
+regeln_leeren
+# --- Mehrdatei-Upload: kein pauschales 415, wenn die erste Datei schon gespeichert wird
+regel '{"name":"keine exe","aktion":"verbieten","bedingung":{"endungen":["exe"]}}'
+for i in 1 2 3; do
+  CODE=$(curl -s -o "$T/ub" -w '%{http_code}' -b "$COOKIE" -F "file=@$T/a.txt;filename=abt-mm$i.txt;type=text/plain" -F "file=@$T/prog.exe;filename=abt-mm$i.exe" "$BASE/api/upload"); cp "$T/ub" "$T/b"
+  eq "Mehrdatei ($i): erlaubte Datei + verbotene -> 200 (Teilergebnis)" "$CODE" 200
+  eq "  ... erlaubte Datei gespeichert, verbotene nicht" "$(nzahl "abt-mm$i.txt")/$(nzahl "abt-mm$i.exe")" "1/0"
+done
+has "Mehrdatei: Antwort nennt die abgelehnte Datei im Feld fehler" "$(J 'str(d.get("fehler"))')" "nicht"
+CODE=$(curl -s -o "$T/ub" -w '%{http_code}' -b "$COOKIE" -F "file=@$T/prog.exe;filename=abt-mr.exe" -F "file=@$T/a.txt;filename=abt-mr.txt;type=text/plain" "$BASE/api/upload"); # Die Antwort sagt immer, was gespeichert wurde: 415 und nichts (nur diese Datei gesehen) oder 200 mit der erlaubten Datei und dem Hinweis unter fehler
+MR=$(nzahl 'abt-mr.txt')
+eq "Mehrdatei: verbotene Datei zuerst -> Antwort stimmt mit dem Gespeicherten ueberein (415/nichts oder 200/nur die erlaubte)" "$( { [ "$CODE" = 415 ] && [ "$MR" = 0 ]; } || { [ "$CODE" = 200 ] && [ "$MR" = 1 ] && [ "$(nzahl 'abt-mr.exe')" = 0 ]; } && echo stimmig || echo "$CODE/$MR")" stimmig
+regeln_leeren
+# --- Groesse: exakt, auch bei mehreren Dateien und an der Grenze
+regel '{"name":"ab 1 MB","aktion":"verbieten","bedingung":{"groesse_von_mb":1}}'
+bin s600.bin 614400; bin s1200.bin 1258291
+CODE=$(curl -s -o "$T/ub" -w '%{http_code}' -b "$COOKIE" -F "file=@$T/s600.bin;filename=abt-gz1.bin" -F "file=@$T/s600.bin;filename=abt-gz2.bin" "$BASE/api/upload")
+eq "Verbot ab 1 MB: zwei Dateien zu je 600 KB in einer Anfrage -> 200 (jede Datei zaehlt einzeln)" "$CODE" 200
+eq "  ... beide gespeichert" "$(nzahl 'abt-gz_.bin')" 2
+upl "$COOKIE" s1200.bin abt-gz3.bin; eq "Verbot ab 1 MB: eine Datei mit 1,2 MB -> 403" "$CODE" 403
+eq "  ... nichts angelegt, Arbeitsdatei aufgeraeumt" "$(nzahl 'abt-gz3.bin')/$(find "$DATEN/data/tmp" -name 'vd-*' 2>/dev/null | wc -l)" "0/0"
+regeln_leeren
+regel "{\"name\":\"ab 2 MB -> A\",\"aktion\":\"speichern\",\"ziele\":[\"$A\"],\"bedingung\":{\"groesse_von_mb\":2}}"
+bin ex2.bin $((2*MiB)); bin ex2m.bin $((2*MiB-1))
+upl "$COOKIE" ex2.bin abt-ex2.bin; eq "genau 2 MiB trifft 'ab 2 MB' -> Box A (kein Rahmen-Fehler)" "$(ort_von $FID)" "$A"
+upl "$COOKIE" ex2m.bin abt-ex2m.bin; eq "2 MiB minus 1 Byte trifft nicht -> lokal" "$(ort_von $FID)" lokal
+eq "  ... Datei von Box A identisch (cmp)" "$(gleich "$(PSQL "SELECT id FROM files WHERE name='abt-ex2.bin'")" ex2.bin)" gleich
+bin s15.bin $((1536*1024)); bin s100k.bin 102400; bin s1000.bin $((1024*1024)); bin s2100.bin $((2100*1024))
+CODE=$(curl -s -o "$T/ub" -w '%{http_code}' -b "$COOKIE" -F "file=@$T/s1000.bin;filename=abt-gm1.bin" -F "file=@$T/s2100.bin;filename=abt-gm2.bin" "$BASE/api/upload")
+eq "zwei Dateien (1 MB und 2,05 MB) in einer Anfrage -> 200" "$CODE" 200
+eq "  ... nur die zweite (ab 2 MB) liegt auf Box A, die erste lokal" "$(ort_von "$(PSQL "SELECT id FROM files WHERE name='abt-gm1.bin'")")/$(ort_von "$(PSQL "SELECT id FROM files WHERE name='abt-gm2.bin'")")" "lokal/$A"
+regeln_leeren
+echo "== Korrekturen nach Pruefung: Gast-Upload auf Box, Ueberschreiben, Strategien, Anzeige, Eingabe =="
+# --- Gast-Upload auf eine Storage Box: Antwort erst nach dem Speichern
+regel "{\"name\":\"dat -> A\",\"aktion\":\"speichern\",\"ziele\":[\"$A\"],\"bedingung\":{\"endungen\":[\"dat\"]}}"
+bin gast.dat 4000
+ANZ0=$(PSQL "SELECT anzahl FROM anfragen WHERE token='$TOKA'")
+for i in 1 2 3; do
+  CODE=$(curl -s -o "$T/ub" -w '%{http_code}' -F "name=Gast" -F "file=@$T/gast.dat;filename=abt-gb$i.dat" "$BASE/api/public/anfrage/$TOKA/upload")
+  eq "Gast-Upload auf Box A ($i): 200 statt 400 'Keine Datei'" "$CODE" 200
+  eq "  ... Datei liegt genau einmal auf Box A" "$(PSQL "SELECT count(*) FROM files WHERE name='abt-gb$i.dat' AND ablage LIKE 'sftp$ZA:%'")" 1
+done
+eq "Zaehler der Anfrage steigt genau um 3" "$(( $(PSQL "SELECT anzahl FROM anfragen WHERE token='$TOKA'") - ANZ0 ))" 3
+regeln_leeren
+# --- Ueberschreiben auf einer schreibgeschuetzten Box: kein 500, die Datei zieht um
+txt ws1.txt 5000; txt ws2.txt 6000; png ws3.png 7000; png ws4.png 8000
+regel "{\"name\":\"alles B\",\"aktion\":\"speichern\",\"ziele\":[\"$B\"]}"
+dput "$DAV" abt-ws.txt ws1.txt; FW=$(dav_id abt-ws.txt); eq "(Vorbereitung) Datei liegt auf Box B" "$(ort_von $FW)" "$B"
+upl "$COOKIE" ws3.png abt-ws.png image/png; FW2=$FID; eq "(Vorbereitung) Bild liegt auf Box B" "$(ort_von $FW2)" "$B"
+regeln_leeren
+api "$COOKIE" PUT /api/speicher/ziele/$ZB '{"schreibbar":false}'
+dput "$DAV" abt-ws.txt ws2.txt; eq "WebDAV Ueberschreiben bei schreibgeschuetzter Box -> kein Fehler (200-299)" "$([ "$CODE" -ge 200 ] && [ "$CODE" -lt 300 ] && echo ok || echo "$CODE")" ok
+eq "  ... neuer Inhalt am Standardort (lokal), nicht mehr auf Box B" "$(ort_von $FW)" lokal
+eq "  ... Inhalt neu (cmp)" "$(gleich $FW ws2.txt)" gleich
+CODE=$(curl -s -o "$T/ub" -w '%{http_code}' -b "$COOKIE" -X PUT -H 'content-type: image/png' --data-binary "@$T/ws4.png" "$BASE/api/files/$FW2/inhalt")
+eq "Inhalt ersetzen bei schreibgeschuetzter Box -> 200" "$CODE" 200
+eq "  ... Bild liegt jetzt lokal und ist neu (cmp)" "$(ort_von $FW2)/$(gleich $FW2 ws4.png)" "lokal/gleich"
+api "$COOKIE" PUT /api/speicher/ziele/$ZB '{"schreibbar":true}'
+# --- Strategie 'frei' ohne Platzangabe, Zustand 'voll', Zustand des Pools
+zust $ZA '{"platz":null}'; zust $ZB '{"platz":null}'
+regel "{\"name\":\"frei\",\"aktion\":\"speichern\",\"ziele\":[\"$A\",\"$B\"],\"strategie\":\"frei\",\"fallback\":\"lokal\",\"bedingung\":{\"endungen\":[\"fr\"]}}"
+api "$COOKIE" POST /api/regeln/ablage/test '{"name":"x.fr","groesse_mb":1}'
+eq "frei ohne Platzangabe: das erste verfuegbare Ziel (A) statt stillem Ausweichen" "$(J 'd["ergebnis"]')/$(J 'd["ort"]')" "ziel/$A"
+upl "$COOKIE" a.txt abt-fr1.fr text/plain; eq "  ... echter Upload landet auf Box A" "$(ort_von $FID)" "$A"
+zust $ZA '{"platz":{"frei":1000,"gesamt":9000000}}'; zust $ZB '{"platz":null}'
+api "$COOKIE" POST /api/regeln/ablage/test '{"name":"x.fr","groesse_mb":0}'
+eq "frei: bekannter Platz zuerst (A), Box ohne Angabe nachrangig" "$(J 'd["ort"]')" "$A"
+zust $ZA '{"platz":{"frei":0,"gesamt":9000000}}'
+api "$COOKIE" GET /api/regeln/ablage
+eq "Zustand 'voll' erscheint auch in der Regelliste (Box ohne freien Platz)" "$(J "[z['zustand'] for z in d['auswahl']['ziele'] if z['ort']=='$A'][0]")" voll
+zust $ZA '{"platz":null}'
+regeln_leeren
+api "$COOKIE" PUT /api/speicher/ziele/ort "{\"art\":\"pool\",\"mitglieder\":[\"$A\",\"$B\"],\"strategie\":\"abwechselnd\"}"
+zust $ZA '{"online":false}'
+api "$COOKIE" GET /api/regeln/ablage; eq "Pool mit einem erreichbaren Mitglied von zweien -> 'teilweise'" "$(J "[z['zustand'] for z in d['auswahl']['ziele'] if z['ort']=='pool'][0]")" teilweise
+zust $ZB '{"online":false}'
+api "$COOKIE" GET /api/regeln/ablage; eq "Pool ohne erreichbares Mitglied -> 'offline' (nicht 'online')" "$(J "[z['zustand'] for z in d['auswahl']['ziele'] if z['ort']=='pool'][0]")" offline
+zust $ZA '{"online":true}'; zust $ZB '{"online":true}'
+api "$COOKIE" GET /api/regeln/ablage; eq "Pool wieder vollstaendig erreichbar -> 'online'" "$(J "[z['zustand'] for z in d['auswahl']['ziele'] if z['ort']=='pool'][0]")" online
+# --- Test-Feld und Seitenaufruf verschieben die Pool-Reihenfolge nicht
+for i in 1 2 3 4; do api "$COOKIE" POST /api/regeln/ablage/test '{"name":"x.txt","mime":"text/plain","groesse_mb":0.1}'; P[$i]=$(J 'd["ort"]'); done
+eq "Test-Feld: 4 Tests hintereinander sagen dasselbe Pool-Mitglied voraus (kein Weiterdrehen)" "$([ "${P[1]}" = "${P[2]}" ] && [ "${P[2]}" = "${P[3]}" ] && [ "${P[3]}" = "${P[4]}" ] && echo gleich || echo "${P[*]}")" gleich
+api "$COOKIE" GET /api/regeln/ablage; S1=$(J 'd["standard"]["ort"]'); api "$COOKIE" GET /api/regeln/ablage; S2=$(J 'd["standard"]["ort"]')
+eq "Seitenaufruf (GET /api/regeln/ablage) dreht die Reihenfolge nicht: gleiche Anzeige zweimal" "$S1" "$S2"
+eq "  ... und das Test-Feld stimmt mit der Anzeige ueberein" "${P[1]}" "$S1"
+upl "$COOKIE" a.txt abt-pv.txt text/plain; eq "  ... und der echte Upload landet dort, wo vorhergesagt" "$(ort_von $FID)" "${P[1]}"
+api "$COOKIE" PUT /api/speicher/ziele/ort '{"art":"lokal"}'
+# --- Programme werden am Inhalt erkannt, nicht nur am gemeldeten Typ
+regel '{"name":"keine Programme","aktion":"verbieten","bedingung":{"art":["datei"]}}'
+python3 - "$T" <<'PY'
+import sys, os
+t = sys.argv[1]
+pe = bytearray(512); pe[0:2] = b'MZ'; pe[0x3c:0x40] = (0x80).to_bytes(4, 'little'); pe[0x80:0x84] = b'PE\0\0'
+open(t + '/pe.bin', 'wb').write(pe)
+open(t + '/elf.bin', 'wb').write(b'\x7fELF' + os.urandom(600))
+open(t + '/mz-text.bin', 'wb').write(b'MZ ist ein Kuerzel. ' + b'x' * 300)
+PY
+bin zufall.bin 3000
+upl "$COOKIE" pe.bin abt-gelogen1.dat image/png; eq "Windows-Programm (PE) als image/png getarnt -> 415" "$CODE" 415
+upl "$COOKIE" pe.bin abt-gelogen2.png image/png; eq "Windows-Programm mit .png-Namen -> 415" "$CODE" 415
+upl "$COOKIE" elf.bin abt-gelogen3.jpg image/jpeg; eq "Linux-Programm (ELF) als image/jpeg getarnt -> 415" "$CODE" 415
+upl "$COOKIE" zufall.bin abt-echt.png image/png; eq "beliebige Bytes, die sich als Bild ausgeben -> 200 (Art Bild, keine Programmkennung)" "$CODE" 200
+upl "$COOKIE" mz-text.bin abt-mz.txt text/plain; eq "Text, der mit 'MZ' beginnt, ist kein Programm -> 200" "$CODE" 200
+eq "kein getarntes Programm gespeichert" "$(nzahl 'abt-gelogen%')" 0
+regeln_leeren
+# --- Eingabe: Verbot ohne Bedingung, Groesse 0
+api "$COOKIE" POST /api/regeln/ablage '{"aktion":"verbieten","name":"abt-leer"}'; eq "aktives Verbot ohne Bedingung -> 400" "$CODE" 400
+api "$COOKIE" POST /api/regeln/ablage '{"aktion":"verbieten","bedingung":{"groesse_von_mb":0}}'; eq "Verbot mit groesse_von_mb 0 -> 400 (wird nicht still zur leeren Bedingung)" "$CODE" 400
+api "$COOKIE" POST /api/regeln/ablage '{"aktion":"verbieten","name":"abt-leer2","aktiv":false}'; eq "ausgeschaltetes Verbot ohne Bedingung -> 200 (harmlos)" "$CODE" 200; RL=$(J 'd.get("id")')
+api "$COOKIE" PATCH /api/regeln/ablage/$RL '{"aktiv":true}'; eq "...  aber Einschalten -> 400" "$CODE" 400
+upl "$COOKIE" a.txt abt-nach-leer.txt text/plain; eq "nach den Ablehnungen ist weiter alles erlaubt (200)" "$CODE" 200
 regeln_leeren
 
 echo "== Rate-Limit =="

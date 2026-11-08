@@ -1,8 +1,7 @@
 import { z } from 'zod'
 import { q1 } from '../../../utils/db'
 import { limit, requireAdmin } from '../../../utils/auth'
-import { ablageAuswerten } from '../../../utils/ablageRegeln'
-import { zielAuswahl } from '../../../utils/ablageRegeln'
+import { ablageAuswerten, ablageKontextFuer, zielAuswahl } from '../../../utils/ablageRegeln'
 
 const Body = z.object({
   name: z.string().trim().min(1).max(200),
@@ -31,7 +30,7 @@ export default defineEventHandler(async (event) => {
   if (!konto) throw fehler(404, 'Dieses Konto gibt es nicht.', 'This account does not exist.')
   const gr = b.groesse_mb == null ? null : Math.round(b.groesse_mb * 1024 * 1024)
   const e = await ablageAuswerten(
-    { name: b.name, mime: b.mime, groesse: gr, userId: konto.id, rolle: konto.role, rolleId: konto.rolle_id, ordnerId: b.ordner ?? null },
+    ablageKontextFuer({ id: konto.id, role: konto.role, rolle_id: konto.rolle_id }, { name: b.name, mime: b.mime, groesse: gr, ordnerId: b.ordner ?? null }),
     { trocken: true }
   )
   const ziele = await zielAuswahl()

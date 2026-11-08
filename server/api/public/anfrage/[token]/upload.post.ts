@@ -1,7 +1,7 @@
 import busboy from 'busboy'
 import { q, q1, ereignis } from '../../../../utils/db'
 import { clientIp, limit, type Nutzer } from '../../../../utils/auth'
-import { loeschen, schreiben } from '../../../../utils/speicher'
+import { loeschen, schreibenGenau } from '../../../../utils/speicher'
 import { basisUrl, dateiAnlegen, fuerPanel, links, type DateiZeile } from '../../../../utils/dateien'
 import { dateiGroesseMax, freierPlatz } from '../../../../utils/hochladen'
 import { istQuotaFehler, nutzlastSchaetzen } from '../../../../utils/quota'
@@ -61,7 +61,9 @@ export default defineEventHandler(async (event) => {
     bb.on('field', (n, v) => {
       felder[n] = v
     })
+    let gestartet = false
     bb.on('file', (_f, strom, info) => {
+      gestartet = true
       // Ablage-Regeln gelten für das Konto des Empfängers (der Besitzer der Anfrage), Größe = Content-Length abzüglich Rahmen
       const ctx = ablageKontextFuer(besitzer, {
         name: info.filename || 'datei',
@@ -69,7 +71,7 @@ export default defineEventHandler(async (event) => {
         groesse: nutzlastSchaetzen(Number(getRequestHeader(event, 'content-length')) || undefined, String(getRequestHeader(event, 'content-type') || '')) ?? null,
         ordnerId: a.folder_id
       })
-      schreiben(strom, max === Infinity ? 0 : max, undefined, ctx)
+      schreibenGenau(strom, max === Infinity ? 0 : max, ctx)
         .then(async (g) => {
           if (!g.size) return ende(() => resolve(null))
           const frei = await q(
@@ -141,7 +143,13 @@ export default defineEventHandler(async (event) => {
         })
     })
     bb.on('error', (e) => ende(() => reject(e)))
-    bb.on('close', () => setTimeout(() => ende(() => resolve(null)), 50))
+    // Ohne Datei ist nach dem Ende des Formulars Schluss. Mit Datei wartet die Antwort, bis schreiben() und das Anlegen fertig sind
+    // (eine Storage Box braucht dafür länger als ein fester Zeitpunkt — sonst käme 400, obwohl die Datei danach noch gespeichert wird)
+    bb.on('close', () => {
+      if (!gestartet) setTimeout(() => ende(() => resolve(null)), 50)
+    })
+    // Bricht der Absender mitten in der Datei ab, bleibt kein Aufruf hängen
+    req.once('aborted', () => ende(() => reject(fehler(400, 'Der Upload wurde abgebrochen.', 'The upload was aborted.'))))
     req.pipe(bb)
   })
   if (!ergebnis) throw fehler(400, 'Keine Datei im Upload.', 'No file in the upload.')

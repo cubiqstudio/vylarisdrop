@@ -42,10 +42,14 @@ function schieben(i: number, d: number) {
         <button type="button" class="al-b" :aria-label="t('Entfernen', 'Remove') + ': ' + text(v)" @click="weg(v)"><Ico n="x" /></button>
       </li>
     </ul>
-    <select :id="id" v-model="wahl" class="eingabe al-sel" :disabled="!frei.length" @change="hinzu">
-      <option value="">{{ frei.length ? platzhalter : t('Nichts weiter zur Auswahl', 'Nothing else to choose') }}</option>
-      <option v-for="o in frei" :key="String(o.v)" :value="String(o.v)">{{ o.t }}</option>
-    </select>
+    <!-- Auswahl und eigener Knopf: ein @change würde schon beim Durchblättern mit den Pfeiltasten Einträge übernehmen -->
+    <div class="al-zeile">
+      <select :id="id" v-model="wahl" class="eingabe al-sel" :disabled="!frei.length" @keydown.enter.prevent="hinzu">
+        <option value="">{{ frei.length ? platzhalter : t('Nichts weiter zur Auswahl', 'Nothing else to choose') }}</option>
+        <option v-for="o in frei" :key="String(o.v)" :value="String(o.v)">{{ o.t }}</option>
+      </select>
+      <button type="button" class="knopf klein al-plus" :disabled="wahl === ''" :aria-label="t('Hinzufügen', 'Add') + ': ' + label" @click="hinzu"><Ico n="plus" /> {{ t('Hinzufügen', 'Add') }}</button>
+    </div>
   </div>
 </template>
 
@@ -101,8 +105,31 @@ function schieben(i: number, d: number) {
   outline: 2px solid var(--a);
   outline-offset: 1px;
 }
+.al-zeile {
+  display: flex;
+  gap: 6px;
+  align-items: stretch;
+}
 .al-sel {
   font-size: 13px;
   padding: 7px 10px;
+  flex: 1;
+  min-width: 0;
+}
+.al-plus {
+  flex-shrink: 0;
+}
+@media (pointer: coarse) {
+  .al-b {
+    min-width: 44px;
+    min-height: 44px;
+  }
+  .al-chip {
+    padding-block: 0;
+  }
+  .al-sel,
+  .al-plus {
+    min-height: 44px;
+  }
 }
 </style>

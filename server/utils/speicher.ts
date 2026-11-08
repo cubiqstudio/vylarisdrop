@@ -6,7 +6,7 @@ import { pipeline } from 'node:stream/promises'
 import { getSpeicher, s3Groesse, s3Hochladen, s3Lesen, s3Loeschen, s3LoeschenPraefix } from './s3'
 import { istPro } from './lizenz'
 import { alsHttpFehler, zielLaden } from './sftpZiele'
-import { ablageEntscheiden, ablageNachpruefen, ablageVerbotPruefen, type AblageKontext } from './ablageRegeln'
+import { ablageEntscheiden, ablageGroessenRegeln, ablageNachpruefen, ablageVerbotPruefen, type AblageKontext } from './ablageRegeln'
 import {
   loeschenVormerken,
   sftpBereit,
@@ -83,10 +83,10 @@ export async function zielOrt(ctx?: AblageKontext): Promise<Ort> {
   return standardOrt()
 }
 
-/** Die Speicher-Einstellung allein (ohne Ablage-Regeln). */
-export async function standardOrt(): Promise<Ort> {
+/** Die Speicher-Einstellung allein (ohne Ablage-Regeln). `trocken`: nur ansehen — der Pool dreht seine Reihenfolge dabei nicht weiter. */
+export async function standardOrt(trocken = false): Promise<Ort> {
   const w = await getSpeicher()
-  if (w.art === 'pool') return poolWahl(w.mitglieder || ['lokal'], w.strategie === 'abwechselnd' ? 'abwechselnd' : 'frei')
+  if (w.art === 'pool') return poolWahl(w.mitglieder || ['lokal'], w.strategie === 'abwechselnd' ? 'abwechselnd' : 'frei', trocken)
   if (w.art === 'sftp' && w.sftpZiel) {
     // nur eine aktive, beschreibbare Erweiterung; sonst bleibt es lokal (die Oberfläche warnt davor)
     const z = await zielLaden(w.sftpZiel)
@@ -140,6 +140,31 @@ export async function schreiben(quelle: Readable, maxBytes: number, ort?: Ort, c
   const g = await schreibenKern(quelle, maxBytes, wo)
   if (ctx) await ablageNachpruefen(g, ctx, loeschen)
   return g
+}
+
+/**
+ * Wie schreiben() mit Ablage-Regeln (Ort nach den Regeln), aber mit EXAKTER Größe für Größenbedingungen: Bei Multipart-Uploads ist
+ * die Größe einer einzelnen Datei vorab nur geschätzt (Rahmen, mehrere Dateien). Gibt es aktive Regeln mit Größenbedingung, wird der
+ * Strom deshalb zuerst in eine Arbeitsdatei gelesen (mit derselben Größengrenze), dann mit der echten Größe entschieden und von dort
+ * geschrieben. Ohne solche Regeln läuft alles direkt durch (kein Mehraufwand).
+ */
+export async function schreibenGenau(quelle: Readable, maxBytes: number, ctx: AblageKontext): Promise<Geschrieben> {
+  if (!(await ablageGroessenRegeln())) return schreiben(quelle, maxBytes, undefined, ctx)
+  const tmp = await arbeitsPfad()
+  let size = 0
+  const zaehler = new Transform({
+    transform(chunk: Buffer, _e, cb) {
+      size += chunk.length
+      if (maxBytes !== 0 && size > maxBytes) return cb(Object.assign(new Error('zu gross'), { code: 'ZU_GROSS' }))
+      cb(null, chunk)
+    }
+  })
+  try {
+    await pipeline(quelle, zaehler, createWriteStream(tmp, { mode: 0o600 }))
+    return await schreiben(createReadStream(tmp), maxBytes, undefined, { ...ctx, groesse: size })
+  } finally {
+    await fs.rm(tmp, { force: true }).catch(() => {})
+  }
 }
 
 async function schreibenKern(quelle: Readable, maxBytes: number, wo: Ort): Promise<Geschrieben> {
@@ -480,7 +505,7 @@ export async function poolPlatz(mitglieder?: string[]): Promise<PoolPlatz> {
 }
 
 /** Wählt für einen Upload ein nutzbares Pool-Mitglied; fällt alles aus, bleibt es `lokal`. */
-async function poolWahl(mitglieder: string[], strategie: 'frei' | 'abwechselnd'): Promise<Ort> {
+async function poolWahl(mitglieder: string[], strategie: 'frei' | 'abwechselnd', trocken = false): Promise<Ort> {
   const p = await poolPlatz(mitglieder)
   const ok = p.mitglieder.filter((m) => m.nutzbar)
   if (!ok.length) return 'lokal'
@@ -488,5 +513,6 @@ async function poolWahl(mitglieder: string[], strategie: 'frei' | 'abwechselnd')
     const mitPlatz = ok.filter((m) => m.frei != null)
     if (mitPlatz.length) return mitPlatz.reduce((a, b) => (b.frei! > a.frei! ? b : a)).ort as Ort
   }
-  return ok[reihum++ % ok.length]!.ort as Ort
+  // trocken (Vorschau/Test/Anzeige): das Mitglied, das als Nächstes drankommt, ohne den Zähler zu verbrauchen
+  return ok[(trocken ? reihum : reihum++) % ok.length]!.ort as Ort
 }

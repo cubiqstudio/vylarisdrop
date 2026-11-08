@@ -8,7 +8,7 @@ import { getNet, getUploads, st } from './settings'
 import { lesen, loeschen, ortVon, pfadVon, platte, schreiben } from './speicher'
 import { artVon, basisUrl, dateiAnlegen, fuerPanel, typErkennen, type DateiZeile } from './dateien'
 import { dateiCsp } from './dateiCsp'
-import { ablageKontextFuer } from './ablageRegeln'
+import { ablageKontextFuer, ablageUmstellenPruefen, ueberschreibOrt } from './ablageRegeln'
 import { freierPlatz } from './hochladen'
 import {
   hatGrenze,
@@ -556,12 +556,12 @@ async function putKern(c: DavKontext, teile: string[]) {
   }
   let g
   try {
-    // Ablage-Regeln: neue Datei -> Ort nach den Regeln; Überschreiben bleibt am Ort der vorhandenen Datei (nur Verbote gelten).
+    // Ablage-Regeln: neue Datei -> Ort nach den Regeln; Überschreiben bleibt am Ort der vorhandenen Datei, solange der beschreibbar ist (sonst wie neu; nur Verbote gelten).
     // Größe: Content-Length; ohne (chunked) unbekannt, Verbote werden dann nach dem Schreiben mit der echten Größe geprüft
     g = await schreiben(
       anfrageStrom(ev),
       lim.fuerSchreiben,
-      vorhanden ? ortVon(vorhanden.ablage) : undefined,
+      vorhanden ? await ueberschreibOrt(vorhanden.ablage) : undefined,
       ablageKontextFuer(c.u, {
         name: vorhanden ? vorhanden.name : frueh.name,
         mime: String(getRequestHeader(ev, 'content-type') || '').split(';')[0]!.trim(),
@@ -974,6 +974,13 @@ async function verschiebenKopieren(c: DavKontext, teile: string[], kopie: boolea
           ? quelle.row.mime
           : typErkennen(Buffer.alloc(0), zielName, quelle.row.mime)
       const art = (quelle.row as any).verschluesselt ? 'datei' : artVon(mime, zielName)
+      // Ablage-Regeln: durch das Verschieben/Umbenennen darf die Datei nicht NEU unter ein Verbot fallen (wie bei COPY)
+      try {
+        await ablageUmstellenPruefen(c.u, quelle.row.id, { name: zielName, ordnerId: zielOrdner })
+      } catch (e: any) {
+        if (e?.ablage) throw davFehler(e.statusCode, e.message, e.message)
+        throw e
+      }
       // Team-Kontingent des Ziels: die Datei zaehlt im Ziel-Team neu (ausser sie liegt dort schon)
       const vonTeam = await teamVonOrdner(quelle.row.folder_id)
       await verschiebenPruefen({ ordner: zielOrdner }, Number(quelle.row.size), vonTeam, async (x) => {

@@ -6,9 +6,9 @@ import { st } from './settings'
 import { hoeren, melde } from './knoten'
 import { alleZiele, zielLaden } from './sftpZiele'
 import { sftpBereit } from './sftpClient'
-import { artVon, endung as dateiEndung, typErkennen } from './dateien'
+import { artVon, dateiNameSaeubern, endung as dateiEndung, typErkennen } from './dateien'
 import { teamVonOrdner } from './quota'
-import { poolPlatz, sftpId, standardOrt, type Geschrieben, type Ort } from './speicher'
+import { ortVon, poolPlatz, sftpId, standardOrt, type Geschrieben, type Ort } from './speicher'
 
 /**
  * Ablage-Regeln: „Wohin kommt was?“ — der Admin legt fest, in welchen Speicher (lokal, S3, eine Storage Box = SFTP-Speicher-Erweiterung
@@ -21,6 +21,11 @@ import { poolPlatz, sftpId, standardOrt, type Geschrieben, type Ort } from './sp
  *    offline gemeldetes Ziel gilt als „nicht verfügbar“ — die Regel bleibt gültig, das Ziel wird übersprungen.
  *  - Fällt kein Ziel einer Regel aus: fallback 'naechstes' (nächste Regel), 'lokal' (auf den Server) oder 'ablehnen' (503, nichts
  *    wird geschrieben). Ein stilles Ausweichen gibt es nie.
+ *  - Dateinamen werden vor der Prüfung genauso gesäubert wie beim Anlegen (dateiNameSaeubern): „evil.exe “ ist eine .exe.
+ *  - Umbenennen/Verschieben bestehender Dateien: nur wenn die Datei dadurch NEU unter ein Verbot fällt (ablageUmstellenPruefen);
+ *    das Ziel ändert sich nie. Ganze Ordner verschieben prüft nicht jede enthaltene Datei.
+ *  - Typ- und Endungsverbote sind keine Sicherheitsgrenze: Name und Typ wählt der Absender. Nach dem Schreiben wird zusätzlich der
+ *    Dateikopf auf Programme (PE/ELF/Mach-O) geprüft (ausfuehrbarErkennen); Skripte oder Archive erkennt das nicht.
  *  - Unbekannte Größe (WebDAV ohne Content-Length): eine Größenbedingung gilt dann als NICHT erfüllt (nur eine Regel ohne
  *    Größenbedingung trifft zu). Verbote werden nach dem Schreiben mit der echten Größe und der erkannten Dateiart noch einmal
  *    geprüft und die Datei dann sauber entfernt (ablageNachpruefen).
@@ -104,7 +109,7 @@ const BedingungZod = z
       )
       .max(LISTE_MAX)
       .optional(),
-    groesse_von_mb: ganz(10_000_000, 0).nullable().optional(),
+    groesse_von_mb: ganz(10_000_000, 1).nullable().optional(),
     groesse_bis_mb: ganz(10_000_000, 1).nullable().optional(),
     konten: z.array(ganz(2_000_000_000)).max(LISTE_MAX).optional(),
     rollen: z.array(z.enum(ABLAGE_ROLLEN)).max(ABLAGE_ROLLEN.length).optional(),
@@ -174,6 +179,13 @@ export async function regelPruefen(
   opt: { zieleExistieren?: boolean } = {}
 ): Promise<{ bedingung: AblageBedingung; ziele: string[]; meldung: string }> {
   const bedingung = bedingungBereinigen(d.bedingung)
+  // eine aktive Verbotsregel ohne jede Bedingung würde jeden Upload aller Konten (auch Gäste, WebDAV) sperren — das ist nie gewollt
+  if (d.aktion === 'verbieten' && d.aktiv && Object.keys(bedingung).every((k) => k === 'geltung'))
+    throw fehler(
+      400,
+      'Eine Verbotsregel braucht mindestens eine Bedingung (Art, Typ, Endung, Größe, Konto, Rolle, Ordner oder Team).',
+      'A ban rule needs at least one condition (type, MIME type, extension, size, account, role, folder or team).'
+    )
   const ziele = d.aktion === 'speichern' ? [...new Set(d.ziele)] : []
   if (d.aktion === 'speichern') {
     if (!ziele.length)
@@ -255,14 +267,25 @@ const ordnerKette = async (ordnerId: number): Promise<number[]> =>
     )
   ).map((r) => r.id)
 
+const ARTEN_NAME: Record<string, [string, string]> = {
+  bild: ['Bilder', 'Images'],
+  video: ['Videos', 'Videos'],
+  audio: ['Audio', 'Audio'],
+  text: ['Texte', 'Text files'],
+  datei: ['Andere Dateien', 'Other files']
+}
+const artName = (a: string) => st(ARTEN_NAME[a]?.[0] ?? a, ARTEN_NAME[a]?.[1] ?? a)
+
 /** Kurze Begründung je Bedingung, die NICHT zutrifft (leer = trifft zu). */
 async function bedingungPruefen(b: AblageBedingung, k: Aufgeloest): Promise<string> {
   const de = (a: string, e: string) => st(a, e)
-  if (b.art?.length && !b.art.includes(k.art)) return de(`Art „${k.art}“ gehört nicht dazu`, `type “${k.art}” is not included`)
+  if (b.art?.length && !b.art.includes(k.art))
+    return de(`Art „${artName(k.art)}“ gehört nicht dazu`, `type “${artName(k.art)}” is not included`)
   if (b.mime?.length && !b.mime.some((m) => (m.endsWith('/') ? k.mime.startsWith(m) : k.mime === m || k.mime.startsWith(m))))
     return de(`Typ „${k.mime}“ passt nicht`, `type “${k.mime}” does not match`)
   if (b.endungen?.length) {
-    const n = k.name.toLowerCase()
+    // abschließende Punkte zählen nicht (Windows blendet sie aus: „a.exe.“ ist dort „a.exe“)
+    const n = k.name.toLowerCase().replace(/\.+$/, '')
     if (!b.endungen.some((e) => n.endsWith('.' + e)))
       return de(`Endung „${dateiEndung(k.name) || '–'}“ passt nicht`, `extension “${dateiEndung(k.name) || '–'}” does not match`)
   }
@@ -340,7 +363,7 @@ export async function zielZustaende(orte: string[], groesse?: number | null): Pr
     if (ort === 'pool') continue
     if (ort === 'lokal') {
       const m = platz?.mitglieder.find((x) => x.ort === 'lokal')
-      const voll = m?.frei != null && groesse != null && m.frei < groesse
+      const voll = m?.frei != null && (m.frei <= 0 || (groesse != null && m.frei < groesse))
       aus.set(ort, {
         ort,
         name: st('Dieser Server', 'This server'),
@@ -361,7 +384,7 @@ export async function zielZustaende(orte: string[], groesse?: number | null): Pr
     if (!z.aktiv) zustand = 'inaktiv'
     else if (!z.schreibbar) zustand = 'schreibgeschuetzt'
     else if (z.status?.online === false || (ausfaelle.get(ort) || 0) > Date.now()) zustand = 'offline'
-    else if (m?.frei != null && groesse != null && m.frei < groesse) zustand = 'voll'
+    else if (m?.frei != null && (m.frei <= 0 || (groesse != null && m.frei < groesse))) zustand = 'voll'
     aus.set(ort, { ort, name: z.name, zustand, frei: m?.frei ?? null, verfuegbar: zustand === 'online' })
   }
   return aus
@@ -417,7 +440,7 @@ export async function ablageAuswerten(
   const kontext = { art: k.art, mime: k.mime, groesse: k.groesse ?? null }
   const standard = async (grund: string): Promise<Entscheid> => ({
     ergebnis: 'standard',
-    ort: await standardOrt(),
+    ort: await standardOrt(!!opt.trocken),
     regel: null,
     status: 200,
     meldung: '',
@@ -455,10 +478,11 @@ export async function ablageAuswerten(
     for (const z of r.ziele) for (const o of z === 'pool' ? await poolMitglieder() : [z]) if (!orte.includes(o)) orte.push(o)
     const zustand = await zielZustaende(orte, k.groesse)
     let geeignet = orte.filter((o) => zustand.get(o)?.verfuegbar)
-    // „größter freier Platz“ braucht bekannte Platzangaben — Ziele ohne Angabe (z. B. S3) zählen dabei nicht
+    // „größter freier Platz“: Ziele mit bekanntem Platz zuerst (größter zuerst); Ziele ohne Angabe (SFTP ohne statvfs, S3) kommen danach
+    // in der Reihenfolge der Regel dran — melden gar keine Platz, gilt also das erste verfügbare Ziel (wie beim Pool: nie stilles Ausweichen)
     if (r.strategie === 'frei') {
-      geeignet = geeignet.filter((o) => zustand.get(o)?.frei != null)
-      geeignet.sort((a, b) => zustand.get(b)!.frei! - zustand.get(a)!.frei!)
+      const platz = (o: string) => zustand.get(o)?.frei ?? -1
+      geeignet = [...geeignet].sort((a, b) => platz(b) - platz(a))
     } else if (r.strategie === 'abwechselnd' && geeignet.length) {
       const n = reihum.get(r.id) || 0
       if (!opt.trocken) reihum.set(r.id, (n + 1) % 1_000_000)
@@ -562,6 +586,20 @@ export async function ablageEntscheiden(ctx: AblageKontext): Promise<Entscheid> 
   return e
 }
 
+/** Erkennt Programme am Dateikopf (Windows PE/MZ, ELF, Mach-O) — unabhängig von Dateiname und vom gemeldeten Typ. */
+export function ausfuehrbarErkennen(kopf: Buffer): string | null {
+  if (kopf.length >= 4) {
+    if (kopf[0] === 0x7f && kopf[1] === 0x45 && kopf[2] === 0x4c && kopf[3] === 0x46) return 'application/x-elf'
+    if ([0xfeedface, 0xfeedfacf, 0xcefaedfe, 0xcffaedfe].includes(kopf.readUInt32BE(0))) return 'application/x-mach-binary'
+  }
+  if (kopf.length >= 0x40 && kopf[0] === 0x4d && kopf[1] === 0x5a) {
+    const pe = kopf.readUInt32LE(0x3c)
+    if (pe >= 0x40 && pe + 4 <= kopf.length && kopf.subarray(pe, pe + 4).equals(Buffer.from('PE\0\0', 'latin1')))
+      return 'application/vnd.microsoft.portable-executable'
+  }
+  return null
+}
+
 /** Erste zutreffende Regel, falls sie verbietet (eine zutreffende „speichern“-Regel beendet die Suche). */
 async function verbotSuchen(k: Aufgeloest): Promise<AblageRegel | null> {
   for (const r of await ablageRegelnLaden()) {
@@ -590,8 +628,15 @@ export async function ablageVerbotPruefen(ctx: AblageKontext): Promise<void> {
  */
 export async function ablageNachpruefen(g: Geschrieben, ctx: AblageKontext, entfernen: (ablage: string) => Promise<void>): Promise<void> {
   if (!(await ablageRegelnLaden()).some((r) => r.aktiv && r.aktion === 'verbieten')) return
+  // ein Programm erkennt man am Inhalt, nicht am gemeldeten Typ oder Namen: dann gilt es als „Andere Dateien“ mit dem echten Typ
+  const programm = ausfuehrbarErkennen(g.kopf)
   const r = await verbotSuchen(
-    kontextAufloesen({ ...ctx, groesse: g.size, mime: typErkennen(g.kopf, ctx.name, ctx.mime || ''), art: undefined })
+    kontextAufloesen({
+      ...ctx,
+      groesse: g.size,
+      mime: programm || typErkennen(g.kopf, ctx.name, ctx.mime || ''),
+      art: programm ? 'datei' : undefined
+    })
   )
   if (!r) return
   await entfernen(g.schluessel)
@@ -603,7 +648,9 @@ export function ablageKontextFuer(
   u: { id: number; role?: string; rolle_id?: number | null },
   d: { name: string; mime?: string; groesse?: number | null; ordnerId?: number | null }
 ): AblageKontext {
-  return { name: d.name, mime: d.mime, groesse: d.groesse ?? null, userId: u.id, rolle: u.role, rolleId: u.rolle_id, ordnerId: d.ordnerId ?? null }
+  // der Name wird genauso gesäubert wie beim Anlegen der Datei (sonst umgeht „evil.exe “ oder „evil.ex<Steuerzeichen>e“ ein Endungsverbot)
+  const name = dateiNameSaeubern(d.name) || 'datei'
+  return { name, mime: d.mime, groesse: d.groesse ?? null, userId: u.id, rolle: u.role, rolleId: u.rolle_id, ordnerId: d.ordnerId ?? null }
 }
 
 // ===== Übersicht für die Verwaltung =====
@@ -619,12 +666,14 @@ export async function zielAuswahl(): Promise<ZielAuswahl[]> {
   const zu = await zielZustaende(orte)
   const pool = await poolMitglieder()
   const aus: ZielAuswahl[] = orte.map((o) => ({ ...zu.get(o)!, art: o === 'lokal' ? 'lokal' : o === 's3' ? 's3' : 'sftp' }))
+  // Der Pool ist so verfügbar wie seine Mitglieder: online (alle), teilweise (einige) oder offline (keines)
+  const poolOk = pool.filter((o) => zu.get(o)?.verfuegbar).length
   aus.push({
     ort: 'pool',
     name: st('Pool (aktuelle Gruppe)', 'Pool (current group)'),
-    zustand: pool.length ? 'online' : 'nicht_eingerichtet',
+    zustand: !pool.length ? 'nicht_eingerichtet' : poolOk === pool.length ? 'online' : poolOk ? 'teilweise' : 'offline',
     frei: null,
-    verfuegbar: pool.length > 0,
+    verfuegbar: poolOk > 0,
     art: 'pool',
     mitglieder: pool
   })
@@ -649,4 +698,69 @@ export async function positionenNeu(): Promise<void> {
     `UPDATE ablage_regeln a SET position = n.pos FROM (SELECT id, row_number() OVER (ORDER BY position, id) AS pos FROM ablage_regeln) n
       WHERE a.id = n.id AND a.position <> n.pos`
   )
+}
+
+// ===== Prüfungen für andere Schreibwege =====
+
+/** Gibt es aktive Regeln, die an die Dateigröße gebunden sind? (dann braucht der Direkt-Upload die exakte Größe, siehe schreibenGenau) */
+export async function ablageGroessenRegeln(): Promise<boolean> {
+  return (await ablageRegelnLaden()).some((r) => r.aktiv && (r.bedingung.groesse_von_mb || r.bedingung.groesse_bis_mb))
+}
+
+/** Gibt es aktive Regeln, die den Ordner oder das Team der Datei auswerten? */
+async function ablageOrdnerRegeln(): Promise<boolean> {
+  return (await ablageRegelnLaden()).some((r) => r.aktiv && (r.bedingung.ordner?.length || r.bedingung.teams?.length))
+}
+
+/**
+ * Das Formularfeld „ordner“ stand im Multipart-Körper erst NACH der Datei: die Entscheidung fiel mit dem Ordner, der beim Dateibeginn
+ * bekannt war. Gilt jetzt eine andere Regel (oder verbietet eine den endgültigen Ordner), wird die Datei nicht angelegt. Wirft dann
+ * 415/403 bei einem Verbot, sonst 400 (der Ort würde nicht zur Regel des endgültigen Ordners passen).
+ */
+export async function ablageOrdnerNachtrag(ctx: AblageKontext, endgueltig: number | null): Promise<void> {
+  if ((ctx.ordnerId ?? null) === endgueltig || !(await ablageOrdnerRegeln())) return
+  const neu = { ...ctx, ordnerId: endgueltig }
+  await ablageVerbotPruefen(neu)
+  const [a, b] = [await ablageAuswerten(ctx, { trocken: true }), await ablageAuswerten(neu, { trocken: true })]
+  if (a.entscheid.regel?.id !== b.entscheid.regel?.id || (b.entscheid.ergebnis === 'abgelehnt' && a.entscheid.ergebnis !== 'abgelehnt'))
+    throw fehler(
+      400,
+      'Das Feld „ordner“ muss im Formular vor der Datei stehen (oder als Header x-vd-folder gesendet werden), weil für Ordner Ablage-Regeln gelten.',
+      'The “ordner” field must come before the file in the form (or be sent as the x-vd-folder header) because folder-based storage rules apply.'
+    )
+}
+
+/**
+ * Umbenennen/Verschieben einer vorhandenen Datei: nur ablehnen, wenn sie dadurch NEU unter ein Verbot fällt (eine Datei, die schon
+ * vorher unter derselben Regel verboten war, darf weiter umsortiert werden). `nach.name`/`nach.ordnerId` undefined = unverändert.
+ */
+export async function ablageUmstellenPruefen(
+  u: { id: number; role?: string; rolle_id?: number | null },
+  dateiId: string | number,
+  nach: { name?: string; ordnerId?: number | null }
+): Promise<void> {
+  if (!(await ablageRegelnLaden()).some((r) => r.aktiv && r.aktion === 'verbieten')) return
+  const f = await q1<{ name: string; mime: string; size: string; folder_id: number | null; verschluesselt: boolean }>(
+    'SELECT name, mime, size, folder_id, verschluesselt FROM files WHERE id = $1',
+    [dateiId]
+  )
+  if (!f) return
+  const kontext = (name: string, ordnerId: number | null) =>
+    kontextAufloesen(ablageKontextFuer(u, { name, mime: f.mime, groesse: Number(f.size), ordnerId }))
+  const alt = await verbotSuchen(kontext(f.name, f.folder_id))
+  const neu = await verbotSuchen(
+    kontext(nach.name !== undefined ? dateiNameSaeubern(nach.name) || f.name : f.name, nach.ordnerId !== undefined ? nach.ordnerId : f.folder_id)
+  )
+  if (neu && neu.id !== alt?.id) throw verbotWerfen(neu)
+}
+
+/**
+ * Ort für das Überschreiben einer Datei: bleibt am Ort der vorhandenen Datei, solange dieser noch beschreibbar ist (kein stilles
+ * Verschieben). Ist die Box inzwischen schreibgeschützt, ausgeschaltet, entfernt oder offline (oder S3 nicht mehr nutzbar), wird
+ * `undefined` geliefert: dann entscheiden Regeln und Speicher-Einstellung wie bei einer neuen Datei (die alte wird danach ersetzt).
+ */
+export async function ueberschreibOrt(ablage: string): Promise<Ort | undefined> {
+  const ort = ortVon(ablage)
+  if (ort === 'lokal') return ort
+  return (await zielZustaende([ort])).get(ort)?.verfuegbar ? ort : undefined
 }

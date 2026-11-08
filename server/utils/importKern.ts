@@ -467,14 +467,16 @@ async function einePosition(k: Kontext, p: ImportPosten): Promise<Ergebnis> {
       fileId: null
     }
 
-  // Ordner zuerst (die Ablage-Regeln kennen den Zielordner); Name, Typ und – falls bekannt – Größe aus dem Export
-  const ordner = await ordnerFuer(k, besitzer.id, [...(o.ordnerName ? [o.ordnerName] : []), ...(p.ordner || [])])
+  // Für die Ablage-Regeln zählt der tiefste schon vorhandene Ordner des Pfads (angelegt wird er erst nach dem erfolgreichen Schreiben,
+  // damit ein Verbot keine leeren Ordner hinterlässt); Name, Typ und – falls bekannt – Größe aus dem Export
+  const ordnerPfad = [...(o.ordnerName ? [o.ordnerName] : []), ...(p.ordner || [])]
+  const ordnerVorab = await ordnerBestehend(besitzer.id, ordnerPfad)
   const strom = await oeffnen(k, p.quelle)
   const g = await schreiben(
     strom,
     frei === Infinity ? 0 : frei,
     undefined,
-    ablageKontextFuer(besitzer, { name: p.name, mime: p.mime || '', groesse: p.groesse && p.groesse > 0 ? p.groesse : null, ordnerId: ordner })
+    ablageKontextFuer(besitzer, { name: p.name, mime: p.mime || '', groesse: p.groesse && p.groesse > 0 ? p.groesse : null, ordnerId: ordnerVorab })
   )
   if (!g.size && (p.groesse || 0) > 0) {
     await loeschen(g.schluessel)
@@ -493,6 +495,7 @@ async function einePosition(k: Kontext, p: ImportPosten): Promise<Ergebnis> {
       await fs.rm(tmp, { force: true }).catch(() => {})
     }
   }
+  const ordner = await ordnerFuer(k, besitzer.id, ordnerPfad)
   const erstellt = p.erstellt ? new Date(p.erstellt) : null
   const z = await dateiAnlegen(
     besitzer.id,
@@ -622,8 +625,8 @@ async function kontenZuordnen(k: Kontext, starter: Nutzer): Promise<void> {
   await protokollieren(k.imp.id, neu)
 }
 
-function ordnerFuer(k: Kontext, userId: number, pfad: string[]): Promise<number | null> {
-  const teile = pfad
+const pfadTeile = (pfad: string[]) =>
+  pfad
     .map((s) =>
       String(s)
         .replace(/[\u0000-\u001f]/g, '')
@@ -631,6 +634,23 @@ function ordnerFuer(k: Kontext, userId: number, pfad: string[]): Promise<number 
         .slice(0, 80)
     )
     .filter(Boolean)
+
+/** Tiefster schon vorhandener Ordner entlang des Pfads (legt nichts an); null = keiner. */
+async function ordnerBestehend(userId: number, pfad: string[]): Promise<number | null> {
+  let eltern: number | null = null
+  for (const name of pfadTeile(pfad)) {
+    const da: { id: number } | null | undefined = await q1<{ id: number }>(
+      'SELECT id FROM folders WHERE user_id = $1 AND name = $2 AND parent_id IS NOT DISTINCT FROM $3 ORDER BY id LIMIT 1',
+      [userId, name, eltern]
+    )
+    if (!da) break
+    eltern = da.id
+  }
+  return eltern
+}
+
+function ordnerFuer(k: Kontext, userId: number, pfad: string[]): Promise<number | null> {
+  const teile = pfadTeile(pfad)
   if (!teile.length) return Promise.resolve(null)
   const schl = `${userId}|${teile.join('\u0000')}`
   let p = k.ordner.get(schl)
