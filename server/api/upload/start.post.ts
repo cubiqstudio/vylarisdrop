@@ -2,6 +2,7 @@ import { randomBytes } from 'node:crypto'
 import { q } from '../../utils/db'
 import { requireUser } from '../../utils/auth'
 import { zielOrt } from '../../utils/speicher'
+import { ablageKontextFuer } from '../../utils/ablageRegeln'
 import { dateiGroesseMax } from '../../utils/hochladen'
 import { groesseText, kontingentPruefen, reserviert, zielOrdnerPruefen } from '../../utils/quota'
 import { requireRecht } from '../../utils/teams'
@@ -26,6 +27,8 @@ export default defineEventHandler(async (event) => {
     )
   // Das Konto muss in den Ordner hochladen dürfen, bevor Team-Kontingentzahlen in einer Fehlermeldung erscheinen
   await zielOrdnerPruefen(u.id, ordner)
+  // Ablage-Regeln: Ort und Verbote stehen schon beim Start fest (Name, Typ und Größe sind bekannt); das Fortsetzen bleibt an diesem Ort
+  const speicher = await zielOrt(ablageKontextFuer(u, { name, mime: String(b?.mime || ''), groesse: size, ordnerId: ordner }))
   // Frühprüfung gegen Konto- und Team-Kontingent (laufende Chunk-Uploads sind eingeplant); verbindlich prüft dateiAnlegen()
   await kontingentPruefen(u, size, { ordner, zusatz: await reserviert(u.id) })
   const offen = await q<{ n: string }>('SELECT count(*) AS n FROM uploads WHERE user_id = $1', [u.id])
@@ -39,7 +42,7 @@ export default defineEventHandler(async (event) => {
   const teile = Math.ceil(size / TEIL)
   await q(
     'INSERT INTO uploads (id, user_id, name, size, mime, teile, teil_groesse, optionen, speicher) VALUES ($1,$2,$3,$4,$5,$6,$7,$8::jsonb,$9)',
-    [id, u.id, name, size, String(b?.mime || '').slice(0, 120), teile, TEIL, JSON.stringify(optionen), await zielOrt()]
+    [id, u.id, name, size, String(b?.mime || '').slice(0, 120), teile, TEIL, JSON.stringify(optionen), speicher]
   )
   return { id, teilGroesse: TEIL, teile }
 })

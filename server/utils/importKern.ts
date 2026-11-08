@@ -9,6 +9,7 @@ import { arbeitBeginnt, arbeitEndet, KNOTEN_ID, meinOrdner, melde, NUR_WEB } fro
 import { hashPw, type Nutzer } from './auth'
 import { arbeitsPfad, datenordner, loeschen, nebenSchreiben, schreiben } from './speicher'
 import { dateiAnlegen } from './dateien'
+import { ablageKontextFuer } from './ablageRegeln'
 import { freierPlatz } from './hochladen'
 import { sLang } from './settings'
 import { APPLE_DATEI_HOST, icloudUrl, type IcloudQuelle } from './icloud'
@@ -466,8 +467,15 @@ async function einePosition(k: Kontext, p: ImportPosten): Promise<Ergebnis> {
       fileId: null
     }
 
+  // Ordner zuerst (die Ablage-Regeln kennen den Zielordner); Name, Typ und – falls bekannt – Größe aus dem Export
+  const ordner = await ordnerFuer(k, besitzer.id, [...(o.ordnerName ? [o.ordnerName] : []), ...(p.ordner || [])])
   const strom = await oeffnen(k, p.quelle)
-  const g = await schreiben(strom, frei === Infinity ? 0 : frei)
+  const g = await schreiben(
+    strom,
+    frei === Infinity ? 0 : frei,
+    undefined,
+    ablageKontextFuer(besitzer, { name: p.name, mime: p.mime || '', groesse: p.groesse && p.groesse > 0 ? p.groesse : null, ordnerId: ordner })
+  )
   if (!g.size && (p.groesse || 0) > 0) {
     await loeschen(g.schluessel)
     return { status: 'fehler', meldung: de() ? 'kam leer an' : 'arrived empty', bytes: 0, fileId: null }
@@ -485,7 +493,6 @@ async function einePosition(k: Kontext, p: ImportPosten): Promise<Ergebnis> {
       await fs.rm(tmp, { force: true }).catch(() => {})
     }
   }
-  const ordner = await ordnerFuer(k, besitzer.id, [...(o.ordnerName ? [o.ordnerName] : []), ...(p.ordner || [])])
   const erstellt = p.erstellt ? new Date(p.erstellt) : null
   const z = await dateiAnlegen(
     besitzer.id,

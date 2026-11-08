@@ -4,7 +4,8 @@ import { clientIp, limit, type Nutzer } from '../../../../utils/auth'
 import { loeschen, schreiben } from '../../../../utils/speicher'
 import { basisUrl, dateiAnlegen, fuerPanel, links, type DateiZeile } from '../../../../utils/dateien'
 import { dateiGroesseMax, freierPlatz } from '../../../../utils/hochladen'
-import { istQuotaFehler } from '../../../../utils/quota'
+import { istQuotaFehler, nutzlastSchaetzen } from '../../../../utils/quota'
+import { ablageKontextFuer } from '../../../../utils/ablageRegeln'
 import { getUploads } from '../../../../utils/settings'
 import { imHintergrund, speicherPruefen } from '../../../../utils/benachrichtigen'
 import { webhookAusloesen } from '../../../../utils/webhooks'
@@ -61,7 +62,14 @@ export default defineEventHandler(async (event) => {
       felder[n] = v
     })
     bb.on('file', (_f, strom, info) => {
-      schreiben(strom, max === Infinity ? 0 : max)
+      // Ablage-Regeln gelten für das Konto des Empfängers (der Besitzer der Anfrage), Größe = Content-Length abzüglich Rahmen
+      const ctx = ablageKontextFuer(besitzer, {
+        name: info.filename || 'datei',
+        mime: info.mimeType,
+        groesse: nutzlastSchaetzen(Number(getRequestHeader(event, 'content-length')) || undefined, String(getRequestHeader(event, 'content-type') || '')) ?? null,
+        ordnerId: a.folder_id
+      })
+      schreiben(strom, max === Infinity ? 0 : max, undefined, ctx)
         .then(async (g) => {
           if (!g.size) return ende(() => resolve(null))
           const frei = await q(
@@ -112,6 +120,14 @@ export default defineEventHandler(async (event) => {
           ende(() => resolve({ name: f.name, slug: f.slug, datei: { ...f, anfrage_id: a.id, von_gast: gast, notiz } }))
         })
         .catch((e: any) => {
+          // Ablage-Regel (Verbot/Ablehnung): vor dem Schreiben, der Rest der Anfrage wird nicht mehr gelesen
+          if (e?.ablage) {
+            req.unpipe(bb)
+            bb.removeAllListeners()
+            req.resume()
+            setResponseHeader(event, 'Connection', 'close')
+            return ende(() => reject(e))
+          }
           if (e?.code === 'ZU_GROSS') {
             req.unpipe(bb)
             bb.removeAllListeners()

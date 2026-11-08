@@ -53,9 +53,11 @@ async function allePruefen() {
 
 async function umschalten(z: any) {
   try {
-    await api(`/api/speicher/ziele/${z.id}`, { method: 'PUT', body: { aktiv: !z.aktiv } })
+    const r: any = await api(`/api/speicher/ziele/${z.id}`, { method: 'PUT', body: { aktiv: !z.aktiv } })
     await refresh()
     ok(z.aktiv ? t('Erweiterung deaktiviert', 'Add-on disabled') : t('Erweiterung aktiviert', 'Add-on enabled'))
+    // Ablage-Regeln nennen diese Erweiterung noch: Hinweis (die Regeln überspringen sie, solange sie aus ist)
+    if (r?.warnung) fehler(r.warnung)
   } catch (e: any) {
     fehler(e.message)
   }

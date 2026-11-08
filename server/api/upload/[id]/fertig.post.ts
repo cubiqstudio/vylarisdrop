@@ -6,6 +6,7 @@ import { q, q1, ereignis } from '../../../utils/db'
 import { clientIp, requireUser } from '../../../utils/auth'
 import { ortGueltig, schreiben, teileLoeschen, teilLesen, type Ort } from '../../../utils/speicher'
 import { basisUrl, dateiAnlegen, fuerPanel } from '../../../utils/dateien'
+import { ablageKontextFuer } from '../../../utils/ablageRegeln'
 import { dateiGroesseMax } from '../../../utils/hochladen'
 import { dateinameEindeutig } from '../../../utils/dateiNamen'
 import { requireRecht } from '../../../utils/teams'
@@ -81,7 +82,8 @@ export default defineEventHandler(async (event) => {
     const grenzen = await uploadGrenzen(u, ordner, await dateiGroesseMax(u))
     let g
     try {
-      g = await schreiben(strom, grenzen.max, ziel)
+      // am Startort; Ablage-Regeln dürfen den Ort nicht mehr ändern, ein inzwischen eingeführtes Verbot gilt aber
+      g = await schreiben(strom, grenzen.max, ziel, ablageKontextFuer(u, { name: up.name, mime: up.mime, groesse: Number(up.size), ordnerId: ordner }))
     } catch (e: any) {
       strom.destroy()
       if (e?.code === 'ZU_GROSS') throw grenzFehler(grenzen, Number(up.size))

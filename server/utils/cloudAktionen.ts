@@ -8,6 +8,7 @@ import { eindeutigerName, mitNamenssperre, namenSaeubern, sperrSchluessel } from
 import { inPapierkorb } from './papierkorb'
 import { webhookAusloesen } from './webhooks'
 import { dateiAnlegen, type DateiZeile } from './dateien'
+import { ablageKontextFuer } from './ablageRegeln'
 import { dateiGroesseMax } from './hochladen'
 import { groesseText, istQuotaFehler, kontingentPruefen, ordnerBaumBytes, teamVonOrdner, verschiebenPruefen, type Ausf } from './quota'
 import { lesen, loeschen, schreiben } from './speicher'
@@ -461,12 +462,19 @@ export async function kopieren(u: Nutzer, b: z.infer<typeof ZielBody>, event: H3
   const fehlerListe: string[] = []
   let kopiert = 0
   let quotaFehler: unknown = null
+  let ablageFehler: unknown = null // Ablage-Regel verbietet/lehnt ab: deren Status und Meldung sollen beim Client ankommen
   const angelegteOrdner: number[] = []
   const kopierDatei = async (f: DateiZeile, ordnerId: number | null, teamId: number | null) => {
     try {
       await mitNamenssperre(sperrSchluessel(u.id, ordnerId), async () => {
         const name = await eindeutigerName({ ordnerId, userId: u.id, teamId, name: f.name, art: 'datei' })
-        const g = await schreiben(lesen(f.ablage), 0)
+        // Die Kopie folgt den Ablage-Regeln (Name, Typ, Größe der Quelle, Konto, Zielordner)
+        const g = await schreiben(
+          lesen(f.ablage),
+          0,
+          undefined,
+          ablageKontextFuer(u, { name, mime: f.mime, groesse: Number(f.size), ordnerId })
+        )
         if (f.sha256 && g.sha256 !== f.sha256) {
           await loeschen(g.schluessel)
           throw new Error('Prüfsumme stimmt nicht')
@@ -487,6 +495,7 @@ export async function kopieren(u: Nutzer, b: z.infer<typeof ZielBody>, event: H3
       kopiert++
     } catch (e: any) {
       if (istQuotaFehler(e)) quotaFehler ??= e
+      else if (e?.ablage) ablageFehler ??= e
       fehlerListe.push(`${f.name}: ${String(e?.message || e).slice(0, 120)}`)
     }
   }
@@ -542,6 +551,7 @@ export async function kopieren(u: Nutzer, b: z.infer<typeof ZielBody>, event: H3
     // Nichts wurde kopiert: die schon angelegten (leeren) Ordner wieder entfernen
     if (angelegteOrdner.length) await q('DELETE FROM folders WHERE id = ANY($1::int[])', [angelegteOrdner])
     if (quotaFehler) throw quotaFehler
+    if (ablageFehler) throw ablageFehler
     throw fehler(500, `Kopieren fehlgeschlagen: ${fehlerListe[0]}`, `Copy failed: ${fehlerListe[0]}`)
   }
   return { ok: true, kopiert, ordner: neueOrdner.length, fehler: fehlerListe.length ? fehlerListe.slice(0, 10) : undefined }

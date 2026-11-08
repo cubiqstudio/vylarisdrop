@@ -6,6 +6,7 @@ import { pipeline } from 'node:stream/promises'
 import { getSpeicher, s3Groesse, s3Hochladen, s3Lesen, s3Loeschen, s3LoeschenPraefix } from './s3'
 import { istPro } from './lizenz'
 import { alsHttpFehler, zielLaden } from './sftpZiele'
+import { ablageEntscheiden, ablageNachpruefen, ablageVerbotPruefen, type AblageKontext } from './ablageRegeln'
 import {
   loeschenVormerken,
   sftpBereit,
@@ -73,7 +74,17 @@ export async function arbeitsPfad(endung = ''): Promise<string> {
   return join(d, `vd-${randomBytes(8).toString('hex')}${endung}`)
 }
 
-export async function zielOrt(): Promise<Ort> {
+/**
+ * Ort für neue Dateien. Ohne `ctx` gilt allein die Speicher-Einstellung (Sicherungen, Umzug …). Mit `ctx` (Name, Typ, Größe, Konto,
+ * Ordner der Datei) entscheiden zuerst die Ablage-Regeln (ablageRegeln.ts); sie können auch ablehnen (wirft 415/403/503).
+ */
+export async function zielOrt(ctx?: AblageKontext): Promise<Ort> {
+  if (ctx) return (await ablageEntscheiden(ctx)).ort || (await standardOrt())
+  return standardOrt()
+}
+
+/** Die Speicher-Einstellung allein (ohne Ablage-Regeln). */
+export async function standardOrt(): Promise<Ort> {
   const w = await getSpeicher()
   if (w.art === 'pool') return poolWahl(w.mitglieder || ['lokal'], w.strategie === 'abwechselnd' ? 'abwechselnd' : 'frei')
   if (w.art === 'sftp' && w.sftpZiel) {
@@ -113,8 +124,25 @@ export interface Geschrieben {
   kopf: Buffer
 }
 
-export async function schreiben(quelle: Readable, maxBytes: number, ort?: Ort): Promise<Geschrieben> {
-  const wo = ort || (await zielOrt())
+/**
+ * Schreibt einen Strom als neue Datei. `ort` erzwingt den Ort (Umzug, Sicherung, abgeleitete Dateien, Chunk-Upload am Startort).
+ * `ctx` (Name, Typ, Größe, Konto, Ordner) schaltet die Ablage-Regeln ein: ohne `ort` bestimmen sie das Ziel, mit `ort` gelten nur die
+ * Verbote. Verbote und Ablehnungen kommen, BEVOR geschrieben wird; ein Verbot wird nach dem Schreiben mit echter Größe und erkannter
+ * Dateiart noch einmal geprüft (dann wird die Datei wieder entfernt).
+ */
+export async function schreiben(quelle: Readable, maxBytes: number, ort?: Ort, ctx?: AblageKontext): Promise<Geschrieben> {
+  let wo = ort
+  if (ctx) {
+    if (wo) await ablageVerbotPruefen(ctx)
+    else wo = (await ablageEntscheiden(ctx)).ort || undefined
+  }
+  wo ||= await standardOrt()
+  const g = await schreibenKern(quelle, maxBytes, wo)
+  if (ctx) await ablageNachpruefen(g, ctx, loeschen)
+  return g
+}
+
+async function schreibenKern(quelle: Readable, maxBytes: number, wo: Ort): Promise<Geschrieben> {
   const k = neuerSchluessel()
   const schluessel = wo === 'lokal' ? k : `${wo === 's3' ? 's3' : wo}:${k}`
   const hash = createHash('sha256')

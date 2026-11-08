@@ -488,6 +488,29 @@ Bei Hetzner: Storage Box mit SSH-Unterstützung und externer Erreichbarkeit, **P
 - Angefangene Uploads in Stücken liegen vorübergehend im Datenordner des Servers und werden beim Abschluss auf den Zielspeicher geschrieben.
 - Geprüft wurde gegen einen ssh2-basierten Testserver (`scripts/test-sftp-server.mjs`). Live gegen eine Hetzner Storage Box, Synology oder QNAP wurde nicht getestet; die Hilfetexte im Assistenten folgen deren Dokumentation.
 
+<!-- Ablage-Regeln: Anfang -->
+## Ablage-Regeln (Wohin kommt was?)
+
+Admins und der Inhaber legen fest, **in welchem Speicher neue Dateien landen** und was **gar nicht gespeichert** werden darf. Die Regeln stehen auf der Seite **Speicher-Regeln** (`/regeln`) im Reiter **Ablage: Wohin kommt was?** (nur für Admins sichtbar, die Schnittstelle `/api/regeln/ablage/*` ist serverseitig gesperrt). Der Reiter **Aufräumen nach Zeit** mit den Lebenszyklus-Regeln (Papierkorb, Löschen, Archiv nach S3) ist unverändert.
+
+- **Ziele:** *Dieser Server*, *S3* (Pro), jede **Storage Box** (SFTP-Speicher-Erweiterung) oder der **Pool** (die aktuell eingestellte Gruppe). Eine Regel kann ein Ziel oder eine Liste nennen.
+- **Bedingungen** (alle optional, alle angegebenen müssen zutreffen): Dateiart (Bild, Video, Audio, Text, andere), Dateityp (MIME, Anfang wie `image/` oder exakt), Endungen (ohne Beachtung der Schreibweise, auch `tar.gz`), Größe mindestens/höchstens (ganze MB), Konten, Rollen (Inhaber, Admin, Nutzer, eigene Rollen), Ordner (mit Unterordnern) und Team-Ordner.
+- **Aktion:** *Speichern in …* (mit Strategie *erste verfügbare*, *größter freier Platz* oder *abwechselnd*) oder *Nicht speichern* mit eigener Meldung (z. B. „Ausführbare Dateien sind hier nicht erlaubt“). Ein Verbot antwortet mit **415** (Regel nach Dateityp) bzw. **403** und der Meldung.
+- **Reihenfolge:** Die erste zutreffende, eingeschaltete Regel von oben entscheidet. Ohne Treffer gilt die bisherige Speicher-Einstellung („Alles andere → …“ am Ende der Liste). Der Kasten **Datei testen** zeigt für Name, Größe, Konto und Ordner, welche Regel greift und warum, ohne etwas zu speichern.
+- **Verfügbar** heißt: aktiv, beschreibbar, nicht offline gemeldet, bei S3 mit Pro und eingerichtetem Bucket, bei *größter freier Platz* mit bekanntem freiem Platz (S3 und Server ohne Platzangabe zählen dort nicht) und mit genug Platz für die Datei. Unmittelbar vor dem Schreiben prüft VylarisCloud die Box live (höchstens 5 s); eine nicht erreichbare Box gilt dann 15 s lang als ausgefallen.
+- **Wenn kein Ziel verfügbar ist** (je Regel): *nächste Regel*, *lokal* (auf den Server) oder *ablehnen* (503 mit der Meldung der Regel, nichts wird geschrieben). Ein stilles Ausweichen gibt es nie; schlägt das Schreiben selbst fehl, kommt 503/502.
+- **Regeln gelten nur für NEUE Dateien.** Vorhandene Dateien werden nie verschoben (dafür der Umzug unter *Speicher-Erweiterungen*) und bleiben dort, wo ihr Ablage-Schlüssel sie nennt.
+- **Entfernte oder ausgeschaltete Boxen:** Regeln verweisen per Text auf Orte. Ein unbekanntes, ausgeschaltetes oder schreibgeschütztes Ziel gilt als „nicht verfügbar“ (die Regel bleibt gültig, der Rückfall greift). Das **Entfernen** einer Box wird verweigert (409), solange eine **aktive** Regel sie nennt; **Ausschalten** oder **Schreibschutz** warnt.
+
+**Wo die Regeln greifen:** Direkt-Upload (Weboberfläche, API v1, ShareX, App), Upload in Stücken (der Ort steht beim Start fest und bleibt bis zum Abschluss, auch wenn die Regeln dazwischen geändert werden), Gast-Upload über Datei-Anfragen (Konto des Empfängers), WebDAV `PUT` (neue Datei), Kopieren in der Cloud und per WebDAV `COPY` (Kopie folgt den Regeln des Ziels), Import. **Überschreiben** (WebDAV `PUT` auf eine vorhandene Datei, *Inhalt ersetzen* im Bildeditor) bleibt am Ort der Datei, damit nichts still wandert; nur Verbote gelten. Nicht betroffen sind Vorschaubilder, Streifen und Wellenformen (bleiben am Ort der Quelle), die Sicherung, der Umzug, Pastes (liegen in der Datenbank) und das Kontingent (ortsunabhängig).
+
+**Unbekannte Größe:** Beim Direkt-Upload kennt der Server nur die Gesamtlänge der Anfrage (Rahmen abgezogen, bei mehreren Dateien der Rest), bei WebDAV mit `Transfer-Encoding: chunked` gar nichts. Eine **Größenbedingung gilt bei unbekannter Größe als nicht erfüllt** (die Regel trifft nicht zu; so landet nicht jede Datei ohne Längenangabe in einer „ab X MB“-Regel). **Verbote werden nach dem Schreiben mit der echten Größe und der aus dem Inhalt erkannten Dateiart noch einmal geprüft**; trifft dann ein Verbot zu, wird die Datei wieder entfernt (403/415). Verschoben wird nach dem Schreiben nie. Sicherste Lösung, weil sie weder fälschlich verbietet noch etwas durchlässt; Preis: Eine Ziel-Regel nach Größe greift bei unbekannter Größe nicht. Der Ordner eines Direkt-Uploads zählt nur, wenn er vor der Datei im Formular steht oder als Kopfzeile `X-VD-Folder` kommt; die Weboberfläche lädt in Stücken, dort steht der Ordner schon beim Start fest.
+
+**Mehrere Server:** Die Regelliste wird wenige Sekunden zwischengespeichert; Änderungen melden alle Knoten über die vorhandene Benachrichtigung `vd_settings`. Die Reihenfolge bei *abwechselnd* zählt je Knoten.
+
+Geprüft mit `scripts/test-ablage.sh` (zwei SFTP-Testserver als Boxen A und B plus lokal; Beschreibung im Kopf der Datei).
+<!-- Ablage-Regeln: Ende -->
+
 ## Umgebungsvariablen
 
 Die mitgelieferte `docker-compose.yml` (und `compose.node.yml`) reicht diese Variablen aus der `.env` an den Container weiter:
