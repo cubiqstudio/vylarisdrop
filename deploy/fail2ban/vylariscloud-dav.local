@@ -1,0 +1,19 @@
+# fail2ban-Jail fuer den direkten WebDAV-Hostnamen von VylarisCloud.
+# Installation (als root; Pfad zur Installation anpassen, hier /opt/vylariscloud):
+#   cp vylariscloud-dav.conf /etc/fail2ban/filter.d/
+#   cp vylariscloud-dav.local /etc/fail2ban/jail.d/vylariscloud-dav.local
+#   systemctl restart fail2ban && fail2ban-client status vylariscloud-dav
+# Docker veroeffentlicht Ports an ufw/INPUT vorbei: Sperren muessen deshalb in der Kette DOCKER-USER stehen (siehe chain unten).
+[vylariscloud-dav]
+enabled   = true
+filter    = vylariscloud-dav
+logpath   = /opt/vylariscloud/caddy-logs/dav-zugriff.log
+backend   = auto
+port      = http,https
+protocol  = tcp
+banaction = iptables-multiport
+chain     = DOCKER-USER
+maxretry  = 8
+findtime  = 10m
+bantime   = 1h
+# eigene feste Adressen nie sperren, z. B.: ignoreip = 127.0.0.1/8 ::1 203.0.113.7

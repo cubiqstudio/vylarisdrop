@@ -1,0 +1,87 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- Setup -->
+    <string name="einrichtung_untertitel">Connect the app to your VylarisCloud server.</string>
+    <string name="server_adresse">Server address (e.g. https://cloud.example.com)</string>
+    <string name="koppelcode">Pairing code (optional)</string>
+    <string name="koppelcode_hilfe">Format ABCD-EFGH. Create a code in the panel under \"Connected devices\". Without a code you simply sign in on the website as usual.</string>
+    <string name="verbinden">Connect</string>
+    <string name="adresse_leer">Please enter your server address.</string>
+    <string name="adresse_ungueltig">That is not a valid address.</string>
+    <string name="adresse_schema">Only https:// addresses (or http:// on the local network) are possible.</string>
+    <string name="adresse_zugangsdaten">Please enter the address without username and password.</string>
+    <string name="adresse_http_warnung">Warning: http:// is unencrypted and only allowed for addresses on the local network (e.g. 192.168.x.x). I have inserted https:// instead, please check the address.</string>
+    <string name="code_ungueltig">The pairing code has 8 characters, e.g. ABCD-EFGH.</string>
+    <string name="fehler_netz_detail">The server cannot be reached. Check the address and your internet connection. (%1$s)</string>
+    <string name="fehler_kein_server">No VylarisCloud server is running at this address.</string>
+    <string name="fehler_code">The pairing code is unknown, expired or has already been used.</string>
+    <string name="fehler_zu_viele">Too many attempts. Please wait a moment.</string>
+    <string name="fehler_server">The server says: %1$s</string>
+    <string name="token_speichern_fehler">This device could not store the token securely. You will have to sign in on the web.</string>
+    <string name="deeplink_titel">Connect this device?</string>
+    <string name="deeplink_koppeln">Connect this device to %1$s? Only confirm if you created this link yourself in your VylarisCloud.</string>
+    <string name="fehler_umleitung">The server redirects to a different address: %1$s. Enter that address yourself if you trust it.</string>
+    <string name="deeplink_wechseln">You are connected to %1$s. Connect to %2$s and replace the current connection?</string>
+
+    <!-- Main window -->
+    <string name="fehler_titel">No connection</string>
+    <string name="fehler_netz">The page could not be loaded. Check your internet connection.</string>
+    <string name="fehler_zertifikat">The server\'s security certificate is not trusted. The connection was cancelled for your safety.</string>
+    <string name="erneut_versuchen">Try again</string>
+    <string name="server_aendern">Change server</string>
+    <string name="datei_waehlen">Choose file</string>
+    <string name="kein_programm">No app is installed for this.</string>
+    <string name="http_blockiert">Unencrypted connections are only allowed on the local network.</string>
+    <string name="download_gestartet">Download started: %1$s</string>
+    <string name="download_fehler">The download failed.</string>
+    <string name="gespeichert_downloads">Saved to Downloads: %1$s</string>
+
+    <!-- Settings -->
+    <string name="kurzbefehl_einstellungen">Settings</string>
+    <string name="einstellungen_titel">Settings</string>
+    <string name="einst_gekoppelt">This device is paired (%1$s). Sharing from other apps is active.</string>
+    <string name="einst_nicht_gekoppelt">Not signed in yet. Sign in on the website and this device will be paired automatically.</string>
+    <string name="einst_version">Version %1$s</string>
+    <string name="verknuepfung_hinzufuegen">Shortcut on the home screen</string>
+    <string name="verknuepfung_hilfe">Adds an icon with your brand logo if your server has one set.</string>
+    <string name="verknuepfung_angefragt">Confirm adding it in your home screen dialog.</string>
+    <string name="verknuepfung_nicht_unterstuetzt">Your home screen does not support shortcuts.</string>
+    <string name="verknuepfung_fehler">The shortcut could not be created.</string>
+    <string name="geraete_verwalten">Open connected devices in the browser</string>
+    <string name="server_wechseln">Sign out and change server</string>
+    <string name="server_wechseln_hilfe">Revokes this device, deletes sign-in and local data and opens the setup.</string>
+    <string name="server_wechseln_frage">This device will be signed out and all local app data will be deleted.</string>
+
+    <!-- Share and upload -->
+    <string name="teilen_nichts">Nothing was passed to upload.</string>
+    <string name="teilen_anmelden_titel">Sign in first</string>
+    <string name="teilen_anmelden_text">Please open the VylarisCloud app and sign in first, then you can share files from other apps.</string>
+    <string name="app_oeffnen">Open app</string>
+    <string name="teilen_gestartet">Upload started</string>
+    <string name="teilen_fehler">The upload could not be started.</string>
+    <string name="kanal_fortschritt">Upload progress</string>
+    <string name="kanal_ergebnis">Upload result</string>
+    <string name="upload_vorbereiten">Preparing …</string>
+    <string name="upload_titel">Uploading:</string>
+    <string name="upload_titel_n">Uploading (%1$d/%2$d):</string>
+    <string name="upload_abbrechen">Cancel</string>
+    <string name="upload_abgebrochen">Upload cancelled.</string>
+    <string name="upload_fehlgeschlagen">Upload failed</string>
+    <string name="upload_fehler_netz">%1$s: no connection to the server.</string>
+    <string name="upload_fehler_gross">%1$s: the file is too large. %2$s</string>
+    <string name="upload_fehler_server">%1$s: %2$s</string>
+    <string name="upload_fehler_lesen">%1$s: the file could not be read.</string>
+    <string name="upload_fehler_unbekannt">An unexpected error occurred while uploading.</string>
+    <string name="hochgeladen">Uploaded</string>
+    <plurals name="hochgeladen_n">
+        <item quantity="one">%d file uploaded</item>
+        <item quantity="other">%d files uploaded</item>
+    </plurals>
+    <plurals name="hochgeladen_n_text">
+        <item quantity="one">%1$s and %2$d more file</item>
+        <item quantity="other">%1$s and %2$d more files</item>
+    </plurals>
+    <string name="link_kopieren">Copy link</string>
+    <string name="link_kopiert">Link copied</string>
+    <string name="oeffnen">Open</string>
+</resources>

@@ -1,6 +1,8 @@
 <script setup lang="ts">
 // Eigene Belegung im Detail: Balken nach Dateiart, Papierkorb, Kontingent-Quelle und Kontingente der eigenen Teams
 const { data } = await (useFetch as any)('/api/quota/me', { key: 'quota-me' })
+// Live: Belegung nach Dateiart und Papierkorb aktualisieren sich bei Änderungen von überall (gemeinsam gebündelt, still bei Fehlern)
+useLiveDaten({ daten: [{ schluessel: 'quota-me', url: '/api/quota/me' }], themen: ['dateien', 'papierkorb'], mind: 2000 })
 const q = computed(() => data.value)
 const ARTEN = [
   { k: 'bild', c: '#1e73be', de: 'Bilder', en: 'Images' },
@@ -18,7 +20,8 @@ const zeilen = computed(() => [
     anzahl: Number(q.value?.proArt?.[a.k]?.anzahl || 0),
     muster: false
   })),
-  { k: 'korb', farbe: '', text: t('Papierkorb', 'Trash'), bytes: Number(q.value?.papierkorb || 0), anzahl: 0, muster: true }
+  { k: 'korb', farbe: '', text: t('Papierkorb', 'Trash'), bytes: Number(q.value?.papierkorb || 0), anzahl: 0, muster: true },
+  { k: 'reserviert', farbe: '#8b5cf6', text: t('Für Boxen & Buckets reserviert', 'Reserved for boxes & buckets'), bytes: Number(q.value?.eingeplant || 0), anzahl: 0, muster: false }
 ])
 const segmente = computed(() => zeilen.value.map((z) => ({ bytes: z.bytes, farbe: z.farbe, muster: z.muster })))
 const QUELLE: Record<string, [string, string]> = {
@@ -51,6 +54,13 @@ const QUELLE: Record<string, [string, string]> = {
         <b class="zahl">{{ groesse(z.bytes) }}</b>
       </li>
     </ul>
+    <p v-if="q.ueberplant" class="meldung meldung-warn klein" role="alert">
+      {{ t('Dein Konto ist überplant: Dateien, Papierkorb und reservierter Speicher sind mehr als dein Kontingent. Nichts wurde gelöscht, aber neue Uploads, Boxen und Buckets werden abgelehnt.', 'Your account is over-planned: files, trash and reserved storage exceed your quota. Nothing was deleted, but new uploads, boxes and buckets are rejected.') }}
+    </p>
+    <p v-if="q.eingeplant > 0" class="sehrleise klein">
+      {{ t('Reserviert ist das Kontingent deiner Storage-Boxen und S3-Buckets — es zählt voll mit, auch wenn noch Platz darin ist. Löschen oder Verkleinern gibt es sofort frei.', 'Reserved is the quota of your storage boxes and S3 buckets — it counts in full, even if there is still room inside. Deleting or shrinking frees it immediately.') }}
+      <NuxtLink to="/speicher">{{ t('Zu Speicher', 'Go to storage') }}</NuxtLink>
+    </p>
     <p class="sehrleise klein">
       {{ t(QUELLE[q.source]![0], QUELLE[q.source]![1]) }}.
       {{ t('Der Papierkorb zählt mit, bis du ihn leerst oder die Dateien nach 30 Tagen endgültig gelöscht werden.', 'The trash counts until you empty it or the files are deleted for good after 30 days.') }}

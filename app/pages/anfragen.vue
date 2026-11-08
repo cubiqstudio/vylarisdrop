@@ -80,6 +80,24 @@ async function aufnahmeAendern(a: any, wert: Record<string, unknown>) {
     fehler(e.message)
   }
 }
+// Live-Aktualisierung: Anfragen (Zähler, Status), Ordnernamen und der geöffnete Eingang werden still abgeglichen. Offene Dialoge,
+// Eingabefelder und abspielende Aufnahmen bleiben unberührt (unveränderte Daten werden gar nicht erst ersetzt).
+const gleich = (a: unknown, b: unknown) => JSON.stringify(a) === JSON.stringify(b)
+async function listeAbgleichen() {
+  const [r, o] = await Promise.all([api('/api/anfragen'), api('/api/folders')])
+  if (!gleich(r, data.value)) data.value = r
+  if (!gleich(o, ordnerDaten.value)) ordnerDaten.value = o
+  if (neu.ordner != null && !(o.ordner || []).some((x: any) => x.id === neu.ordner)) neu.ordner = null
+  if (eingangAuf.value != null && !(r.anfragen || []).some((x: any) => x.id === eingangAuf.value)) eingangAuf.value = null
+}
+async function eingangAbgleichen() {
+  const id = eingangAuf.value
+  if (id == null || !eingang.value[id]) return // nur ein bereits geladener, geöffneter Eingang
+  const r: any = await api(`/api/anfragen/${id}/eingang`)
+  if (eingangAuf.value === id && !gleich(r.dateien, eingang.value[id])) eingang.value = { ...eingang.value, [id]: r.dateien }
+}
+useLive(['anfragen', 'ordner'], liveDrosseln(listeAbgleichen))
+useLive(['anfragen', 'dateien'], liveDrosseln(eingangAbgleichen))
 const MINUTEN = [1, 5, 15, 30]
 async function umschalten(a: any) {
   try {

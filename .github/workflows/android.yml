@@ -1,0 +1,107 @@
+name: Android-App (APK und AAB)
+
+on:
+  push:
+    branches: ['**']
+    tags: ['v*', 'app-v*']
+    paths:
+      - 'android/**'
+      - '.github/workflows/android.yml'
+  workflow_dispatch:
+
+concurrency:
+  group: android-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  apk:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    defaults:
+      run:
+        working-directory: android
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+
+      # Android-SDK (Plattform 35, Build-Tools 35) samt Lizenzen
+      - uses: android-actions/setup-android@v3
+        with:
+          packages: 'platforms;android-35 build-tools;35.0.0 platform-tools'
+
+      # Die JVM-Tests starten den Stub-Server (android/test-server/stub.mjs)
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Gradle-Cache
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.gradle/caches
+            ~/.gradle/wrapper
+          key: gradle-${{ runner.os }}-${{ hashFiles('android/**/*.gradle.kts', 'android/gradle/wrapper/gradle-wrapper.properties') }}
+          restore-keys: gradle-${{ runner.os }}-
+
+      - name: Schlüsselspeicher bereitstellen (nur mit Secrets)
+        env:
+          VD_KEYSTORE_B64: ${{ secrets.VD_KEYSTORE_B64 }}
+          VD_KEYSTORE_PASS: ${{ secrets.VD_KEYSTORE_PASS }}
+          VD_KEY_ALIAS_SECRET: ${{ secrets.VD_KEY_ALIAS }}
+        run: |
+          if [ -n "$VD_KEYSTORE_B64" ] && [ -n "$VD_KEYSTORE_PASS" ]; then
+            echo "$VD_KEYSTORE_B64" | base64 -d > "$RUNNER_TEMP/vylariscloud.keystore"
+            echo "VD_KEYSTORE=$RUNNER_TEMP/vylariscloud.keystore" >> "$GITHUB_ENV"
+            echo "VD_KEYSTORE_PASS=$VD_KEYSTORE_PASS" >> "$GITHUB_ENV"
+            echo "VD_KEY_ALIAS=${VD_KEY_ALIAS_SECRET:-vylariscloud}" >> "$GITHUB_ENV"
+            echo "Signierung: Release-Schlüssel"
+          else
+            echo "Signierung: Debug-Signatur (Secrets VD_KEYSTORE_B64 und VD_KEYSTORE_PASS nicht gesetzt)"
+          fi
+
+      - name: Tests (JVM, gegen den Stub-Server)
+        run: ./gradlew --no-daemon testDebugUnitTest
+
+      - name: APK bauen
+        run: ./gradlew --no-daemon assembleRelease bundleRelease lintRelease
+
+      - name: APK benennen
+        run: |
+          mkdir -p "$RUNNER_TEMP/out"
+          cp app/build/outputs/apk/release/app-release.apk "$RUNNER_TEMP/out/VylarisCloud-1.1.0.apk"
+          cp app/build/outputs/bundle/release/app-release.aab "$RUNNER_TEMP/out/VylarisCloud-1.1.0.aab"
+
+      - name: Signatur prüfen
+        run: |
+          "$ANDROID_HOME/build-tools/35.0.0/apksigner" verify --print-certs "$RUNNER_TEMP/out/VylarisCloud-1.1.0.apk"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: VylarisCloud-apk
+          path: ${{ runner.temp }}/out/VylarisCloud-1.1.0.apk
+          if-no-files-found: error
+          retention-days: 30
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: VylarisCloud-aab
+          path: ${{ runner.temp }}/out/VylarisCloud-1.1.0.aab
+          if-no-files-found: error
+          retention-days: 30
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: lint-und-tests
+          path: |
+            android/app/build/reports/lint-results-release.html
+            android/app/build/reports/tests/testDebugUnitTest
+          if-no-files-found: ignore
+          retention-days: 7

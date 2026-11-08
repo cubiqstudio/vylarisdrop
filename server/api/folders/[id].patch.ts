@@ -3,6 +3,7 @@ import { requireUser } from '../../utils/auth'
 import { meineTeams, ordnerRecht } from '../../utils/teams'
 import { neuesGalerieToken } from '../../utils/galerie'
 import { eindeutigerName, namenSaeubern } from '../../utils/dateiNamen'
+import { fremdesImBaum } from '../../utils/ordnerFremd'
 import { ordnerBaumBytes, verschiebenPruefen } from '../../utils/quota'
 
 export default defineEventHandler(async (event) => {
@@ -11,6 +12,18 @@ export default defineEventHandler(async (event) => {
   const o = await ordnerRecht(u.id, id)
   if (!o?.verwalten) throw fehler(404, 'Ordner nicht gefunden.', 'Folder not found.')
   const b = await readBody(event)
+  // Öffentlich machen (Freigabe, Galerie) darf nur, wer über alles im Ordner verfügen darf: sonst würden Dateien anderer ohne deren Zutun abrufbar
+  if ((b?.public === true || (b?.galerie && typeof b.galerie === 'object' && b.galerie.an)) && (await fremdesImBaum(u.id, id)))
+    throw fehler(
+      403,
+      'Der Ordner enthält Ordner oder Dateien anderer Mitglieder. Veröffentlichen darf das nur die Team-Leitung.',
+      'The folder contains folders or files of other members. Only the team lead may publish it.'
+    )
+  // Erst die Rechte am Zielordner, dann alles andere: sonst verriete die Namensvergabe (name (2)) Einträge in fremden Ordnern
+  if ('parent_id' in (b || {}) && b.parent_id != null) {
+    const ziel = await ordnerRecht(u.id, Number(b.parent_id))
+    if (!ziel?.hineinladen) throw fehler(404, 'Ordner nicht gefunden.', 'Folder not found.')
+  }
   if (typeof b?.name === 'string') {
     const name = b.name
       .replace(/[\u0000-\u001f]/g, '')
@@ -70,7 +83,8 @@ export default defineEventHandler(async (event) => {
         .trim()
         .slice(0, 1000),
       download: g.download !== false,
-      sortierung: ['neu', 'alt', 'name'].includes(g.sortierung) ? g.sortierung : 'neu'
+      sortierung: ['neu', 'alt', 'name'].includes(g.sortierung) ? g.sortierung : 'neu',
+      von: u.id
     }
     const r = await q1<{ galerie_token: string | null }>(
       `UPDATE folders SET galerie = $2::jsonb,

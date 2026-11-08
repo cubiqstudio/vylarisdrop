@@ -2,6 +2,7 @@ import { z } from 'zod'
 import { q, q1, ereignis } from '../../../utils/db'
 import { clientIp, requireAdmin } from '../../../utils/auth'
 import { requirePro } from '../../../utils/lizenz'
+import { MAX_MITGLIEDER, imTeamSchreiben, teamOrdnerUebergeben } from '../../../utils/teamAnsicht'
 
 const Farbe = z.string().regex(/^#[0-9a-fA-F]{6}$/)
 // Team-Kontingent in Bytes (null = keins): begrenzt die Gesamtgröße aller Dateien in Ordnern des Teams, siehe utils/quota.ts
@@ -68,12 +69,21 @@ export default defineEventHandler(async (event) => {
     } else {
       if (!(await q1('SELECT 1 FROM users WHERE id = $1', [b.user_id])))
         throw fehler(404, 'Konto nicht gefunden.', 'Account not found.')
-      if (b.rolle == null) await q('DELETE FROM team_mitglieder WHERE team_id = $1 AND user_id = $2', [b.id, b.user_id])
-      else
-        await q(
+      await imTeamSchreiben(b.id, async (c) => {
+        if (b.rolle == null) {
+          await c.query('DELETE FROM team_mitglieder WHERE team_id = $1 AND user_id = $2', [b.id, b.user_id])
+          await teamOrdnerUebergeben(c, b.id, b.user_id, null)
+          return
+        }
+        // 200er-Grenze wie bei der Team-Leitung: mehr Mitglieder wären für die Leitung unsichtbar
+        const da = (await c.query('SELECT 1 FROM team_mitglieder WHERE team_id = $1 AND user_id = $2', [b.id, b.user_id])).rowCount
+        if (!da && (await c.query('SELECT count(*)::int AS n FROM team_mitglieder WHERE team_id = $1', [b.id])).rows[0].n >= MAX_MITGLIEDER)
+          throw fehler(409, `Ein Team hat höchstens ${MAX_MITGLIEDER} Mitglieder.`, `A team can have at most ${MAX_MITGLIEDER} members.`)
+        await c.query(
           'INSERT INTO team_mitglieder (team_id, user_id, rolle) VALUES ($1, $2, $3) ON CONFLICT (team_id, user_id) DO UPDATE SET rolle = EXCLUDED.rolle',
           [b.id, b.user_id, b.rolle]
         )
+      })
     }
   } catch (e: any) {
     if (e?.code === '23505')

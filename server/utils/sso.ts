@@ -13,6 +13,7 @@ import { q, q1 } from './db'
 import { hashPw, istHttps, type Nutzer } from './auth'
 import { getInstance, getSetting, setSetting, st } from './settings'
 import { istPro } from './lizenz'
+import { MAX_MITGLIEDER, imTeamSchreiben } from './teamAnsicht'
 
 export type SsoArt = 'oidc' | 'google' | 'microsoft' | 'github' | 'discord'
 export interface Anbieter {
@@ -323,8 +324,16 @@ export async function ssoRueckkehr(
     : Array.isArray(claims.roles)
       ? claims.roles.map(String)
       : []
+  // Microsoft liefert kein email_verified, und der email-Claim ist dort nicht vertrauenswürdig (nOAuth: in fremden Mandanten frei setzbar).
+  // Er zählt nur, wenn Microsoft die Domain als geprüft kennzeichnet (xms_edov) oder das Token aus dem fest eingestellten eigenen
+  // Mandanten kommt (der Aussteller enthält dann keinen {tenantid}-Platzhalter; mit common/organizations/consumers nie).
+  const festerMandant = !!e.issuer && !String(e.issuer).includes('{tenantid}')
   const emailOk =
-    claims.email_verified === true || claims.email_verified === 'true' || (a.art === 'microsoft' && !!claims.email)
+    claims.email_verified === true ||
+    claims.email_verified === 'true' ||
+    (a.art === 'microsoft' &&
+      !!claims.email &&
+      (festerMandant || claims.xms_edov === true || claims.xms_edov === '1' || claims.xms_edov === 'true'))
   return {
     id: {
       sub: String(c.sub),
@@ -478,13 +487,22 @@ export async function kontoFuer(a: Anbieter, id: Identitaet, verknuepfenMit: num
     u!.id,
     id.email.slice(0, 200)
   ])
-  if (a.teamId)
-    await q(
-      `INSERT INTO team_mitglieder (team_id, user_id) SELECT id, $2 FROM teams WHERE id = $1 ON CONFLICT DO NOTHING`,
-      [a.teamId, u!.id]
-    )
+  if (a.teamId) await teamAufnehmen(a.teamId, u!.id)
   await adminAusGruppe(a, id, u!.id)
   return { art: 'login', userId: u!.id, neu: true }
+}
+
+/** Auto-Aufnahme ins Team des Anbieters; ein volles Team (200) oder ein gelöschtes Team verhindert den Login nicht. */
+async function teamAufnehmen(teamId: number, userId: number) {
+  try {
+    await imTeamSchreiben(teamId, async (c) => {
+      const n = (await c.query('SELECT count(*)::int AS n FROM team_mitglieder WHERE team_id = $1', [teamId])).rows[0].n
+      if (n < MAX_MITGLIEDER)
+        await c.query('INSERT INTO team_mitglieder (team_id, user_id) VALUES ($1, $2) ON CONFLICT DO NOTHING', [teamId, userId])
+    })
+  } catch (e: any) {
+    if (e?.statusCode !== 404) throw e
+  }
 }
 
 async function adminAusGruppe(a: Anbieter, id: Identitaet, userId: number) {

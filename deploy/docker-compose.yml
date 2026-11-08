@@ -23,6 +23,7 @@ services:
       VD_SFTPGO_ADMIN_PW: ${VD_SFTPGO_ADMIN_PW:-}
       VD_GARAGE_ADMIN_TOKEN: ${VD_GARAGE_ADMIN_TOKEN:-}
       VD_SFTP_PORT: ${VD_SFTP_PORT:-}
+      VD_GARAGE_KAPAZITAET_GB: ${VD_GARAGE_KAPAZITAET_GB:-}
     volumes:
       - dateien:/data
       - speicher:/speicher

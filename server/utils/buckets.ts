@@ -8,8 +8,9 @@ import {
 import { q, q1 } from './db'
 import type { Nutzer } from './auth'
 import { st } from './settings'
-import { anlegenErlaubt } from './boxen'
-import { S3_REGION, S3_ZIEL, dienstFehlerMelden, garage } from './speicherdienst'
+import { anlegenErlaubt, idAus } from './boxen'
+import { besitzerLaden, budgetPruefen, mitBudgetSperre, speicherErlaubt } from './speicherBudget'
+import { DienstFehler, S3_REGION, S3_ZIEL, dienstFehlerMelden, garage, speicherKonfiguriert } from './speicherdienst'
 
 export interface Bucket {
   id: number
@@ -33,14 +34,17 @@ export interface Schluessel {
 export const BUCKET_RE = /^(?!\d+\.\d+\.\d+\.\d+$)[a-z0-9][a-z0-9-]{1,61}[a-z0-9]$/
 const MAX_SCHLUESSEL = 20
 
-export async function bucketLaden(id: number, u: Nutzer): Promise<Bucket> {
-  const b = await q1<Bucket>('SELECT * FROM speicher_buckets WHERE id = $1', [Number(id) || 0])
+export async function bucketLaden(id: unknown, u: Nutzer): Promise<Bucket> {
+  const n = idAus(id)
+  const b = n ? await q1<Bucket>('SELECT * FROM speicher_buckets WHERE id = $1', [n]) : null
   if (!b || (b.user_id !== u.id && u.role === 'user'))
     throw fehler(404, st('Bucket nicht gefunden.', 'Bucket not found.'))
   return b
 }
 
 const quote = (kontingent: number) => ({ quotas: { maxSize: kontingent, maxObjects: null } })
+
+const nameBelegt = () => fehler(409, st('Diesen Bucket-Namen gibt es schon.', 'This bucket name is already taken.'))
 
 export async function bucketAnlegen(u: Nutzer, name: string, kontingent: number): Promise<Bucket> {
   if (!BUCKET_RE.test(name))
@@ -51,9 +55,24 @@ export async function bucketAnlegen(u: Nutzer, name: string, kontingent: number)
         'Bucket name: 3–63 characters of lowercase letters, digits and hyphens (not at the start or end).'
       )
     )
-  await anlegenErlaubt(u, kontingent)
-  if (await q1('SELECT 1 FROM speicher_buckets WHERE name = $1', [name]))
-    throw fehler(409, st('Diesen Bucket-Namen gibt es schon.', 'This bucket name is already taken.'))
+  // Reservieren unter der Konto-Sperre: Budget prüfen und Zeile eintragen (garage_id noch leer), erst danach Garage
+  const zeile = await mitBudgetSperre(u.id, async (x) => {
+    await anlegenErlaubt(u, kontingent, x)
+    if ((await x('SELECT 1 FROM speicher_buckets WHERE name = $1', [name])).length) throw nameBelegt()
+    try {
+      return (
+        await x('INSERT INTO speicher_buckets (user_id, name, garage_id, kontingent) VALUES ($1,$2,$3,$4) RETURNING *', [
+          u.id,
+          name,
+          '',
+          kontingent
+        ])
+      )[0] as Bucket
+    } catch (e: any) {
+      if (e?.code === '23505') throw nameBelegt()
+      throw e
+    }
+  })
   let garageId = ''
   try {
     const r = await garage('POST', 'CreateBucket', { globalAlias: name })
@@ -66,28 +85,53 @@ export async function bucketAnlegen(u: Nutzer, name: string, kontingent: number)
     await garage('POST', `UpdateBucket?id=${encodeURIComponent(garageId)}`, quote(kontingent))
   } catch (e) {
     if (garageId) await garage('POST', `DeleteBucket?id=${encodeURIComponent(garageId)}`).catch(() => {})
+    await q('DELETE FROM speicher_buckets WHERE id = $1', [zeile.id])
+    if (e instanceof DienstFehler && e.status === 409) throw nameBelegt()
     dienstFehlerMelden(e, 'Bucket anlegen')
   }
-  return (
-    await q<Bucket>(
-      'INSERT INTO speicher_buckets (user_id, name, garage_id, kontingent) VALUES ($1,$2,$3,$4) RETURNING *',
-      [u.id, name, garageId, kontingent]
-    )
-  )[0]!
+  return (await q<Bucket>('UPDATE speicher_buckets SET garage_id = $2 WHERE id = $1 RETURNING *', [zeile.id, garageId]))[0]!
 }
 
-export async function bucketKontingent(b: Bucket, kontingent: number): Promise<Bucket> {
-  try {
-    await garage('POST', `UpdateBucket?id=${encodeURIComponent(b.garage_id)}`, quote(kontingent))
-  } catch (e) {
-    dienstFehlerMelden(e, 'Kontingent setzen')
-  }
-  return (
-    await q<Bucket>('UPDATE speicher_buckets SET kontingent = $2, gewarnt = 0 WHERE id = $1 RETURNING *', [
-      b.id,
-      kontingent
-    ])
-  )[0]!
+/**
+ * Kontingent eines Buckets ändern. Alles unter der Konto-Sperre des Besitzers: Vergrößern nur im Budget, Verkleinern nur,
+ * wenn der Bucket (frisch gemessen) ins neue Kontingent passt. Datenbank zuerst, dann Garage; bei einem Fehler zurückgerollt.
+ */
+export async function bucketKontingent(b: Bucket, kontingent: number, aktor: Nutzer): Promise<Bucket> {
+  if (!speicherKonfiguriert())
+    throw fehler(409, st('Der Speicherdienst ist nicht eingeschaltet.', 'The storage service is not switched on.'))
+  return mitBudgetSperre(b.user_id, async (x) => {
+    const alt = (await x('SELECT * FROM speicher_buckets WHERE id = $1', [b.id]))[0] as Bucket | undefined
+    if (!alt) throw fehler(404, st('Bucket nicht gefunden.', 'Bucket not found.'))
+    if (kontingent < Number(alt.kontingent)) {
+      let belegt = 0
+      try {
+        belegt = (await bucketMessen(alt)).belegt
+      } catch (e) {
+        dienstFehlerMelden(e, 'Bucket messen')
+      }
+      if (belegt > kontingent)
+        throw fehler(
+          400,
+          st(
+            'Das Kontingent darf nicht kleiner sein als die Belegung.',
+            'The quota cannot be smaller than the space in use.'
+          )
+        )
+    } else if (kontingent > Number(alt.kontingent)) {
+      await speicherErlaubt(aktor)
+      await budgetPruefen(await besitzerLaden(alt.user_id), aktor, Number(alt.kontingent), kontingent, false, x)
+    }
+    const z = (
+      await x('UPDATE speicher_buckets SET kontingent = $2, gewarnt = 0 WHERE id = $1 RETURNING *', [b.id, kontingent])
+    )[0] as Bucket
+    try {
+      if (alt.garage_id) await garage('POST', `UpdateBucket?id=${encodeURIComponent(alt.garage_id)}`, quote(kontingent))
+    } catch (e) {
+      await x('UPDATE speicher_buckets SET kontingent = $2, gewarnt = $3 WHERE id = $1', [b.id, alt.kontingent, alt.gewarnt])
+      dienstFehlerMelden(e, 'Kontingent setzen')
+    }
+    return z
+  })
 }
 
 export async function schluesselAnlegen(
@@ -95,42 +139,49 @@ export async function schluesselAnlegen(
   name: string,
   schreiben: boolean
 ): Promise<{ schluessel: Schluessel; secret: string }> {
-  const n = await q1<{ n: string }>('SELECT count(*) AS n FROM speicher_schluessel WHERE bucket_id = $1', [b.id])
-  if (Number(n?.n || 0) >= MAX_SCHLUESSEL)
-    throw fehler(
-      400,
-      st(`Höchstens ${MAX_SCHLUESSEL} Schlüssel pro Bucket.`, `At most ${MAX_SCHLUESSEL} keys per bucket.`)
-    )
-  let key = '',
-    secret = ''
-  try {
-    const r = await garage('POST', 'CreateKey', { name: `VylarisCloud ${b.name}: ${name}`.slice(0, 120) })
-    key = String(r.json?.accessKeyId || '')
-    secret = String(r.json?.secretAccessKey || '')
-    if (!key || !secret) throw new Error('Garage hat keinen Schlüssel geliefert')
-    await garage('POST', 'AllowBucketKey', {
-      bucketId: b.garage_id,
-      accessKeyId: key,
-      permissions: { read: true, write: schreiben, owner: false }
-    })
-  } catch (e) {
-    if (key) await garage('POST', `DeleteKey?id=${encodeURIComponent(key)}`).catch(() => {})
-    dienstFehlerMelden(e, 'Schlüssel anlegen')
-  }
-  const s = (
-    await q<Schluessel>(
-      'INSERT INTO speicher_schluessel (bucket_id, name, access_key, schreiben) VALUES ($1,$2,$3,$4) RETURNING *',
-      [b.id, name, key, schreiben]
-    )
-  )[0]!
-  return { schluessel: s, secret }
+  if (!b.garage_id)
+    throw fehler(409, st('Der Bucket wird gerade angelegt.', 'The bucket is being created right now.'))
+  // Zählen und Eintragen unter der Konto-Sperre: parallele Anfragen überschreiten MAX_SCHLUESSEL nicht
+  return mitBudgetSperre(b.user_id, async (x) => {
+    const n = (await x('SELECT count(*) AS n FROM speicher_schluessel WHERE bucket_id = $1', [b.id]))[0]
+    if (Number(n?.n || 0) >= MAX_SCHLUESSEL)
+      throw fehler(
+        400,
+        st(`Höchstens ${MAX_SCHLUESSEL} Schlüssel pro Bucket.`, `At most ${MAX_SCHLUESSEL} keys per bucket.`)
+      )
+    let key = '',
+      secret = ''
+    try {
+      const r = await garage('POST', 'CreateKey', { name: `VylarisCloud ${b.name}: ${name}`.slice(0, 120) })
+      key = String(r.json?.accessKeyId || '')
+      secret = String(r.json?.secretAccessKey || '')
+      if (!key || !secret) throw new Error('Garage hat keinen Schlüssel geliefert')
+      await garage('POST', 'AllowBucketKey', {
+        bucketId: b.garage_id,
+        accessKeyId: key,
+        permissions: { read: true, write: schreiben, owner: false }
+      })
+    } catch (e) {
+      if (key) await garage('POST', `DeleteKey?id=${encodeURIComponent(key)}`).catch(() => {})
+      dienstFehlerMelden(e, 'Schlüssel anlegen')
+    }
+    const s = (
+      await x('INSERT INTO speicher_schluessel (bucket_id, name, access_key, schreiben) VALUES ($1,$2,$3,$4) RETURNING *', [
+        b.id,
+        name,
+        key,
+        schreiben
+      ])
+    )[0] as Schluessel
+    return { schluessel: s, secret }
+  })
 }
 
-export async function schluesselLoeschen(b: Bucket, id: number): Promise<Schluessel> {
-  const s = await q1<Schluessel>('SELECT * FROM speicher_schluessel WHERE id = $1 AND bucket_id = $2', [
-    Number(id) || 0,
-    b.id
-  ])
+export async function schluesselLoeschen(b: Bucket, id: unknown): Promise<Schluessel> {
+  const n = idAus(id)
+  const s = n
+    ? await q1<Schluessel>('SELECT * FROM speicher_schluessel WHERE id = $1 AND bucket_id = $2', [n, b.id])
+    : null
   if (!s) throw fehler(404, st('Schlüssel nicht gefunden.', 'Key not found.'))
   try {
     await garage('POST', `DeleteKey?id=${encodeURIComponent(s.access_key)}`)
@@ -181,7 +232,7 @@ export async function bucketLoeschen(b: Bucket): Promise<void> {
     b.id
   ])
   try {
-    const da = await garage('GET', `GetBucketInfo?id=${encodeURIComponent(b.garage_id)}`)
+    const da = b.garage_id ? await garage('GET', `GetBucketInfo?id=${encodeURIComponent(b.garage_id)}`) : { status: 404 }
     if (da.status !== 404) {
       await leeren(b)
       await garage('POST', `DeleteBucket?id=${encodeURIComponent(b.garage_id)}`)
@@ -194,10 +245,19 @@ export async function bucketLoeschen(b: Bucket): Promise<void> {
 }
 
 export async function bucketMessen(b: Bucket): Promise<{ belegt: number; objekte: number }> {
+  if (!b.garage_id) return { belegt: Number(b.belegt), objekte: Number(b.objekte) }
   const r = await garage('GET', `GetBucketInfo?id=${encodeURIComponent(b.garage_id)}`)
   if (r.status === 404) return { belegt: Number(b.belegt), objekte: Number(b.objekte) }
   const belegt = Number(r.json?.bytes || 0) + Number(r.json?.unfinishedMultipartUploadBytes || 0),
     objekte = Number(r.json?.objects || 0)
   await q('UPDATE speicher_buckets SET belegt = $2, objekte = $3 WHERE id = $1', [b.id, belegt, objekte])
+  // Durchsetzung: das Bucket-Kontingent in Garage muss dem in der Datenbank entsprechen (maßgeblich ist die Datenbank)
+  const frisch = await q1<Bucket>('SELECT * FROM speicher_buckets WHERE id = $1', [b.id])
+  if (frisch && Number(r.json?.quotas?.maxSize) !== Number(frisch.kontingent)) {
+    console.error(`[vylariscloud] Speicher: Kontingent von Bucket ${b.id} in Garage weicht ab — wird neu gesetzt`)
+    await garage('POST', `UpdateBucket?id=${encodeURIComponent(b.garage_id)}`, quote(Number(frisch.kontingent))).catch((e) =>
+      console.error('[vylariscloud] Bucket-Abgleich:', e.message)
+    )
+  }
   return { belegt, objekte }
 }

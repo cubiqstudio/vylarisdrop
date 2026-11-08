@@ -1,7 +1,7 @@
 import { q, q1, ereignis } from '../../utils/db'
 import { clientIp, requireUser } from '../../utils/auth'
 import { ablaufAus } from '../../utils/dateien'
-import { aenderbareDateien, ordnerRecht } from '../../utils/teams'
+import { ablaufBegrenzen, aenderbareDateien, ordnerRecht } from '../../utils/teams'
 import { inPapierkorb } from '../../utils/papierkorb'
 import { teamVonOrdner, verschiebenPruefen } from '../../utils/quota'
 import { webhookAusloesen } from '../../utils/webhooks'
@@ -47,9 +47,16 @@ export default defineEventHandler(async (event) => {
       )
       break
     }
-    case 'ablauf':
-      await q('UPDATE files SET expires_at = $1 WHERE id = ANY($2::bigint[])', [b.wert ? ablaufAus(b.wert) : null, e])
+    case 'ablauf': {
+      // Die Rollengrenze „Löschen nach (Tagen)“ gilt je Dateibesitzer auch beim nachträglichen Ändern
+      const wunsch = b.wert ? ablaufAus(b.wert) : null
+      for (const besitzer of new Set(eigene.map((x) => x.user_id)))
+        await q('UPDATE files SET expires_at = $1 WHERE id = ANY($2::bigint[])', [
+          await ablaufBegrenzen(besitzer, wunsch),
+          eigene.filter((x) => x.user_id === besitzer).map((x) => x.id)
+        ])
       break
+    }
     case 'tag_dazu':
       await q(
         'INSERT INTO file_tags (file_id, tag_id) SELECT f, t.id FROM unnest($1::bigint[]) AS f, tags t WHERE t.id = $2 AND t.user_id = $3 ON CONFLICT DO NOTHING',

@@ -7,6 +7,8 @@ import {
   ausliefern,
   dateiPerSlug,
   erloschen,
+  fortsetzungOk,
+  fortsetzungSetzen,
   freigegeben,
   istErsterAbruf,
   vorschauTokenOk
@@ -20,12 +22,21 @@ import { hotlinkPruefen } from './hotlink'
 import { trafficPruefen, gezaehlt } from './traffic'
 import { varianteAusliefern } from './bildvarianten'
 
+// Slug aus dem Pfad; ungültige Prozent-Kodierung (z. B. %E0%A4%A) oder NUL ergibt nie einen Treffer (404 statt 500)
+export function slugParam(event: H3Event): string {
+  try {
+    return decodeURIComponent(String(getRouterParam(event, 'slug') || '')).replace(/\0/g, '')
+  } catch {
+    return ''
+  }
+}
+
 export async function abrufen(event: H3Event, modus: 'inline' | 'download' | 'raw') {
-  const roh = decodeURIComponent(String(getRouterParam(event, 'slug') || ''))
+  const roh = slugParam(event)
   const slug = roh.replace(/\.[A-Za-z0-9]{1,10}$/, '')
   const f = (await dateiPerSlug(slug)) || (slug !== roh ? await dateiPerSlug(roh) : null)
   if (!f) {
-    const alt = await altesZiel((event.path || '').split('?')[0]!)
+    const alt = await altesZiel((event.path || '').split('?')[0]!).catch(() => null)
     if (alt && alt !== (event.path || '').split('?')[0]) return sendRedirect(event, alt, 301)
   }
   if (!f || abgelaufen(f)) throw fehler(404, 'Diese Datei gibt es nicht (mehr).', 'This file does not exist (anymore).')
@@ -38,10 +49,22 @@ export async function abrufen(event: H3Event, modus: 'inline' | 'download' | 'ra
     return sendRedirect(event, `/v/${encodeURIComponent(f.slug)}`, 302)
   if (!besitzer && !eingebettet && modus !== 'download') await hotlinkPruefen(event)
   if (!besitzer) await trafficPruefen(f.user_id)
-  if (!besitzer && !eingebettet && istErsterAbruf(event)) {
-    if (erloschen(f) || !(await aufrufZaehlen(f)))
-      throw fehler(404, 'Diese Datei gibt es nicht (mehr).', 'This file does not exist (anymore).')
-    statZaehlen(event, f.id)
+  if (!besitzer && !eingebettet) {
+    if (f.max_views != null) {
+      // Aufruf-Grenze: jeder Abruf zählt (auch mit Range-Kopf), außer der Fortsetzung eines schon gezählten Abrufs desselben Clients
+      if (event.method === 'HEAD') {
+        if (erloschen(f)) throw fehler(404, 'Diese Datei gibt es nicht (mehr).', 'This file does not exist (anymore).')
+      } else if (!(await fortsetzungOk(event, f))) {
+        if (erloschen(f) || !(await aufrufZaehlen(f)))
+          throw fehler(404, 'Diese Datei gibt es nicht (mehr).', 'This file does not exist (anymore).')
+        statZaehlen(event, f.id)
+        await fortsetzungSetzen(event, f)
+      }
+    } else if (istErsterAbruf(event)) {
+      if (erloschen(f) || !(await aufrufZaehlen(f)))
+        throw fehler(404, 'Diese Datei gibt es nicht (mehr).', 'This file does not exist (anymore).')
+      statZaehlen(event, f.id)
+    }
   }
   if (modus === 'inline') {
     const v = await varianteAusliefern(event, f)
@@ -119,9 +142,7 @@ async function nebenSenden(
 }
 
 export async function nebenAbrufen(event: H3Event, art: 'vorschau' | 'streifen' | 'live') {
-  const f = await dateiPerSlug(
-    decodeURIComponent(String(getRouterParam(event, 'slug') || '')).replace(/\.(mp4|mov)$/i, '')
-  )
+  const f = await dateiPerSlug(slugParam(event).replace(/\.(mp4|mov)$/i, ''))
   if (f && inQuarantaene(f))
     throw fehler(404, 'Diese Datei gibt es nicht (mehr).', 'This file does not exist (anymore).')
   if (!f || abgelaufen(f) || (art === 'vorschau' ? !f.vorschau : art === 'streifen' ? !f.streifen : !f.live))
@@ -133,6 +154,12 @@ export async function nebenAbrufen(event: H3Event, art: 'vorschau' | 'streifen' 
     throw fehler(404, 'Keine Vorschau vorhanden.', 'No preview available.')
   if (!besitzer && !token) await hotlinkPruefen(event)
   if (!besitzer) await trafficPruefen(f.user_id)
+  // Aufruf-Grenze: Vorschau, Videostreifen und Live-Video sind Inhalt der Datei und zählen wie der Abruf selbst (Token = schon gezählt)
+  if (!besitzer && !token && f.max_views != null && event.method !== 'HEAD') {
+    if (erloschen(f) || !(await aufrufZaehlen(f)))
+      throw fehler(404, 'Diese Datei gibt es nicht (mehr).', 'This file does not exist (anymore).')
+    statZaehlen(event, f.id)
+  }
   if (art === 'live') {
     const cache = f.password_hash ? 'private, max-age=600' : 'public, max-age=86400'
     const stamm = f.name.replace(/\.[^.]+$/, '')

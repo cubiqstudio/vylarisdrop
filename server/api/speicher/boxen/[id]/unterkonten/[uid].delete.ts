@@ -4,8 +4,9 @@ import { boxLaden, unterkontoLaden, unterkontoLoeschen } from '../../../../../ut
 
 export default defineEventHandler(async (event) => {
   const u = await requireUser(event)
-  const b = await boxLaden(Number(getRouterParam(event, 'id')), u)
-  const k = await unterkontoLaden(b, Number(getRouterParam(event, 'uid')))
+  const b = await boxLaden(getRouterParam(event, 'id'), u)
+  speicherRate(u.id, 'aendern')
+  const k = await unterkontoLaden(b, getRouterParam(event, 'uid'))
   await unterkontoLoeschen(k)
   await ereignis('unterkonto_geloescht', u.id, { box: b.kennung, login: k.login }, clientIp(event))
   return { ok: true }

@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 QUELLE="${VD_QUELLE:-https://raw.githubusercontent.com/cubiqstudio/vylarisdrop/main/deploy}"
-DATEIEN="docker-compose.yml compose.caddy.yml compose.port.yml compose.node.yml Caddyfile garage.toml install.sh update.sh .env.example README.md version.json"
+DATEIEN="docker-compose.yml compose.caddy.yml compose.port.yml compose.node.yml Caddyfile garage.toml install.sh update.sh daten-verschieben.sh dav-direkt.sh Caddyfile.dav Caddyfile.dav-nur compose.dav-direkt.yml .env.example README.md version.json"
 unraid_ziel() {
   [ -f /etc/unraid-version ] && [ -d /mnt/user ] || return 1
   case "$1" in /mnt/*|/boot/*) return 1 ;; esac
@@ -25,7 +25,7 @@ inst_echt() {
   cf=$(sed -n 's/^COMPOSE_FILE=//p' "$1/.env" 2>/dev/null | tail -1 | tr -d '"'"'"'\r')
   [ -n "$cf" ] || return 0
   for x in $(printf '%s' "$cf" | tr ':' ' '); do
-    case "$x" in docker-compose.yml|compose.caddy.yml|compose.port.yml|compose.node.yml) ;; *) return 1 ;; esac
+    case "$x" in docker-compose.yml|compose.caddy.yml|compose.port.yml|compose.node.yml|compose.hdd.yml|compose.dav-direkt.yml) ;; *) return 1 ;; esac
   done
 }
 inst_ordner() {
@@ -93,12 +93,12 @@ else
   ZIEL="${VD_DIR:-${GEFUNDEN:-${UNRAID_ZIEL:-/opt/vylariscloud}}}"
   echo "==> VylarisCloud: $ZIEL"
   mkdir -p "$ZIEL" && cd "$ZIEL"
-  for f in $DATEIEN; do curl -fsSL -o "$f" "$QUELLE/$f" || { [ "$f" = "version.json" ] || { echo "ERROR: $f"; exit 1; }; }; done
+  for f in $DATEIEN; do curl -fsSL -o "$f" "$QUELLE/$f" || { [ "$f" = "version.json" ] || [ "$f" = "daten-verschieben.sh" ] || [ "$f" = "dav-direkt.sh" ] || [ "$f" = "Caddyfile.dav" ] || [ "$f" = "Caddyfile.dav-nur" ] || [ "$f" = "compose.dav-direkt.yml" ] || { echo "ERROR: $f"; exit 1; }; }; done
   [ -t 0 ] || cat >/dev/null 2>&1 || true
   if { true </dev/tty; } 2>/dev/null; then exec bash ./install.sh "$@" </dev/tty; else exec bash ./install.sh "$@"; fi
 fi
 
-PORT=""; DOMAIN=""; EMAIL=""; MODUS=""; VHOST="ja"; WS_WAHL=""; WEG=""; SPR=""; VS=""; NUR_DIENST=""
+PORT=""; DOMAIN=""; EMAIL=""; MODUS=""; VHOST="ja"; WS_WAHL=""; WEG=""; SPR=""; VS=""; NUR_DIENST=""; DATEN_PFAD=""
 while [ $# -gt 0 ]; do
   case "$1" in
     --lang) SPR="${2,,}"; shift 2 ;;
@@ -113,6 +113,7 @@ while [ $# -gt 0 ]; do
       case "$WS_WAHL" in nginx|apache|apache2|httpd|keiner|none) ;; *) echo "--webserver: nginx | apache | keiner (none)"; exit 1 ;; esac ;;
     --dienst) NUR_DIENST="ja"; shift ;;
     --nur-vhost) shift ;;
+    --daten-pfad) [ $# -ge 2 ] || { echo "Missing value / Wert fehlt: --daten-pfad"; exit 1; }; DATEN_PFAD="${2%/}"; shift 2 ;;
     --virenscan) VS="ja"; shift ;;
     --no-virenscan) VS="nein"; shift ;;
     --deinstallieren|--uninstall) WEG="ja"; shift ;;
@@ -823,6 +824,12 @@ grep -q 'compose.port.yml' .env && MODUS="port" || MODUS="caddy"
 if [ "$MODUS" = "port" ] && [ -n "$DOMAIN" ]; then
   [[ "$DOMAIN" =~ ^[a-z0-9.-]+$ ]] || { say "FEHLER: ungueltige Domain: $DOMAIN" "ERROR: invalid domain: $DOMAIN"; exit 1; }
   if grep -q '^VD_PROXY_DOMAIN=' .env; then sed -i "s|^VD_PROXY_DOMAIN=.*|VD_PROXY_DOMAIN=$DOMAIN|" .env; else echo "VD_PROXY_DOMAIN=$DOMAIN" >> .env; fi
+fi
+
+if [ -n "$DATEN_PFAD" ]; then
+  [ -f ./daten-verschieben.sh ] || curl -fsSL -o daten-verschieben.sh "$QUELLE/daten-verschieben.sh" || { rm -f daten-verschieben.sh; say "FEHLER: daten-verschieben.sh fehlt und liess sich nicht laden." "ERROR: daten-verschieben.sh is missing and could not be downloaded."; exit 1; }
+  say "==> Daten kommen nach $DATEN_PFAD (eigene Platte)" "==> Data goes to $DATEN_PFAD (separate disk)"
+  VD_SKRIPT_SPRACHE="$SPR" bash ./daten-verschieben.sh --neu --dir "$PWD" "$DATEN_PFAD" || { say "FEHLER: Der Daten-Pfad liess sich nicht einrichten (siehe oben). Ohne --daten-pfad geht die Installation auf die Systemplatte." "ERROR: the data path could not be set up (see above). Without --daten-pfad the installation uses the system disk."; exit 1; }
 fi
 
 db_passwort_angleichen() {

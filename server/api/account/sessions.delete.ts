@@ -1,4 +1,5 @@
 import { q } from '../../utils/db'
+import { appGeraeteWiderrufen } from '../../utils/app'
 import { requireUser, sessionTokenHash } from '../../utils/auth'
 
 export default defineEventHandler(async (event) => {
@@ -7,5 +8,7 @@ export default defineEventHandler(async (event) => {
     a.id,
     sessionTokenHash(event)
   ])
-  return { ok: true, beendet: weg.length }
+  // auch die App-Geraete (ausser dem der aktuellen Sitzung): ihr Token koennte sonst wieder eine Sitzung erzeugen
+  const geraete = await appGeraeteWiderrufen(a.id, sessionTokenHash(event))
+  return { ok: true, beendet: weg.length, geraete }
 })

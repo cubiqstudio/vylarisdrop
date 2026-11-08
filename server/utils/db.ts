@@ -253,6 +253,95 @@ CREATE TABLE IF NOT EXISTS lizenz_schluessel (
 CREATE TABLE IF NOT EXISTS lizenz_geraete (
   key_id int NOT NULL REFERENCES lizenz_schluessel(id) ON DELETE CASCADE, hwid text NOT NULL, name text NOT NULL DEFAULT '',
   aktiviert_at timestamptz NOT NULL DEFAULT now(), zuletzt_at timestamptz NOT NULL DEFAULT now(), PRIMARY KEY (key_id, hwid));
+
+-- [cloud:aufraeumen] Duplikat-Suche ("Aufraeumen"): Dateien mit gleichem sha256 und gleicher Groesse nachschlagen (statt je Gruppe ueber
+-- alle Dateien zu laufen: 100.000 Dateien, 25 Gruppen 433 ms -> 25 ms). Teilindex: leere Pruefsummen und leere Dateien zaehlen nicht.
+-- Mehrkosten beim Anlegen einer Datei etwa 8 Mikrosekunden, Platz etwa 13 MB je 100.000 Dateien.
+CREATE INDEX IF NOT EXISTS files_sha256_idx ON files(sha256, size) WHERE sha256 <> '' AND size > 0;
+-- Namenspruefung beim Wiederherstellen/Anlegen auf der obersten Ebene (lower(name) LIKE 'stamm%'): ohne Index liest jede Pruefung alle
+-- Dateien des Kontos (5000 Dateien rueckgaengig: Minuten bei 300.000 Dateien). Teilindex nur fuer die Wurzel (folder_id IS NULL).
+CREATE INDEX IF NOT EXISTS files_wurzel_name_idx ON files(user_id, lower(name) text_pattern_ops) WHERE folder_id IS NULL;
+
+-- [cloud:live] Live-Aktualisierung: Aenderungen an Dateien, Ordnern, Papierkorb und Anfragen melden sich per NOTIFY
+-- ("db|<Thema>|<Nutzer-ID>"); gleiche Meldungen innerhalb einer Transaktion werden von PostgreSQL zusammengefasst.
+-- Reine Zaehler-Aenderungen (Aufrufe) loesen nichts aus.
+CREATE OR REPLACE FUNCTION vd_live_melden() RETURNS trigger AS $$
+DECLARE uid bigint;
+BEGIN
+  IF TG_OP = 'UPDATE' AND TG_ARGV[0] = 'dateien'
+     AND (to_jsonb(OLD) - 'views' - 'last_view_at') = (to_jsonb(NEW) - 'views' - 'last_view_at') THEN
+    RETURN NULL;
+  END IF;
+  IF TG_OP = 'DELETE' THEN uid := OLD.user_id; ELSE uid := NEW.user_id; END IF;
+  PERFORM pg_notify('vd_live', 'db|' || TG_ARGV[0] || '|' || COALESCE(uid::text, '0'));
+  RETURN NULL;
+END $$ LANGUAGE plpgsql;
+DROP TRIGGER IF EXISTS vd_live_files ON files;
+CREATE TRIGGER vd_live_files AFTER INSERT OR UPDATE OR DELETE ON files FOR EACH ROW EXECUTE FUNCTION vd_live_melden('dateien');
+DROP TRIGGER IF EXISTS vd_live_folders ON folders;
+CREATE TRIGGER vd_live_folders AFTER INSERT OR UPDATE OR DELETE ON folders FOR EACH ROW EXECUTE FUNCTION vd_live_melden('ordner');
+DROP TRIGGER IF EXISTS vd_live_papierkorb ON papierkorb;
+CREATE TRIGGER vd_live_papierkorb AFTER INSERT OR UPDATE OR DELETE ON papierkorb FOR EACH ROW EXECUTE FUNCTION vd_live_melden('papierkorb');
+DROP TRIGGER IF EXISTS vd_live_anfragen ON anfragen;
+CREATE TRIGGER vd_live_anfragen AFTER INSERT OR UPDATE OR DELETE ON anfragen FOR EACH ROW EXECUTE FUNCTION vd_live_melden('anfragen');
+-- Tags (Zuordnung und Name/Farbe) und Kontingent-/Rollenaenderungen eines Kontos aktualisieren dieselben Ansichten
+CREATE OR REPLACE FUNCTION vd_live_melden_tags() RETURNS trigger AS $$
+DECLARE uid bigint;
+BEGIN
+  IF TG_TABLE_NAME = 'file_tags' THEN
+    SELECT user_id INTO uid FROM files WHERE id = CASE WHEN TG_OP = 'DELETE' THEN OLD.file_id ELSE NEW.file_id END;
+  ELSIF TG_OP = 'DELETE' THEN uid := OLD.user_id;
+  ELSE uid := NEW.user_id;
+  END IF;
+  IF uid IS NOT NULL THEN PERFORM pg_notify('vd_live', 'db|dateien|' || uid::text); END IF;
+  RETURN NULL;
+END $$ LANGUAGE plpgsql;
+DROP TRIGGER IF EXISTS vd_live_file_tags ON file_tags;
+CREATE TRIGGER vd_live_file_tags AFTER INSERT OR DELETE ON file_tags FOR EACH ROW EXECUTE FUNCTION vd_live_melden_tags();
+DROP TRIGGER IF EXISTS vd_live_tags ON tags;
+CREATE TRIGGER vd_live_tags AFTER INSERT OR UPDATE OR DELETE ON tags FOR EACH ROW EXECUTE FUNCTION vd_live_melden_tags();
+CREATE OR REPLACE FUNCTION vd_live_melden_konto() RETURNS trigger AS $$
+BEGIN
+  IF NEW.quota_bytes IS DISTINCT FROM OLD.quota_bytes OR NEW.role IS DISTINCT FROM OLD.role THEN
+    PERFORM pg_notify('vd_live', 'db|dateien|' || NEW.id::text);
+  END IF;
+  RETURN NULL;
+END $$ LANGUAGE plpgsql;
+DROP TRIGGER IF EXISTS vd_live_konto ON users;
+CREATE TRIGGER vd_live_konto AFTER UPDATE ON users FOR EACH ROW EXECUTE FUNCTION vd_live_melden_konto();
+-- Teams: Mitgliedschaft, Rolle und Team-Kontingent/-Name melden sich als Thema 'teams' ("teams|<Team-ID>|<Nutzer-ID oder 0>");
+-- utils/live.ts liefert die Meldung an alle aktuellen Mitglieder des Teams und an das betroffene Konto (z. B. den Entfernten).
+CREATE OR REPLACE FUNCTION vd_live_melden_teams() RETURNS trigger AS $$
+DECLARE tid bigint; uid bigint := 0;
+BEGIN
+  IF TG_TABLE_NAME = 'teams' THEN
+    IF TG_OP = 'UPDATE' AND NEW.name IS NOT DISTINCT FROM OLD.name AND NEW.farbe IS NOT DISTINCT FROM OLD.farbe
+       AND NEW.beschreibung IS NOT DISTINCT FROM OLD.beschreibung AND NEW.quota_bytes IS NOT DISTINCT FROM OLD.quota_bytes THEN
+      RETURN NULL;
+    END IF;
+    IF TG_OP = 'DELETE' THEN tid := OLD.id; ELSE tid := NEW.id; END IF;
+  ELSIF TG_OP = 'DELETE' THEN tid := OLD.team_id; uid := OLD.user_id;
+  ELSE tid := NEW.team_id; uid := NEW.user_id;
+  END IF;
+  PERFORM pg_notify('vd_live', 'db|teams|' || tid::text || '|' || uid::text);
+  RETURN NULL;
+END $$ LANGUAGE plpgsql;
+DROP TRIGGER IF EXISTS vd_live_team_mitglieder ON team_mitglieder;
+CREATE TRIGGER vd_live_team_mitglieder AFTER INSERT OR UPDATE OR DELETE ON team_mitglieder FOR EACH ROW EXECUTE FUNCTION vd_live_melden_teams();
+DROP TRIGGER IF EXISTS vd_live_teams ON teams;
+CREATE TRIGGER vd_live_teams AFTER UPDATE OR DELETE ON teams FOR EACH ROW EXECUTE FUNCTION vd_live_melden_teams();
+
+-- [cloud:app] Android-App: ein "App-Geraet" ist ein Token in upload_tokens mit art = 'app' (Format vd_app_<48 Hex>, nur als Hash gespeichert).
+-- Die Sitzung, die /api/app/sitzung daraus anlegt, merkt sich das Geraet (sessions.app_geraet): Widerruf beendet sie sofort.
+-- Kopplungscodes (je 8 Zeichen, nur als Hash, 5 Minuten, einmal verwendbar) verbinden ein Handy ueber einen QR-Code oder Link.
+ALTER TABLE upload_tokens ADD COLUMN IF NOT EXISTS art text NOT NULL DEFAULT 'api';
+CREATE INDEX IF NOT EXISTS upload_tokens_app_idx ON upload_tokens(user_id) WHERE art = 'app';
+ALTER TABLE sessions ADD COLUMN IF NOT EXISTS app_geraet int REFERENCES upload_tokens(id) ON DELETE CASCADE;
+CREATE INDEX IF NOT EXISTS sessions_app_idx ON sessions(app_geraet) WHERE app_geraet IS NOT NULL;
+CREATE TABLE IF NOT EXISTS app_koppelcodes (
+  id serial PRIMARY KEY, user_id int NOT NULL REFERENCES users(id) ON DELETE CASCADE, code_hash text NOT NULL UNIQUE,
+  ablauf_at timestamptz NOT NULL, benutzt_at timestamptz, created_at timestamptz NOT NULL DEFAULT now());
+CREATE INDEX IF NOT EXISTS app_koppelcodes_user_idx ON app_koppelcodes(user_id, created_at DESC);
 `
 
 export const TABELLEN = [

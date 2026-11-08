@@ -5,3 +5,9 @@ node_modules
 *.log
 dist
 data
+android/.gradle
+android/build
+android/app/build
+android/local.properties
+*.keystore
+*.jks

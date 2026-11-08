@@ -1,0 +1,11 @@
+# VylarisCloud: Caddy NUR fuer den direkten WebDAV-Hostnamen (Modus "nur-dav" von dav-direkt.sh).
+#
+# Ersetzt die normale Caddyfile, wenn die Weboberflaeche ausschliesslich ueber den Cloudflare Tunnel erreichbar sein soll:
+# Die normale Caddyfile beantwortet auf Port 80 jeden Host und auf 443 die Hauptdomain mit der Weboberflaeche. Waere die
+# Server-IP bekannt, kaeme man damit an Cloudflare vorbei. Diese Datei bedient dagegen nur den DAV-Hostnamen (Caddyfile.dav,
+# per import) und antwortet auf alles andere mit 404 (Port 80) bzw. gar nicht (443, unbekannter Name).
+import /etc/caddy/conf.d/*
+
+:80 {
+	respond "Nicht gefunden / not found" 404
+}

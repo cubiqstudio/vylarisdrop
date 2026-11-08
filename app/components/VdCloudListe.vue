@@ -40,11 +40,14 @@ const teilweise = computed(() => props.auswahl.size > 0 && !alleAn.value)
 // ----- Umbenennen -----
 const eingabe = ref<HTMLInputElement[] | HTMLInputElement | null>(null)
 let fertig = false
+// Der getippte Name gehört der Eingabe, nicht der Zeile: ein Live-Neuladen darf ihn nicht zurücksetzen
+const umbWert = ref('')
 watch(
   () => props.umbenennen,
   (k) => {
     if (!k) return
     fertig = false
+    umbWert.value = props.eintraege.find((x) => key(x) === k)?.name ?? ''
     void nextTick(() => {
       const el = Array.isArray(eingabe.value) ? eingabe.value[0] : eingabe.value
       const e = props.eintraege.find((x) => key(x) === k)
@@ -225,7 +228,7 @@ const ariaSort = (k: CloudSortierung) => (props.sort === k ? (props.richtung ===
             v-if="umbenennen === key(e)"
             ref="eingabe"
             class="eingabe umb"
-            :value="e.name"
+            :value="umbWert"
             :maxlength="e.typ === 'ordner' ? 80 : 200"
             :aria-label="t('Neuer Name', 'New name')"
             spellcheck="false"
@@ -233,6 +236,7 @@ const ariaSort = (k: CloudSortierung) => (props.sort === k ? (props.richtung ===
             draggable="false"
             @click.stop
             @dblclick.stop
+            @input="umbWert = ($event.target as HTMLInputElement).value"
             @keydown.enter.prevent.stop="bestaetigen(e, $event)"
             @keydown.esc.prevent.stop="abbrechen(e)"
             @keydown.stop
@@ -657,6 +661,63 @@ const ariaSort = (k: CloudSortierung) => (props.sort === k ? (props.richtung ===
   .raster .c-akt {
     background: color-mix(in srgb, var(--flaeche) 82%, transparent);
     backdrop-filter: blur(6px);
+  }
+}
+/* ---------- Touch: Trefferflächen von mindestens 44 px, Zeilen größer ---------- */
+@media (pointer: coarse) {
+  .liste .zeile {
+    min-height: 60px;
+  }
+  .liste .kopfzeile,
+  .liste .zeile {
+    grid-template-columns: 44px minmax(0, 1fr) 44px 44px;
+  }
+  .stern,
+  .mehr {
+    width: 44px;
+    height: 44px;
+  }
+  .spalte {
+    min-height: 44px;
+  }
+  .c-akt {
+    grid-column: 3 / 5;
+  }
+  /* Auswahlfeld: sichtbar 22 px, tippbar 44 x 44 */
+  .haken {
+    width: 44px;
+    height: 44px;
+    border: 0;
+    background: transparent !important;
+    position: relative;
+  }
+  .haken::before {
+    content: '';
+    position: absolute;
+    left: 11px;
+    top: 11px;
+    width: 22px;
+    height: 22px;
+    border-radius: 7px;
+    border: 1.5px solid var(--linie2);
+    background: var(--flaeche);
+  }
+  .haken.an::before,
+  .haken.teil::before {
+    background: var(--a);
+    border-color: var(--a);
+  }
+  .haken svg,
+  .haken.teil::after {
+    position: relative;
+  }
+  .raster .c-haken {
+    left: 0;
+    top: 0;
+  }
+  .raster .c-akt {
+    right: 0;
+    top: 0;
   }
 }
 @media (prefers-reduced-motion: reduce) {

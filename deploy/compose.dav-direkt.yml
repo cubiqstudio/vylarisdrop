@@ -1,0 +1,21 @@
+# Direkter WebDAV-Hostname fuer grosse Dateien (ohne Cloudflare). Einrichten mit: sudo bash dav-direkt.sh --host dav.deinefirma.de
+# Voraussetzung: der Caddy aus compose.caddy.yml laeuft (COMPOSE_FILE enthaelt compose.caddy.yml). Beschreibung: README.md,
+# Abschnitt "Grosse Dateien hinter Cloudflare".
+services:
+  caddy:
+    environment:
+      VD_DAV_HOST: ${VD_DAV_HOST:?Bitte VD_DAV_HOST in .env setzen (siehe dav-direkt.sh)}
+      VD_DAV_ERLAUBT: ${VD_DAV_ERLAUBT:-0.0.0.0/0 ::/0}
+    volumes:
+      # Modus "zusaetzlich": VD_DAV_CADDYFILE bleibt leer, die normale Caddyfile liest conf.d per import.
+      # Modus "nur-dav" (Weboberflaeche nur ueber den Tunnel): VD_DAV_CADDYFILE=Caddyfile.dav-nur ersetzt die normale Caddyfile.
+      - ./${VD_DAV_CADDYFILE:-Caddyfile}:/etc/caddy/Caddyfile:ro
+      - ./Caddyfile.dav:/etc/caddy/conf.d/dav.caddy:ro
+      # Zugriffsprotokoll auf dem Server unter ./caddy-logs/dav-zugriff.log (fuer fail2ban)
+      - ./caddy-logs:/var/log/caddy
+  app:
+    environment:
+      # Die App kennt den Hostnamen: dort sind nur /dav und /webdav erreichbar, und die Seite "Sync & WebDAV" nennt ihn
+      VD_DAV_HOST: ${VD_DAV_HOST}
+      # Frist fuer eine einzelne Anfrage in Sekunden (leer = 12 Stunden, 0 = unbegrenzt); wichtig fuer sehr grosse Uploads ueber langsame Leitungen
+      VD_ANFRAGE_TIMEOUT_S: ${VD_ANFRAGE_TIMEOUT_S:-}

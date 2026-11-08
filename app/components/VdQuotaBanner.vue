@@ -1,7 +1,7 @@
 <script setup lang="ts">
 // Hinweis über dem Inhalt, wenn der eigene Speicher knapp wird (ab 80 % gelb, ab 95 % rot, voll mit klarer Meldung)
 const props = defineProps<{
-  quota: { limit: number | null; used: number; free: number | null; prozent: number | null; stufe: string; papierkorb: number } | null | undefined
+  quota: { limit: number | null; used: number; free: number | null; prozent: number | null; stufe: string; papierkorb: number; eingeplant?: number; ueberplant?: boolean } | null | undefined
 }>()
 const weg = ref('')
 onMounted(() => {
@@ -10,6 +10,27 @@ onMounted(() => {
   } catch {}
 })
 const stufe = computed(() => (props.quota?.limit ? props.quota.stufe : 'ok'))
+// Fällt die Belegung (live) wieder unter 80 %, gilt ein früheres Ausblenden nicht mehr: steigt sie erneut, erscheint der Hinweis wieder
+watch(
+  () => props.quota?.limit && props.quota.stufe === 'ok',
+  (ok) => {
+    if (!ok || !weg.value) return
+    weg.value = ''
+    try {
+      sessionStorage.removeItem('vd_quota_banner')
+    } catch {}
+  }
+)
+// Vorgelesen wird nur ein Wechsel der Stufe, nicht jede Prozentänderung beim Live-Aktualisieren
+const ansage = computed(() =>
+  stufe.value === 'voll'
+    ? t('Speicher voll', 'Storage full')
+    : stufe.value === 'kritisch'
+      ? t('Speicher fast voll', 'Storage almost full')
+      : stufe.value === 'warn'
+        ? t('Speicher zu über 80 Prozent belegt', 'Storage over 80 percent used')
+        : ''
+)
 const sichtbar = computed(() => stufe.value !== 'ok' && (stufe.value === 'voll' || weg.value !== stufe.value))
 function schliessen() {
   weg.value = stufe.value
@@ -21,6 +42,11 @@ const text = computed(() => {
   const q = props.quota
   if (!q?.limit) return ''
   const von = `${groesse(q.used)} ${t('von', 'of')} ${groesse(q.limit)}`
+  if (q.ueberplant)
+    return t(
+      `Dein Konto ist überplant (${von}, davon ${groesse(q.eingeplant || 0)} für Boxen & Buckets reserviert). Es wurde nichts gelöscht, aber neue Uploads, Boxen und Buckets werden abgelehnt, bis du Platz schaffst oder der Admin das Kontingent erhöht.`,
+      `Your account is over-planned (${von}, of which ${groesse(q.eingeplant || 0)} reserved for boxes & buckets). Nothing was deleted, but new uploads, boxes and buckets are rejected until you free up space or the admin raises the quota.`
+    )
   if (stufe.value === 'voll')
     return t(
       `Dein Speicher ist voll (${von}). Neue Uploads werden abgelehnt, bis du Platz schaffst.`,
@@ -39,35 +65,38 @@ const text = computed(() => {
 </script>
 
 <template>
-  <Transition name="qbanner">
-    <div v-if="sichtbar" class="qbn" :class="stufe" role="status">
-      <Ico n="alert" />
-      <div class="txt">
-        <b>{{ text }}</b>
-        <span v-if="props.quota && props.quota.papierkorb > 0" class="klein">
-          {{
-            t(
-              `Der Papierkorb belegt ${groesse(props.quota.papierkorb)} und zählt mit — leere ihn, um Platz zu schaffen.`,
-              `The trash holds ${groesse(props.quota.papierkorb)} and counts towards your storage — empty it to free up space.`
-            )
-          }}
-        </span>
-        <span v-else class="klein">{{ t('Lösche Dateien, die du nicht mehr brauchst, oder bitte einen Admin um mehr Platz.', 'Delete files you no longer need or ask an admin for more space.') }}</span>
+  <div>
+    <span class="versteckt" role="status">{{ sichtbar ? ansage : '' }}</span>
+    <Transition name="qbanner">
+      <div v-if="sichtbar" class="qbn" :class="stufe">
+        <Ico n="alert" />
+        <div class="txt">
+          <b>{{ text }}</b>
+          <span v-if="props.quota && props.quota.papierkorb > 0" class="klein">
+            {{
+              t(
+                `Der Papierkorb belegt ${groesse(props.quota.papierkorb)} und zählt mit — leere ihn, um Platz zu schaffen.`,
+                `The trash holds ${groesse(props.quota.papierkorb)} and counts towards your storage — empty it to free up space.`
+              )
+            }}
+          </span>
+          <span v-else class="klein">{{ t('Lösche Dateien, die du nicht mehr brauchst, oder bitte einen Admin um mehr Platz.', 'Delete files you no longer need or ask an admin for more space.') }}</span>
+        </div>
+        <NuxtLink v-if="props.quota && props.quota.papierkorb > 0" to="/papierkorb" class="knopf klein">
+          <Ico n="trash" /> {{ t('Papierkorb', 'Trash') }}
+        </NuxtLink>
+        <button
+          v-if="stufe !== 'voll'"
+          type="button"
+          class="knopf nur-icon klein"
+          :aria-label="t('Hinweis ausblenden', 'Dismiss notice')"
+          @click="schliessen"
+        >
+          <Ico n="x" />
+        </button>
       </div>
-      <NuxtLink v-if="props.quota && props.quota.papierkorb > 0" to="/papierkorb" class="knopf klein">
-        <Ico n="trash" /> {{ t('Papierkorb', 'Trash') }}
-      </NuxtLink>
-      <button
-        v-if="stufe !== 'voll'"
-        type="button"
-        class="knopf nur-icon klein"
-        :aria-label="t('Hinweis ausblenden', 'Dismiss notice')"
-        @click="schliessen"
-      >
-        <Ico n="x" />
-      </button>
-    </div>
-  </Transition>
+    </Transition>
+  </div>
 </template>
 
 <style scoped>

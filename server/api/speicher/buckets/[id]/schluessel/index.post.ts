@@ -7,7 +7,8 @@ import { schluesselAnsicht } from '../../../../../utils/speicherAnsicht'
 const Body = z.object({ name: z.string().trim().min(1).max(60), schreiben: z.boolean().default(true) })
 export default defineEventHandler(async (event) => {
   const u = await requireUser(event)
-  const b = await bucketLaden(Number(getRouterParam(event, 'id')), u)
+  const b = await bucketLaden(getRouterParam(event, 'id'), u)
+  speicherRate(u.id, 'aendern')
   const p = Body.safeParse(await readBody(event))
   if (!p.success) throw fehler(400, 'Bitte einen Namen angeben.', 'Please enter a name.')
   const { schluessel, secret } = await schluesselAnlegen(b, p.data.name, p.data.schreiben)

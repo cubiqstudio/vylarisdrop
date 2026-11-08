@@ -126,10 +126,10 @@ function sperrNummer(name: string): number {
 
 type Hoerer = (nutzlast: string) => void
 const hoerer = new Map<string, Hoerer[]>()
-export function hoeren(kanal: 'vd_settings' | 'vd_arbeit', fn: Hoerer) {
+export function hoeren(kanal: 'vd_settings' | 'vd_arbeit' | 'vd_live', fn: Hoerer) {
   hoerer.set(kanal, [...(hoerer.get(kanal) || []), fn])
 }
-export async function melde(kanal: 'vd_settings' | 'vd_arbeit', nutzlast: string): Promise<void> {
+export async function melde(kanal: 'vd_settings' | 'vd_arbeit' | 'vd_live', nutzlast: string): Promise<void> {
   await q('SELECT pg_notify($1, $2)', [kanal, `${KNOTEN_ID}|${nutzlast}`.slice(0, 7000)]).catch(() => {})
 }
 
@@ -160,8 +160,11 @@ async function lauschen(): Promise<void> {
   await c.connect()
   await c.query('LISTEN vd_settings')
   await c.query('LISTEN vd_arbeit')
+  await c.query('LISTEN vd_live')
   lauscher = c
   for (const fn of hoerer.get('vd_settings') || []) fn('*')
+  // Live-Seiten: Meldungen aus der Zeit ohne Hörverbindung fehlen, die Clients laden alles neu
+  for (const fn of hoerer.get('vd_live') || []) fn('*')
 }
 
 let zweitSeit = 0

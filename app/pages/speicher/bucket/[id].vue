@@ -18,25 +18,28 @@ const proz = computed(() =>
 const stufe = computed(() => (proz.value >= 99.5 ? 'voll' : proz.value >= 80 ? 'warn' : ''))
 const einmal = ref<{ titel: string; zeilen: Array<{ label: string; wert: string }> } | null>(null)
 
-const kont = ref<{ wert: number; e: string } | null>(null)
+// Kontingent: Schieber/Feld mit Höchstwert = aktuelles Kontingent + frei im Budget (nie mehr), Mindestwert = aktuelle Belegung
+const { data: sp, refresh: spNeu } = await (useFetch as any)('/api/speicher', { key: `speicher-budget-bucket-${id.value}` })
+const ich = computed<any>(() => useTheme().value.user)
+const eigener = computed(() => !!bucket.value && bucket.value.userId === ich.value?.id)
+const maxKont = computed<number | null>(() => {
+  const f = sp.value?.budget?.frei
+  return eigener.value && f != null && bucket.value ? Number(bucket.value.kontingent) + Number(f) : null
+})
+const kont = ref<number | null>(null)
 watch(
   bucket,
   (b) => {
-    if (b && !kont.value) {
-      const gb = b.kontingent / 1024 ** 3
-      kont.value =
-        gb >= 1024 && gb % 1024 === 0 ? { wert: gb / 1024, e: 'TB' } : { wert: Math.round(gb * 100) / 100, e: 'GB' }
-    }
+    if (b && kont.value == null) kont.value = Number(b.kontingent)
   },
   { immediate: true }
 )
 async function kontSpeichern() {
   try {
-    await api(`/api/speicher/buckets/${id.value}`, {
-      method: 'PATCH',
-      body: { kontingentGb: Number(kont.value!.wert) * (kont.value!.e === 'TB' ? 1024 : 1) }
-    })
+    await api(`/api/speicher/buckets/${id.value}`, { method: 'PATCH', body: { kontingentBytes: Math.floor(kont.value!) } })
+    kont.value = null
     await refresh()
+    spNeu().catch(() => {})
     ok(t('Gespeichert', 'Saved'))
   } catch (e: any) {
     fehler(e.message)
@@ -181,7 +184,11 @@ async function bspKopieren() {
           </section>
           <section v-if="kont" class="karte rein">
             <h3><Ico n="gauge" /> {{ t('Kontingent', 'Quota') }}</h3>
-            <form class="einheit" @submit.prevent="kontSpeichern"><input v-model.number="kont.wert" class="eingabe mono" type="number" min="0.1" step="any" :aria-label="t('Kontingent', 'Quota')"><VdAuswahl v-model="kont.e" class="eingabe" :aria-label="t('Einheit', 'Unit')"><option>GB</option><option>TB</option></VdAuswahl><button class="knopf">{{ t('Speichern', 'Save') }}</button></form>
+            <form v-if="kont != null" class="kont-form" @submit.prevent="kontSpeichern">
+              <VdBudgetEingabe v-model="kont" :min="Number(bucket.belegt) || 0" :max="maxKont" :beschriftung="t('Kontingent des Buckets', 'Bucket quota')" hinweis-id="hint-kont" />
+              <button class="knopf" :disabled="kont === Number(bucket.kontingent)">{{ t('Speichern', 'Save') }}</button>
+            </form>
+            <p id="hint-kont" class="sehrleise klein">{{ maxKont != null ? t('Höchstens das, was in deinem Budget noch frei ist, mindestens die aktuelle Belegung. Verkleinern gibt den Platz sofort frei.', 'At most what is still free in your budget, at least the current usage. Shrinking frees the space immediately.') : t('Mindestens die aktuelle Belegung.', 'At least the current usage.') }}</p>
             <p class="sehrleise klein">{{ t('Ist es voll, lehnt der Bucket neue Objekte sofort ab. Bei 80 % kommt eine Warnung.', 'When it is full, the bucket rejects new objects immediately. You get a warning at 80%.') }}</p>
           </section>
           <section class="karte gefahr-karte rein">
@@ -434,6 +441,14 @@ pre.cmd {
 .zeilen {
   display: grid;
   gap: 8px;
+}
+.kont-form {
+  display: grid;
+  gap: 10px;
+  justify-items: start;
+}
+.kont-form > :first-child {
+  width: 100%;
 }
 .einheit {
   display: flex;

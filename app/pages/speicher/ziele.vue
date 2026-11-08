@@ -156,20 +156,16 @@ function hierherUmziehen(z: any) {
   umzugPanel.value?.starten(`sftp${z.id}`)
 }
 
-let uhr: any = null
-onMounted(() => {
-  const tick = () => {
-    uhr = setTimeout(
-      async () => {
-        if (!assistent.offen && !poolEntwurf.value) await refresh().catch(() => {})
-        tick()
-      },
-      umzugLaeuft.value ? 2000 : 6000
-    )
-  }
-  tick()
+// Live: Verteilung der Dateien auf die Speicher und freier Platz. Bei Datei-Meldungen (höchstens alle 5 s) und im
+// Hintergrund-Abgleich (alle 2 s während eines Umzugs, sonst alle 5 s), nur bei sichtbarem Tab; nie bei offenem Assistenten
+// oder Pool-Entwurf. Fehler bleiben still, die Anzeige behält die letzten Werte.
+useLiveDaten({
+  daten: [{ schluessel: 'speicher-ziele', url: '/api/speicher/ziele' }],
+  themen: ['dateien'],
+  mind: () => (umzugLaeuft.value ? 2000 : 5000),
+  intervall: 2000,
+  pausiert: () => assistent.offen || !!poolEntwurf.value
 })
-onBeforeUnmount(() => clearTimeout(uhr))
 </script>
 
 <template>

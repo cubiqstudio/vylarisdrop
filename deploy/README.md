@@ -162,6 +162,55 @@ VylarisCloud kann selbst Speicher anbieten — wie eine Storage-Box bzw. ein Obj
 
 Beim Ausschalten bleiben alle Boxen, Buckets und Dateien erhalten (Volumes `speicher`, `sftpgo`, `garage-meta`, `garage-daten`). Hinweise: SFTP geht nicht über einen Cloudflare Tunnel (der leitet nur HTTP weiter) — WebDAV und S3 schon. Garage hält auf einem einzelnen Server keine zweite Kopie: für wichtige Daten eigene Backups machen. Der Schalter braucht den Update-Dienst auf dem Server (bei älteren Installationen einmal `update.sh` ausführen).
 
+### Daten auf eine andere Platte (HDD)
+
+Standardmäßig liegt alles in Docker-Volumes auf der Systemplatte (meist eine SSD). Für große Datenmengen lassen sich die Daten auf eine zweite Platte legen, z. B. eine HDD unter `/mnt/hdd`. Das betrifft die Volumes `dateien` (Cloud-Dateien), `speicher` (Storage-Boxen), `sftpgo`, `garage-daten` (Bucket-Daten) und auf Wunsch `garage-meta` und `db`. Die Seite **Speicher** zeigt unter **Datenträger**, auf welcher Platte Boxen und Buckets liegen und wie viel dort frei ist, und warnt, wenn sie auf der Systemplatte liegen und dort weniger als 20 % frei sind. (Das ist etwas anderes als der **Speicher-Pool** unter Speicher-Erweiterungen.)
+
+**1. Platte dauerhaft einhängen.** Die Platte muss bei jedem Start unter demselben Pfad eingehängt sein, sonst schreibt Docker still auf die Systemplatte weiter. Beispiel für `/etc/fstab` (UUID aus `blkid`):
+
+```bash
+UUID=…  /mnt/hdd  xfs  defaults,nofail,x-systemd.required-by=docker.service  0  2
+```
+
+`x-systemd.required-by=docker.service` startet Docker erst, wenn die Platte da ist. Prüfen mit `findmnt /mnt/hdd` und `df -h /mnt/hdd`.
+
+**2. Trockenlauf, dann umziehen.** Das Skript liegt neben `docker-compose.yml` (`update.sh` lädt es mit):
+
+```bash
+cd /opt/vylariscloud
+sudo bash daten-verschieben.sh --trocken /mnt/hdd/vylariscloud   # zeigt nur, was passieren würde
+sudo bash daten-verschieben.sh /mnt/hdd/vylariscloud             # macht es
+```
+
+Das Skript prüft root, Docker und den Zielordner (eingehängt? sonst Warnung mit Rückfrage; genug freier Platz?), hält die betroffenen Container an, kopiert jedes vorhandene Volume per `docker run alpine cp -a` in einen Unterordner des Zielordners und vergleicht danach Dateiliste, Größen und Anzahl per Prüfsumme (bei Abweichung wird nichts umgestellt und alles wieder gestartet). Danach setzt es die Besitzer, schreibt bzw. **erweitert** `compose.hdd.yml` (eine schon vorhandene wird nicht überschrieben; ihre Einträge bleiben, Kopie in `.sicherung/`), ergänzt `compose.hdd.yml` in `COMPOSE_FILE` der `.env`, startet neu und prüft per `df` im Container, dass die Ordner auf der Ziel-Platte liegen. Mehrfaches Ausführen ist unschädlich. Ohne das Speicher-Modul wird nur `dateien` behandelt; schaltest du es später ein, das Skript einfach noch einmal ausführen. Liegen die Cloud-Dateien schon direkt im Zielordner (eigene `compose.hdd.yml` mit `/data`), kommen die Ordner für Boxen und Buckets nach `<Zielordner>-speicher`.
+
+| Schalter | Wirkung |
+|---|---|
+| `--dir <Ordner>` | Installationsordner (Standard `/opt/vylariscloud`) |
+| `--trocken` | nur prüfen und anzeigen |
+| `--meta-auch` | auch `garage-meta` verschieben (Standard: bleibt auf der SSD) |
+| `--mit-db` | auch die Datenbank (Volume `db`) verschieben, nur auf schneller, zuverlässiger Platte; auf einer HDD wird alles spürbar langsamer |
+| `--speicher` | Bind-Mounts für SFTPGo/Garage schon vorbereiten, auch wenn das Modul noch aus ist |
+| `--weiter` | einen nicht leeren Zielunterordner trotzdem nehmen (nach abgebrochenem Lauf) |
+| `--reparieren` | Besitzer auch in schon eingebundenen Ordnern setzen (`chown -R`) |
+| `--ja` | Rückfragen mit Ja beantworten |
+
+**Garage:** Die Metadaten-Datenbank (`garage-meta`, SQLite) macht viele kleine Zugriffe und gehört auf die SSD. Nur die Objektdaten (`garage-daten`) gehören auf die große HDD, deshalb bleibt `garage-meta` ohne `--meta-auch` liegen. Garage braucht je Knoten eine „Kapazität“ im Cluster-Layout; mit `--single-node` legt Garage sie **einmal** beim ersten Start auf die Größe der Daten-Platte von damals fest (nicht ermittelbar: 1 GB) und ändert sie nie. VylarisCloud setzt selbst nichts davon: Es liest sie über die Garage-Admin-API, zeigt sie unter **Speicher → Datenträger**, hebt sie stündlich an, wenn sie zu klein ist (der Inhaber kann sie dort auch per Klick angleichen), oder nimmt `VD_GARAGE_KAPAZITAET_GB` aus der `.env`, wenn du einen festen Wert willst. Garage erzwingt die Kapazität nicht als Schreibgrenze; die harte Grenze ist das Kontingent je Bucket.
+
+**Neuinstallation direkt auf die Platte:** `sudo bash install.sh --daten-pfad /mnt/hdd/vylariscloud` legt die Ordner an und schreibt `compose.hdd.yml`, ohne etwas zu kopieren (nur bei einer Installation ohne vorhandene Volumes; sonst `daten-verschieben.sh` nehmen).
+
+**Updates:** `update.sh` ändert `compose.hdd.yml` nie; es lädt nur `daten-verschieben.sh` mit.
+
+**Rückweg:** Die alten Volumes werden nicht gelöscht. Das Skript druckt am Ende den Befehl; per Hand: `.env` und `compose.hdd.yml` aus `.sicherung/hdd-<Zeit>/` zurückkopieren (bzw. `compose.hdd.yml` entfernen, wenn es sie vorher nicht gab) und `docker compose up -d`. Was nach dem Umzug neu geschrieben wurde, fehlt dann in den alten Volumes. Erst wenn alles einige Tage sauber läuft und gesichert ist: `docker volume rm <Volume>` gibt den Platz frei.
+
+**Fehlerbilder**
+
+- **„Permission denied“** in `docker compose logs app` (oder `sftpgo`): Der Ordner gehört dem falschen Benutzer. App und SFTPGo laufen als `1000:1000`, Garage als root, Postgres als `70:70`: `sudo chown -R 1000:1000 /mnt/hdd/vylariscloud/dateien /mnt/hdd/vylariscloud/speicher /mnt/hdd/vylariscloud/sftpgo`, danach `docker compose restart`. Das Skript macht das mit `--reparieren` selbst.
+- **Daten landen nach einem Neustart doch auf der Systemplatte:** Die Platte war nicht eingehängt (siehe Schritt 1). Dann Docker stoppen, Platte einhängen, prüfen (`findmnt /mnt/hdd`), Docker starten; was inzwischen auf der Systemplatte im Ordner `/mnt/hdd/...` entstand, vorher wegsichern (unter dem Einhängepunkt liegt es versteckt weiter).
+- **`docker compose config` meldet einen Fehler:** `compose.hdd.yml` prüfen; Einrückung genau 2/4/6 Leerzeichen (`services:` → Dienst → `volumes:` → `- Quelle:Ziel`).
+- **Zu wenig Platz beim Kopieren:** Das Skript bricht vorher ab und ändert nichts.
+- **SFTP und Cloudflare Tunnel:** Der SFTP-Port (Standard `2222`) geht **nicht** durch den Cloudflare Tunnel, der leitet nur HTTP weiter; der Port muss direkt am Server in Firewall und Router offen sein. Umgekehrt begrenzt Cloudflare einzelne Anfragen über den Tunnel (Free/Pro: 100 MB). Größere Dateien per SFTP (direkt, ohne Tunnel) übertragen.
+
 ### Virenscan
 
 Der Installer fragt einmal, ob ClamAV mitlaufen soll (eigener Container, etwa 1,5 GB Arbeitsspeicher). Später schaltest du ihn unter **Einstellungen → Installation** an und aus; der Update-Dienst auf dem Server startet bzw. stoppt den Container dann selbst. Geprüft wird jede Datei bis 100 MB, beim Einschalten auch alle vorhandenen. Ende-zu-Ende-verschlüsselte Dateien kann kein Virenscanner lesen, sie werden übersprungen.
@@ -258,6 +307,95 @@ curl -u anna:vd_dav_… -X DELETE https://cloud.deinefirma.de/dav/Neu/b.pdf     
 - **Nur lesen:** Mit einem Nur-lesen-App-Passwort antwortet jede ändernde Anfrage mit 403.
 - **Reverse-Proxy:** Große Uploads brauchen im Webserver keine Größengrenze (nginx: `client_max_body_size 0;`, bei `install.sh` schon gesetzt). Der mitgelieferte Caddy reicht alle WebDAV-Methoden durch. Hinter einem Cloudflare-Proxy oder -Tunnel gilt das Anfrage-Limit deines Tarifs (bei Free/Pro 100 MB je Anfrage); ein WebDAV-PUT ist eine einzige Anfrage, größere Dateien dann besser über die Weboberfläche hochladen.
 
+## Große Dateien hinter Cloudflare
+
+<!-- Abschnitt "Große Dateien hinter Cloudflare" (Agent G) — bewusst in sich geschlossen -->
+
+**Das Problem:** Ein Windows-Netzlaufwerk (WebDAV, `https://deine-domain/dav/` oder `/webdav/`) schafft keine Dateien über etwa 50 bis 100 MB. Dafür gibt es **zwei voneinander unabhängige Grenzen**, die du beide beachten musst:
+
+| Grenze | Wert | Quelle |
+|---|---|---|
+| **Cloudflare** (Proxy und Tunnel-Hostname): Größe einer HTTP-Anfrage | Free und Pro **100 MB**, Business 200 MB, Enterprise bis 5 GB (Fehler 413). Ein WebDAV-Upload (`PUT`) ist eine einzige Anfrage. | [Cloudflare, Error 413](https://developers.cloudflare.com/support/troubleshooting/http-status-codes/4xx-client-error/error-413/) |
+| Cloudflare: Wartezeit auf den Server | Proxy-Lesezeit laut Cloudflare derzeit 125 s (ältere Angabe 100 s, dann Fehler 524), Schreibzeit 30 s | [Cloudflare, Connection limits](https://developers.cloudflare.com/fundamentals/reference/connection-limits/) |
+| **Windows** (WebClient-Dienst): Dateigröße | Standard **50.000.000 Byte** (`FileSizeLimitInBytes`), Höchstwert **4.294.967.295**; danach den Dienst neu starten. Der Explorer schafft über 4 GB grundsätzlich nichts. | [Microsoft KB 900900](https://support.microsoft.com/help/900900), [Druva](https://help.druva.com/en/articles/8807362-webdav-download-fails-with-file-size-exceeds-the-limit-error) |
+| Windows: Anmeldung | `BasicAuthLevel` 0 = aus, **1 = nur über HTTPS (Standard)**, 2 = auch über http:// | [Microsoft-Blog zu KB 841215](https://learn.microsoft.com/en-us/archive/blogs/saurabh_singh/some-info-around-webdav-content-access-issues) |
+| Windows: Dateien je Ordner | `FileAttributesLimitInBytes` Standard 1.000.000 (etwa 1.000 Dateien je Ordner im Explorer) | [Microsoft KB 912152](https://learn.microsoft.com/troubleshoot/windows-client/networking/cannot-access-webdav-web-folder) |
+
+Nicht selbst nachgeprüft, nur aus der Dokumentation: das Cloudflare-Limit gilt auch für Hostnamen, die über einen Tunnel laufen (sie laufen über denselben Proxy). Die Weboberfläche ist **nicht** betroffen: sie lädt in Stücken zu je **8 MiB** hoch (`server/api/upload/start.post.ts`, rohe Anfrage ohne Multipart-Rahmen), also weit unter 100 MB.
+
+### Entscheidungshilfe
+
+| Weg | Sicherheit | Aufwand | Komfort am Windows-PC | Dateigröße |
+|---|---|---|---|---|
+| **1. Direkter Hostname nur für WebDAV** (mitgeliefert: `dav-direkt.sh`) | mittel: Server-IP wird sichtbar, Port 443 offen; durch Beschränkung auf `/dav` und `/webdav`, HTTPS, App-Passwörter, Sperre nach Fehlversuchen, optional IP-Liste und fail2ban gut beherrschbar | klein: ein DNS-Eintrag, ein Skript | sehr gut: normales Netzlaufwerk | Explorer bis 4 GB, darüber rclone |
+| **2. Tailscale** (privates WireGuard-Netz) | hoch: kein öffentlicher Port | mittel: Tailscale auf Server und jedem PC | gut, solange Tailscale läuft; fremde Rechner brauchen Zugang | wie 1 |
+| **3. Cloudflare WARP / Zero Trust, Privatnetz** | hoch | hoch: Zero-Trust-Konto, Route im Tunnel, WARP-Client mit Anmeldung auf jedem PC | mittel | wie 1; ob das 100-MB-Limit dort entfällt, ist **nicht geprüft** |
+| **4. SFTP direkt** (Port 2222, nur Storage-Boxen) | mittel: offener Port, nur mit Schlüssel-Login sinnvoll | klein | gut mit WinSCP oder `rclone mount`; kein Explorer-Laufwerk ohne Zusatzprogramm | keine Grenze |
+| **5. rclone mit Nextcloud-Chunking** | hoch | **noch nicht gebaut**: Server bräuchte einen Chunk-Endpunkt (`/remote.php/dav/uploads/…`), geschätzt 300 bis 500 Zeilen plus Tests | nur rclone und Nextcloud-Clients, **nicht der Explorer** | keine Grenze |
+| **6. Weboberfläche** (Chunk-Upload) | hoch: bleibt hinter Cloudflare | keiner | einzelne Dateien, kein Laufwerk | mehrere GB; sehr große Dateien siehe unten |
+
+**Empfehlung:** Die Weboberfläche bleibt hinter dem Cloudflare Tunnel. Für große Dateien am PC nimmst du **Weg 1**, weil er der einzige ist, der ohne Zusatzsoftware am PC ein ganz normales Netzlaufwerk ergibt, und weil der Server dafür nur WebDAV nach außen zeigt. Die Anmeldung per App-Passwort (`vd_dav_` plus 32 Zufallszeichen) ist nicht zu erraten, und die App sperrt Fehlversuche je IP und Benutzer. Ergänze die IP-Liste (`--erlaubt`), wenn du von festen Adressen aus arbeitest, sonst `--fail2ban`. Wenn der Server hinter CGNAT oder ohne Portfreigabe steht, geht Weg 1 nicht: dann **Weg 2**. Wer maximale Sicherheit will und nur wenige feste Geräte hat, nimmt ebenfalls Weg 2. Für Dateien über 4 GB: rclone auf die direkte Adresse oder die Weboberfläche.
+
+### Weg 1: Direkter Hostname (Schritte)
+
+1. **DNS:** Lege einen **A-Eintrag** für einen *zweiten* Namen an, z. B. `dav.deinefirma.de`, auf die Server-IP, bei Cloudflare mit **grauer Wolke (nur DNS)**. Es darf *nicht* der Name des Tunnels sein.
+2. **Ports:** 443/tcp, 443/udp und 80/tcp müssen vom Internet zum Server kommen (Router-Portfreigabe, Firewall). Port 80 braucht Caddy zum Zertifikatsabruf und für die Weiterleitung auf https.
+3. **Einrichten** im Installationsordner (Caddy aus `compose.caddy.yml` muss laufen):
+   ```bash
+   sudo bash dav-direkt.sh --host dav.deinefirma.de --trocken     # nur anzeigen
+   sudo bash dav-direkt.sh --host dav.deinefirma.de --fail2ban    # einrichten
+   sudo bash dav-direkt.sh --host dav.deinefirma.de --erlaubt "203.0.113.7 198.51.100.0/24"   # nur diese Adressen
+   sudo bash dav-direkt.sh --status                               # prüfen
+   sudo bash dav-direkt.sh --entfernen [--fail2ban]               # wieder abbauen
+   ```
+   Das Skript prüft den DNS-Eintrag, sichert `.env` (und `Caddyfile`), trägt `VD_DAV_HOST` (und `VD_DAV_ERLAUBT`) in die `.env` ein, hängt `compose.dav-direkt.yml` an `COMPOSE_FILE` und startet `app` und `caddy` neu. Zwei Modi (`--modus`):
+   - **`nur-dav`** (Standard, sobald ein Cloudflare Tunnel erkannt wird): Caddy bedient **ausschließlich** den DAV-Namen (`Caddyfile.dav-nur` ersetzt die normale Caddyfile). Alles andere auf 80/443 ist 404 oder bekommt keine Antwort. Die Weboberfläche läuft weiter nur über den Tunnel; `cloudflared` spricht die App direkt an, nicht über Caddy. So kommt niemand mit der bekannten Server-IP an Cloudflare vorbei zur Weboberfläche.
+   - **`zusaetzlich`**: die normale Caddyfile bleibt (das Skript ergänzt eine `import`-Zeile), der DAV-Name kommt dazu. Wer dann die IP kennt, erreicht über Port 80/443 weiter auch die Weboberfläche. Nur sinnvoll, wenn Caddy die Weboberfläche ohnehin selbst ausliefert. Die Seite **Sync & WebDAV** zeigt danach beide Adressen („normal“ und „Große Dateien“), `/api/sync/info` liefert sie.
+4. **Windows:** `net use Y: https://dav.deinefirma.de/dav/ /user:BENUTZER APP-PASSWORT /persistent:yes` und das Skript unten für das Windows-Limit.
+
+**Was der Name kann:** nur `/dav` und `/webdav` (alles andere ist 404, in Caddy *und* zusätzlich in der App: `server/middleware/00.davhost.ts`), nur HTTPS, keine Größengrenze, großzügige Zeitlimits, Anfragen werden nicht zwischengespeichert. Das Zugriffsprotokoll (JSON) liegt unter `caddy-logs/dav-zugriff.log` (20 MiB je Datei, 30 Tage); es enthält IP-Adressen und Dateinamen, aber nie Kennwörter (Caddy schwärzt den `Authorization`-Kopf).
+
+**Sicherheitsfolgen, ehrlich:**
+- **Die Server-IP wird öffentlich sichtbar**, und Cloudflares DDoS-Filter und WAF schützen diesen Namen nicht. Die Weboberfläche ist über den neuen Namen **nicht** erreichbar (404, in Caddy und in der App); im Modus `nur-dav` antwortet Caddy auch über die nackte IP nicht mit der Weboberfläche.
+- Der Hostname steht über das Zertifikat in den öffentlichen Zertifikatsprotokollen (Certificate Transparency). Bots werden ihn finden und `/dav` abklopfen.
+- Brute-Force: die App sperrt je IP nach 40 und je IP und Benutzer nach 10 Fehlversuchen für 10 Minuten (HTTP 429). Ergänzend sperrt die mitgelieferte fail2ban-Jail (`deploy/fail2ban/`) eine Adresse nach 8 abgelehnten Anmeldungen für 1 Stunde. Gezählt werden nur Anfragen **mit** Anmeldekopf, denn Windows schickt jede neue Verbindung zuerst ohne Anmeldung (401) und meldet sich erst dann an.
+- Caddy hat ohne Zusatzmodul **kein Rate-Limit**. Es ist kein Plugin nötig; wer eines will, baut Caddy selbst mit `caddy-ratelimit` (xcaddy).
+- **ufw und Docker:** Von Docker veröffentlichte Ports umgehen ufw, `ufw deny 443` hilft nicht. fail2ban sperrt deshalb in der Kette `DOCKER-USER` (so steht es in der Jail). Erlaube in ufw 443, 80 und SSH, und prüfe nach Änderungen von außen mit einem Portscan.
+- Lege für den PC ein **eigenes App-Passwort** an (Seite Sync & WebDAV) und widerrufe es, wenn der PC weg ist. Für Backups reichen Nur-lesen-Passwörter.
+
+**Eigener Webserver statt Caddy** (nginx; nicht getestet): zweiter `server`-Block mit eigenem Zertifikat, in dem nur `location ~ ^/(dav|webdav)(/|$)` an die App geht, alles andere `return 404;`, mit `client_max_body_size 0; proxy_request_buffering off; proxy_read_timeout 1800s; proxy_send_timeout 1800s;` und `proxy_set_header X-Forwarded-For $remote_addr; proxy_set_header X-Forwarded-Proto https; proxy_set_header Host $host;` (X-Forwarded-For **überschreiben**, nicht anhängen). In der `.env` `VD_DAV_HOST=dav.deinefirma.de` setzen.
+
+### Weg 2 bis 6 (Kurzfassung)
+
+- **Tailscale** (nicht mitgeliefert, nicht getestet): Tailscale auf Server und PCs, in der Admin-Konsole MagicDNS und HTTPS einschalten. Die App auf `127.0.0.1` veröffentlichen (`compose.port.yml`, `VD_PORT`), dann `tailscale serve --bg --https=443 http://127.0.0.1:<VD_PORT>`. In der `.env` `VD_DAV_HOST=<rechner>.<tailnet>.ts.net` setzen, damit die App den Namen annimmt (nur `/dav`, `/webdav`; die Seite Sync & WebDAV zeigt ihn dann als „Große Dateien“). Unsicher: ob `tailscale serve` den Kopf `X-Forwarded-Proto: https` setzt; sonst verweigert die App die Anfrage („HTTPS erforderlich“). Quelle: [Tailscale Serve](https://tailscale.com/kb/1242/tailscale-serve).
+- **Cloudflare WARP / Privatnetz** (nicht getestet): `cloudflared` leitet per Private-Network-Route (IP oder Host) zum Server, die PCs laufen mit dem WARP-Client ([Cloudflare-Doku](https://developers.cloudflare.com/cloudflare-one/networks/connectors/cloudflare-tunnel/private-net/cloudflared/)). Dieser Verkehr geht nicht über den HTTP-Proxy deiner Domain; ob das Anfrage-Limit dort entfällt, steht in der Doku nicht und wurde hier nicht geprüft. Der Free-Plan von Zero Trust deckt laut Drittquellen bis 50 Benutzer ab, ob das Privatnetz darin enthalten ist, widersprechen sich die Quellen. In den Split-Tunnel-Einstellungen müssen private Bereiche (192.168/16, 10/8 usw.) einbezogen sein. Aufwand und Pflege sind für einen Heimserver mit wenigen PCs meist größer als bei Weg 1 oder 2.
+- **SFTP direkt:** Storage-Box mit SSH-Schlüssel statt Passwort anlegen, Port 2222 (oder dein gewählter) freigeben, mit WinSCP, `rclone mount` oder SSHFS-Win verbinden. Hat der Server einen offenen SSH-Port, gelten dieselben Vorsichtsregeln. SFTPGo bringt einen eigenen „Defender“ gegen Fehlversuche mit (`SFTPGO_COMMON__DEFENDER__ENABLED=1`, laut SFTPGo-Doku, hier nicht getestet). Das gilt nur für Storage-Boxen, nicht für die Cloud-Dateien.
+- **rclone mit Nextcloud-Chunking:** rclone (`vendor nextcloud`) lädt in Stücken über `/remote.php/dav/uploads/…` hoch ([rclone, WebDAV](https://rclone.org/webdav/)). Der Server hat die Bausteine (Upload-Sitzungen mit Stücken), aber keinen kompatiblen Endpunkt; Aufwand und Risiko (Kontingent, Aufräumen, ETags) sind für einen Nebenschauplatz zu hoch, deshalb **später möglich**. Der Windows-Explorer kann Chunking nicht.
+- **Weboberfläche:** lädt in 8-MiB-Stücken, 3 gleichzeitig. Gemessen: 2 GB in 256 Stücken, größte Anfrage 8,0 MiB; der abschließende Schritt „fertig“ setzt die Stücke wieder zusammen und brauchte für 2 GB auf SSD 8 s. Auf einer HDD dauert er länger: Dauert dieser eine Aufruf länger als Cloudflares Wartezeit (rund 100 bis 125 s), meldet Cloudflare 524, obwohl die Datei fertig wird. Das ist erst bei zweistelligen GB zu erwarten (nicht gemessen).
+
+### Windows-Einstellungen
+
+Das Skript `windows-webdav.ps1` (auch als Download auf der Seite **Sync & WebDAV**, Reiter Windows, mit Prüfsumme und „ansehen“) setzt `FileSizeLimitInBytes` auf 4294967295, hebt `BasicAuthLevel` nur von 0 auf 1 (nie höher), stellt den Dienst **WebClient** auf „Automatisch“ und startet ihn neu. Es zeigt die alten Werte, fragt vorher und sichert sie in `%ProgramData%\VylarisCloud\webclient-vorher.json`.
+
+```powershell
+# Als Administrator, im Ordner mit der Datei. Erst lesen, dann ausführen!
+powershell -ExecutionPolicy Bypass -File .\windows-webdav.ps1 -Trocken        # nur anzeigen, ohne Administrator
+powershell -ExecutionPolicy Bypass -File .\windows-webdav.ps1                 # ändern (mit Rückfrage)
+powershell -ExecutionPolicy Bypass -File .\windows-webdav.ps1 -Rueckgaengig   # alte Werte zurück
+```
+
+Von Hand dasselbe: `reg add HKLM\SYSTEM\CurrentControlSet\Services\WebClient\Parameters /v FileSizeLimitInBytes /t REG_DWORD /d 4294967295 /f`, danach `net stop webclient && net start webclient`. Den Wert im Registrierungs-Editor immer **dezimal** eingeben. Ordner mit über 1.000 Dateien öffnet der Explorer erst, wenn `FileAttributesLimitInBytes` größer ist (z. B. 20000000, gleicher Pfad).
+
+### Wie sich der Server bei großen Uploads verhält (gemessen)
+
+Testaufbau: gebaute Instanz, Caddy davor (HTTPS, HTTP/2), `curl -T` mit einer 2-GB-Datei.
+- 2 GB per `PUT`: über Caddy 7,0 s, direkt 6,0 s, ohne Content-Length (`Transfer-Encoding: chunked`) 7,9 s. Der Node-Prozess blieb bei **108 bis 139 MB** Arbeitsspeicher (vorher 116 MB), die Daten werden gestreamt, nicht gepuffert. `Expect: 100-continue` wird beantwortet. Download und Bereichsanfrage (Range) lieferten dieselbe Prüfsumme.
+- Abgebrochene Uploads hinterlassen nichts (Datei erscheint nicht, keine Reste im Datenordner).
+- **Gefunden und behoben:** Node beendet jede Anfrage, die nicht innerhalb von 300 s komplett angekommen ist (`requestTimeout`). Ein Upload von 1,1 GB mit 3 MB/s brach nach 313 s mit **408** ab; bei 40 MBit/s Upload wären schon etwa 1,5 GB zu viel. `server/plugins/anfrage-zeit.ts` hebt die Frist auf 12 Stunden an (`VD_ANFRAGE_TIMEOUT_S`, Sekunden, 0 = unbegrenzt); die Frist für die Kopfzeilen (60 s) bleibt. Nach der Änderung kam derselbe 1,1-GB-Upload in 349 s vollständig an (201).
+- Hinter Cloudflare bleibt es bei 100 MB je Anfrage, egal wie der Server eingestellt ist: die Meldung 413 kommt von Cloudflare selbst, nicht von der App.
+
+**Neue Umgebungsvariablen** (in der `.env`): `VD_DAV_HOST` (direkter DAV-Hostname, setzt `dav-direkt.sh`), `VD_DAV_ERLAUBT` (Freigabeliste für diesen Namen), `VD_DAV_CADDYFILE` (Modus, setzt das Skript), `VD_ANFRAGE_TIMEOUT_S` (Frist für eine Anfrage in Sekunden; wird von `compose.dav-direkt.yml` an die App durchgereicht).
+
 ## Speicherplatz und Kontingente
 
 Jedes Konto kann ein Speicher-Kontingent haben. Das **wirksame Kontingent** eines Kontos ergibt sich in dieser Reihenfolge, der erste Treffer gewinnt:
@@ -276,7 +414,7 @@ Jedes Konto kann ein Speicher-Kontingent haben. Das **wirksame Kontingent** eine
 
 ### Was zählt
 
-**Belegt** ist die Summe der Dateigrößen des Kontos **plus der Papierkorb**. Gelöschte Dateien belegen weiter Platz, bis der Papierkorb geleert wird oder die 30 Tage um sind; Wiederherstellen ändert nichts an der Summe. Nicht mitgezählt werden Storage-Boxen und Buckets des Moduls „Speicher“ (eigene Kontingente), Vorschaubilder und andere Nebendateien. Kopien zählen je Kopie.
+**Belegt** ist die Summe der Dateigrößen des Kontos **plus der Papierkorb**. Gelöschte Dateien belegen weiter Platz, bis der Papierkorb geleert wird oder die 30 Tage um sind; Wiederherstellen ändert nichts an der Summe. Dazu kommt, was das Konto für Storage-Boxen und Buckets des Moduls „Speicher“ **eingeplant** hat (siehe [Boxen und Buckets im Rahmen des Kontingents](#boxen-und-buckets-im-rahmen-des-kontingents)). Nicht mitgezählt werden Vorschaubilder und andere Nebendateien. Kopien zählen je Kopie.
 
 ### Durchsetzung und Warnungen
 
@@ -284,6 +422,22 @@ Jedes Konto kann ein Speicher-Kontingent haben. Das **wirksame Kontingent** eine
 - Das gilt für alle Wege, auf denen Dateien entstehen: Upload im Browser, Upload in Stücken, Datei-Anfragen, Upload-Werkzeuge und API, Import, Inhalt ersetzen, Kopieren im Dateimanager und WebDAV.
 - Ist das Kontingent erreicht, lehnt der Server mit **HTTP 507** und einer Meldung mit Zahlen ab („Dein Speicher ist voll: 4,8 von 5 GB belegt, die Datei braucht 600 MB.“). Eine einzelne Datei über der Grenze „Größte Datei“ bleibt ein 413.
 - **Warnungen** gibt es einmal bei **80 %** und einmal bei **100 %** des Konto-Kontingents, per Discord-Webhook oder E-Mail wie unter **Einstellungen → Benachrichtigungen** („Dein Speicher wird knapp“, dort abschaltbar). Sinkt die Belegung wieder unter 80 %, beginnt es von vorn. Zusätzlich färbt sich der Balken in der Seitenleiste ab 80 % gelb und ab 95 % rot, und ein Hinweis-Banner erscheint. Für Team-Kontingente gibt es keine Benachrichtigung, nur den Balken auf der Teams-Seite.
+
+## Boxen und Buckets im Rahmen des Kontingents
+
+<!-- Abschnitt "Selbstbedienung im Rahmen des Kontingents" (Modul Speicher) -->
+Wenn **Speicher → Einstellungen → „Wer darf Speicher anlegen?“** auf **Alle Konten** steht (und der Speicherdienst läuft), legt jeder Nutzer seine eigenen **Storage-Boxen** (SFTP/SCP/WebDAV) und **S3-Buckets** selbst an. Mehr als sein Kontingent kann er dabei nie einplanen:
+
+- **Budget** = wirksames Kontingent des Kontos (Rangfolge wie oben). **Frei zum Einplanen** = Budget − belegt (Dateien + Papierkorb) − bereits eingeplant (Summe der Kontingente aller seiner Boxen und Buckets). Beim Anlegen und Vergrößern darf das Neue höchstens so groß sein wie das, was frei ist; der Schieber im Dialog endet genau dort, und der Server prüft es noch einmal (HTTP 507 mit Zahlen), auch bei direkten API-Aufrufen.
+- Das **Eingeplante zählt zum belegten Speicher des Kontos** (Seitenleiste: eigene Farbe „Für Boxen & Buckets reserviert“). Cloud-Uploads, Kopieren und WebDAV passen danach nur noch in den Rest. Prüfung und Eintragen laufen unter derselben Sperre je Konto wie jeder Upload; zehn gleichzeitige Anfragen überziehen das Budget deshalb nicht.
+- **Löschen** und **Verkleinern** geben den Platz sofort frei. Verkleinern geht nur bis zur tatsächlichen Belegung der Box/des Buckets (frisch gemessen, nicht der Stundenwert); ist der Dienst nicht erreichbar, wird nicht verkleinert.
+- **Konten ohne Limit** (Rolle „Nutzer“) dürfen nur bis zur Obergrenze **„Obergrenze je Konto für Boxen + Buckets zusammen“** (Einstellung `grenzeGb`) einplanen; steht sie auf 0, dürfen sie nichts anlegen. Für Konten mit Limit gilt die Obergrenze zusätzlich zum Kontingent (0 = keine zusätzliche). **Höchstens Boxen + Buckets je Konto** (`maxAnzahl`) begrenzt die Anzahl. Admin- und Inhaber-Konten ohne eigenes Limit bleiben unbegrenzt; ihr Eingeplantes steht trotzdem in ihrer Anzeige. Handelt ein Admin an der Box eines Nutzers, gilt immer das Kontingent des **Besitzers**.
+- **Überplant:** Senkt ein Admin das Kontingent unter belegt + eingeplant, wird nichts gelöscht. Das Konto lehnt dann neue Boxen, Buckets, Vergrößerungen und Uploads ab (Hinweis in Seitenleiste, Speicher-Seite und Banner), Zahlen werden nie negativ angezeigt. Verkleinern, Löschen und Dateien löschen sind weiter möglich.
+- **Durchgesetzt wird im Dienst:** das Kontingent steht als `quota_size` am virtuellen Ordner der Box in SFTPGo (alle Unterkonten teilen es) und als Bucket-Kontingent in Garage. Bei jeder Messung (stündlich und beim Öffnen der Box/des Buckets) wird ein abweichender Wert im Dienst wieder auf den Wert der Datenbank gesetzt.
+- **Konto löschen** entfernt zuerst alle Boxen, Buckets, Logins und Schlüssel im Dienst. Klappt das nicht (Dienst aus), bleibt das Konto bestehen („nicht gelöscht, Dienst prüfen“). Nur der Inhaber kann mit `DELETE /api/users/<id>?ohneSpeicher=1` bewusst ohne Dienst löschen; Reste im Dienst müssen dann von Hand entfernt werden (SFTPGo-Oberfläche, Garage).
+- Anmeldenamen neuer Boxen sind zufällig (`vd` + 10 Zeichen), Passwörter und Bucket-Secrets werden nur einmal angezeigt. Anlegen ist je Nutzer auf 20, Ändern auf 60 Aktionen je 10 Minuten begrenzt.
+
+Test ohne SFTPGo/Garage: `scripts/test-speicher-budget.sh` mit dem Nachbau `scripts/stub-speicherdienste.mjs` (Kopf der Datei erklärt den Start).
 
 ## Speicher-Erweiterungen (SFTP)
 
@@ -341,6 +495,7 @@ Die mitgelieferte `docker-compose.yml` (und `compose.node.yml`) reicht diese Var
 | `VD_LIZENZ_SERVER` | Basis-URL des Lizenzservers (Pro) |
 | `VD_LIZENZ_KEY` | Öffentlicher Ed25519-Schlüssel des Lizenzservers (PEM, Zeilenumbrüche als `\n` oder echte Zeilen) |
 | `VD_SFTP_SCHLUESSEL` | Optional: zusätzliches Geheimnis für die Verschlüsselung der SFTP-Zugangsdaten, siehe [Speicher-Erweiterungen](#speicher-erweiterungen-sftp) |
+| `VD_GARAGE_KAPAZITAET_GB` | Optional: feste Kapazität des Garage-Knotens in GB (sonst die Größe der Garage-Daten-Platte), siehe [Daten auf eine andere Platte](#daten-auf-eine-andere-platte-hdd) |
 
 **Ohne `VD_LIZENZ_SERVER` und `VD_LIZENZ_KEY` prüft die Installation ihre Schlüssel selbst** (eigener Aussteller, Seite **Verwaltung → Lizenzen**, nur für den Inhaber). Beide Variablen brauchst du nur, wenn diese Installation Schlüssel von einer *anderen* VylarisCloud nutzen soll; die Werte dafür stehen auf deren Lizenzen-Seite. Sie werden beim Start gelesen (nach dem Ändern `docker compose up -d`).
 

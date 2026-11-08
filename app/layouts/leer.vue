@@ -17,6 +17,7 @@ function bewegen(e: MouseEvent) {
 <style scoped>
 .buehne {
   min-height: 100vh;
+  min-height: 100dvh;
   position: relative;
   overflow-x: hidden;
   background:

@@ -52,6 +52,23 @@ function leeren() {
     () => aktion({ aktion: 'leeren' }, t('Papierkorb geleert', 'Trash emptied'))
   )
 }
+// Live-Aktualisierung: Liste, Speicheranzeige (Seitenleiste, Karte) und „Alle Konten“-Ansicht still abgleichen. Fehler brechen nichts ab.
+const stand = (k: string) => useNuxtData(k).data as Ref<any>
+async function liveAbgleich() {
+  const mitAlle = alle.value
+  const r = await api('/api/papierkorb', { query: mitAlle ? { alle: '1' } : {} })
+  if (mitAlle === alle.value && JSON.stringify(r) !== JSON.stringify(data.value)) data.value = r
+  // Der Papierkorb zählt zum belegten Speicher
+  const [s, qm] = await Promise.all([
+    api('/api/files/stats').catch(() => null),
+    api('/api/quota/me').catch(() => null)
+  ])
+  if (s && JSON.stringify(s) !== JSON.stringify(statsStand.value)) statsStand.value = s
+  if (qm && JSON.stringify(qm) !== JSON.stringify(quotaStand.value)) quotaStand.value = qm
+}
+const statsStand = stand('stats')
+const quotaStand = stand('quota-me')
+useLive(['papierkorb', 'dateien'], liveDrosseln(liveAbgleich))
 const tageBis = (d: string) => Math.max(0, Math.ceil((new Date(d).getTime() - Date.now()) / 86400000))
 </script>
 

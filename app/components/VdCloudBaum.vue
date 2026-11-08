@@ -66,10 +66,12 @@ const zeilen = computed<Zeile[]>(() => {
   return aus
 })
 
+const alsKnoten = (r: any): Knoten[] =>
+  (r.ordner || []).map((o: any) => ({ id: o.id, name: o.name, parent_id: o.parent_id, team_id: o.team_id, team: o.team }))
 onMounted(async () => {
   try {
     const r = await api('/api/folders')
-    alle.value = (r.ordner || []).map((o: any) => ({ id: o.id, name: o.name, parent_id: o.parent_id, team_id: o.team_id, team: o.team }))
+    alle.value = alsKnoten(r)
     // Pfad zum aktuellen Ordner aufklappen
     const o = new Set<number>()
     let p = props.start
@@ -85,6 +87,37 @@ onMounted(async () => {
     laedt.value = false
   }
 })
+
+// Live: Ordner anderswo angelegt/gelöscht/verschoben/umbenannt → Baum still neu holen; Aufgeklapptes und Auswahl bleiben
+let baumLaeuft = false
+let baumNochmal = false
+async function baumNeu() {
+  if (laedt.value || fehlerText.value) return
+  if (baumLaeuft) {
+    baumNochmal = true
+    return
+  }
+  baumLaeuft = true
+  try {
+    do {
+      baumNochmal = false
+      try {
+        alle.value = alsKnoten(await api('/api/folders'))
+      } catch {
+        return // still; der nächste Auslöser versucht es erneut
+      }
+    } while (baumNochmal)
+  } finally {
+    baumLaeuft = false
+  }
+}
+// Das gewählte Ziel gibt es nicht mehr oder liegt jetzt in einem der verschobenen Ordner: Auswahl zurücknehmen
+watch([alle, gesperrt], () => {
+  const g = gewaehlt.value
+  if (g == null) return
+  if (!alle.value.some((x) => x.id === g) || gesperrt.value.has(g)) gewaehlt.value = undefined
+})
+useLive(['ordner'], baumNeu)
 function umschalten(id: number) {
   const s = new Set(offen.value)
   s.has(id) ? s.delete(id) : s.add(id)

@@ -1,6 +1,7 @@
 import { z } from 'zod'
 import { q, q1, ereignis } from '../../../utils/db'
 import { clientIp, requireUser } from '../../../utils/auth'
+import { requireRecht } from '../../../utils/teams'
 import { importAnstossen, meinImport } from '../../../utils/importKern'
 
 const Optionen = z.object({
@@ -15,6 +16,7 @@ const Optionen = z.object({
 
 export default defineEventHandler(async (event) => {
   const u = await requireUser(event)
+  await requireRecht(u, 'import')
   const imp = await meinImport(event, u)
   if (imp.status === 'pausiert') {
     await q(`UPDATE importe SET status = 'laeuft' WHERE id = $1 AND status = 'pausiert'`, [imp.id])

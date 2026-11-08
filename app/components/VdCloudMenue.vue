@@ -161,6 +161,42 @@ onBeforeUnmount(() => {
   }
   .punkt {
     padding: 11px 12px;
+    min-height: 44px;
+    font-size: 15px;
+  }
+}
+/* Kleine Bildschirme: Kontextmenü als Bottom-Sheet am unteren Rand (Position aus dem Skript wird überstimmt) */
+@media (max-width: 720px) {
+  .menue {
+    left: 0 !important;
+    right: 0 !important;
+    top: auto !important;
+    bottom: 0;
+    width: 100%;
+    max-width: none;
+    max-height: 72dvh;
+    overflow-y: auto;
+    border-width: 1px 0 0;
+    border-radius: 18px 18px 0 0;
+    padding: 14px max(10px, env(safe-area-inset-right, 0px)) calc(10px + env(safe-area-inset-bottom, 0px)) max(10px, env(safe-area-inset-left, 0px));
+    /* abdunkelnder Hintergrund ohne eigenes Element */
+    box-shadow: 0 0 0 100vmax rgba(0, 0, 0, 0.4);
+    animation-name: sheetRein;
+  }
+  .menue::before {
+    content: '';
+    display: block;
+    width: 38px;
+    height: 4px;
+    border-radius: 4px;
+    background: var(--linie2);
+    margin: -6px auto 8px;
+  }
+  @keyframes sheetRein {
+    from {
+      transform: translateY(40px);
+      opacity: 0.4;
+    }
   }
 }
 hr {

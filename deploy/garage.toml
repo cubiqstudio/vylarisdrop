@@ -1,3 +1,14 @@
+# Garage (S3-Speicher von VylarisCloud). Die Pfade gelten IM Container; wohin sie auf dem Server zeigen,
+# bestimmen die Volumes bzw. Bind-Mounts in docker-compose.yml / compose.hdd.yml (siehe README: "Daten auf eine andere Platte").
+#
+# metadata_dir = Datenbank mit den Objekt-Verzeichnissen: klein, viele kleine Zugriffe -> auf die schnelle Platte (SSD) legen.
+# data_dir     = die Objektdaten selbst: groß, vor allem sequentiell -> darf auf die große HDD (Volume garage-daten).
+# db_engine    = sqlite (robust, auch bei hartem Abschalten); "lmdb" ist schneller, braucht aber saubere Beendigung und
+#                gleiche Rechner-Architektur -- ein Wechsel des Engines migriert nichts (nur bei neuer Installation ändern).
+# Kapazität: Garage braucht je Knoten eine "Kapazität" im Cluster-Layout. Mit "server --single-node" legt Garage sie EINMAL
+#   beim ersten Start auf die Größe der Daten-Platte fest (nicht ermittelbar: 1 GB) und ändert sie danach nie. VylarisCloud
+#   gleicht sie an (Speicher -> Datenträger bzw. stündlich nur nach oben); fest vorgeben: VD_GARAGE_KAPAZITAET_GB in der .env.
+#   Garage erzwingt sie nicht als Schreibgrenze; die harte Grenze ist das Kontingent je Bucket.
 metadata_dir = "/var/lib/garage/meta"
 data_dir = "/var/lib/garage/data"
 db_engine = "sqlite"

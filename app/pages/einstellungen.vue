@@ -12,8 +12,11 @@ const { data: inst, refresh: instNeu } = await (useFetch as any)('/api/settings'
 
 const route = useRoute()
 const REITER = ['darstellung', 'konto', 'benachrichtigung', 'installation'] as const
+// Der Reiter „Installation“ gehört nur Admins und dem Inhaber: für alle anderen fällt ein Aufruf mit ?reiter=installation zurück
 const reiter = ref<(typeof REITER)[number]>(
-  REITER.includes(route.query.reiter as any) ? (route.query.reiter as any) : 'darstellung'
+  REITER.includes(route.query.reiter as any) && (route.query.reiter !== 'installation' || istAdmin.value)
+    ? (route.query.reiter as any)
+    : 'darstellung'
 )
 const { data: ids, refresh: idsNeu } = await (useFetch as any)('/api/account/identitaeten', { key: 'identitaeten' })
 onMounted(() => {
@@ -599,7 +602,7 @@ const STILE = computed(() => [
         </div>
       </div>
 
-      <form v-else key="i" class="raster2" @submit.prevent="insSpeichern">
+      <form v-else-if="reiter === 'installation' && istAdmin" key="i" class="raster2" @submit.prevent="insSpeichern">
         <div class="block">
           <h3>{{ t('Name & Farbe', 'Name & colour') }}</h3>
           <label class="feld"><span>{{ t('Name', 'Name') }}</span><input v-model="ins.name" class="eingabe" maxlength="40" :disabled="!istInhaber"></label>

@@ -8,7 +8,7 @@ export default defineEventHandler(async (event) => {
     String(b?.name || '')
       .trim()
       .slice(0, 60) || 'Upload-Tool'
-  const n = await q1<{ n: string }>('SELECT count(*) AS n FROM upload_tokens WHERE user_id = $1', [u.id])
+  const n = await q1<{ n: string }>("SELECT count(*) AS n FROM upload_tokens WHERE user_id = $1 AND art = 'api'", [u.id])
   if (Number(n?.n || 0) >= 25) throw fehler(400, 'Höchstens 25 Token pro Konto.', 'At most 25 tokens per account.')
   const rechte = Array.isArray(b?.rechte)
     ? (TOKEN_RECHTE.filter((x) => b.rechte.includes(x)) as TokenRecht[])
